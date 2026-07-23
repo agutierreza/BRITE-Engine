@@ -20,7 +20,7 @@ struct SpriteComponent {
 };
 
 struct PhysicsBodyComponent {
-    b2Body* Body = nullptr;
+    b2BodyId Body = b2_nullBodyId;
 };
 
 } // namespace BRITE

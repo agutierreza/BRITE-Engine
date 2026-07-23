@@ -35,10 +35,10 @@ FetchContent_MakeAvailable(entt)
 # Box2D
 FetchContent_Declare(
     box2d
-    URL https://github.com/erincatto/box2d/archive/refs/tags/v2.4.1.tar.gz
+    URL https://github.com/erincatto/box2d/archive/refs/tags/v3.0.0.tar.gz
 )
-set(BOX2D_BUILD_TESTBED OFF CACHE BOOL "" FORCE)
-set(BOX2D_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(BOX2D_SAMPLES OFF CACHE BOOL "" FORCE)
+set(BOX2D_VALIDATION OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(box2d)
 
 # nlohmann_json

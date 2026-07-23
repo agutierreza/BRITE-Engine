@@ -12,9 +12,10 @@ void PhysicsSystem::Update(entt::registry& registry) {
         auto& transform = view.get<TransformComponent>(entity);
         auto& physics = view.get<PhysicsBodyComponent>(entity);
 
-        if (physics.Body) {
-            b2Vec2 position = physics.Body->GetPosition();
-            float angle = physics.Body->GetAngle();
+        if (b2Body_IsValid(physics.Body)) {
+            b2Vec2 position = b2Body_GetPosition(physics.Body);
+            b2Rot rotation = b2Body_GetRotation(physics.Body);
+            float angle = b2Rot_GetAngle(rotation);
 
             // Assuming a 1:1 ratio for physics-to-pixels currently, 
             // though typically a scalar (e.g. 30 pixels = 1 meter) is used.
