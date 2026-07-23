@@ -118,10 +118,13 @@ add_library(${PROJECT_NAME} STATIC
     src/Core/InputManager.cpp
     src/Systems/RenderSystem.cpp
     src/Systems/PhysicsSystem.cpp
+    src/Framework/Application.cpp
+    src/Framework/Scene.cpp
 )
 
 # Include external header-only libraries and our own src
 target_include_directories(${PROJECT_NAME} PUBLIC 
+    include
     src
     external/tweeny/include
     ${physfs_SOURCE_DIR}/src
