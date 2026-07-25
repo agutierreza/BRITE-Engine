@@ -4,23 +4,83 @@
 
 namespace BRITE {
 
-void PhysicsSystem::Update(entt::registry& registry) {
+constexpr float PPM = 30.0f;
+
+void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
     ZoneScoped;
-    auto view = registry.view<TransformComponent, PhysicsBodyComponent>();
+    auto view = registry.view<TransformComponent, RigidBodyComponent>();
     
     for (auto entity : view) {
         auto& transform = view.get<TransformComponent>(entity);
-        auto& physics = view.get<PhysicsBodyComponent>(entity);
+        auto& rb = view.get<RigidBodyComponent>(entity);
 
-        if (b2Body_IsValid(physics.Body)) {
-            b2Vec2 position = b2Body_GetPosition(physics.Body);
-            b2Rot rotation = b2Body_GetRotation(physics.Body);
+        if (!b2Body_IsValid(rb.RuntimeBody)) {
+            // Create the body
+            b2BodyDef bodyDef = b2DefaultBodyDef();
+            
+            switch (rb.Type) {
+                case RigidBodyComponent::BodyType::Static: bodyDef.type = b2_staticBody; break;
+                case RigidBodyComponent::BodyType::Kinematic: bodyDef.type = b2_kinematicBody; break;
+                case RigidBodyComponent::BodyType::Dynamic: bodyDef.type = b2_dynamicBody; break;
+            }
+            
+            bodyDef.position = { transform.Position.x / PPM, transform.Position.y / PPM };
+            bodyDef.rotation = b2MakeRot(transform.Rotation * (PI / 180.0f));
+            bodyDef.fixedRotation = rb.FixedRotation;
+            bodyDef.gravityScale = rb.GravityScale;
+            // Store entity in user data for contact listeners later
+            bodyDef.userData = (void*)(uintptr_t)entity; 
+
+            rb.RuntimeBody = b2CreateBody(worldId, &bodyDef);
+
+            // Check for BoxCollider
+            if (registry.all_of<BoxColliderComponent>(entity)) {
+                auto& box = registry.get<BoxColliderComponent>(entity);
+                b2ShapeDef shapeDef = b2DefaultShapeDef();
+                shapeDef.density = box.Density;
+                shapeDef.friction = box.Friction;
+                shapeDef.restitution = box.Restitution;
+                
+                b2Polygon poly = b2MakeOffsetBox(box.Size.x / 2.0f / PPM, box.Size.y / 2.0f / PPM, 
+                                                 {box.Offset.x / PPM, box.Offset.y / PPM}, 0.0f);
+                box.RuntimeShape = b2CreatePolygonShape(rb.RuntimeBody, &shapeDef, &poly);
+            }
+            
+            // Check for CircleCollider
+            if (registry.all_of<CircleColliderComponent>(entity)) {
+                auto& circle = registry.get<CircleColliderComponent>(entity);
+                b2ShapeDef shapeDef = b2DefaultShapeDef();
+                shapeDef.density = circle.Density;
+                shapeDef.friction = circle.Friction;
+                shapeDef.restitution = circle.Restitution;
+                
+                b2Circle circ = {{circle.Offset.x / PPM, circle.Offset.y / PPM}, circle.Radius / PPM};
+                circle.RuntimeShape = b2CreateCircleShape(rb.RuntimeBody, &shapeDef, &circ);
+            }
+        } else if (rb.Type == RigidBodyComponent::BodyType::Kinematic) {
+            // If kinematic, sync Transform -> Box2D before step
+            b2Vec2 pos = { transform.Position.x / PPM, transform.Position.y / PPM };
+            b2Rot rot = b2MakeRot(transform.Rotation * (PI / 180.0f));
+            b2Body_SetTransform(rb.RuntimeBody, pos, rot);
+        }
+    }
+}
+
+void PhysicsSystem::PostStep(entt::registry& registry) {
+    ZoneScoped;
+    auto view = registry.view<TransformComponent, RigidBodyComponent>();
+    
+    for (auto entity : view) {
+        auto& transform = view.get<TransformComponent>(entity);
+        auto& rb = view.get<RigidBodyComponent>(entity);
+
+        if (b2Body_IsValid(rb.RuntimeBody) && rb.Type != RigidBodyComponent::BodyType::Static) {
+            b2Vec2 position = b2Body_GetPosition(rb.RuntimeBody);
+            b2Rot rotation = b2Body_GetRotation(rb.RuntimeBody);
             float angle = b2Rot_GetAngle(rotation);
 
-            // Assuming a 1:1 ratio for physics-to-pixels currently, 
-            // though typically a scalar (e.g. 30 pixels = 1 meter) is used.
-            transform.Position.x = position.x;
-            transform.Position.y = position.y;
+            transform.Position.x = position.x * PPM;
+            transform.Position.y = position.y * PPM;
             
             // Box2D uses radians, Raylib uses degrees for drawing.
             transform.Rotation = angle * (180.0f / PI);

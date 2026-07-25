@@ -5,6 +5,7 @@
 #include <physfs.h>
 #include <spdlog/spdlog.h>
 #include <box2d/box2d.h>
+#include "../Systems/PhysicsSystem.hpp"
 
 namespace brite {
 namespace framework {
@@ -148,8 +149,14 @@ void Application::Run() {
                 // [PRE-STEP ECS SYSTEMS] e.g. Input, Apply Gravity
                 m_currentScene->OnPreStep(m_fixedDt);
 
+                // Initialize / sync Box2D bodies
+                BRITE::PhysicsSystem::PreStep(m_currentScene->GetRegistry(), m_currentScene->GetPhysicsWorld());
+
                 // [BOX2D WORLD STEP]
                 b2World_Step(m_currentScene->GetPhysicsWorld(), m_fixedDt, 4);
+
+                // Sync Box2D bodies back to Transform
+                BRITE::PhysicsSystem::PostStep(m_currentScene->GetRegistry());
 
                 // [POST-STEP ECS SYSTEMS] e.g. Sync Transforms, Animations
                 m_currentScene->OnPostStep(m_fixedDt);
