@@ -5,6 +5,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Fix Box2D AVX segmentation faults in MinGW due to 16-byte stack alignment
+if(MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mstackrealign")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mstackrealign")
+endif()
+
 # Configure release asset packing
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_definitions(USE_PACKED_ASSETS)
