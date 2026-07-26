@@ -42,7 +42,7 @@ static char* LoadFileTextCustom(const char *fileName) {
 }
 
 Application::Application(const std::string& title, int width, int height)
-    : m_title(title), m_width(width), m_height(height), m_running(false), m_fixedDt(1.0 / 60.0) {
+    : m_title(title), m_width(width), m_height(height), m_running(false), m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
     InitSubsystems(title, width, height);
 }
 
@@ -108,6 +108,10 @@ void Application::SetFixedTimeStep(double dt) {
     m_fixedDt = dt;
 }
 
+void Application::SetTimeScale(double scale) {
+    m_timeScale = scale;
+}
+
 void Application::ChangeScene(std::shared_ptr<Scene> newScene) {
     m_nextScene = newScene;
 }
@@ -141,7 +145,7 @@ void Application::Run() {
         previousTime = currentTime;
 
         if (frameTime > 0.25) frameTime = 0.25; // Spiral of death prevention
-        accumulator += frameTime;
+        accumulator += (frameTime * m_timeScale);
 
         // Fixed timestep loop
         while (accumulator >= m_fixedDt) {

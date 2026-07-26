@@ -19,6 +19,9 @@ public:
     // Note: uses raylib's SetTargetFPS internally to unlock or lock framerate
     void SetTargetFPS(int fps);
     void SetFixedTimeStep(double dt);
+    
+    void SetTimeScale(double scale);
+    double GetTimeScale() const { return m_timeScale; }
 
     void ChangeScene(std::shared_ptr<Scene> newScene);
 
@@ -37,6 +40,7 @@ private:
     int m_height;
     bool m_running;
     double m_fixedDt;
+    double m_timeScale;
 
     std::shared_ptr<Scene> m_currentScene;
     std::shared_ptr<Scene> m_nextScene;
