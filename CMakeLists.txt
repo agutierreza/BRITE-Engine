@@ -116,6 +116,14 @@ add_library(soloud STATIC
 target_compile_definitions(soloud PRIVATE WITH_MINIAUDIO)
 target_include_directories(soloud PUBLIC ${soloud_SOURCE_DIR}/include)
 
+# GoogleTest
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
 # ---------------------------------------------------------
 # Core Engine Library
 # ---------------------------------------------------------
