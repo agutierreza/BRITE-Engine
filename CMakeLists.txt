@@ -132,6 +132,7 @@ add_library(${PROJECT_NAME} STATIC
     src/Core/InputManager.cpp
     src/Systems/RenderSystem.cpp
     src/Systems/PhysicsSystem.cpp
+    src/Systems/AoISystem.cpp
     src/Framework/Application.cpp
     src/Framework/Scene.cpp
 )

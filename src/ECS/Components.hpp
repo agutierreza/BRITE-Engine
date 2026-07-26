@@ -51,4 +51,11 @@ struct CircleColliderComponent {
     b2ShapeId RuntimeShape = b2_nullShapeId;
 };
 
+struct AoIComponent {
+    float RadiusPixels = 1000.0f; // Configurable Area of Interest radius in pixels
+    bool Active = true;
+};
+
+struct InAoITag {}; // Empty tag attached to entities currently inside the simulation AoI
+
 } // namespace BRITE
