@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 #include <box2d/box2d.h>
 #include "../Systems/PhysicsSystem.hpp"
+#include <algorithm>
 
 namespace brite {
 namespace framework {
@@ -95,6 +96,9 @@ void Application::ShutdownSubsystems() {
     // rlImGuiShutdown();
 
     m_soloud.deinit();
+    if (m_useInternalResolution) {
+        UnloadRenderTexture(m_framebuffer);
+    }
     CloseWindow();
     PHYSFS_deinit();
     spdlog::shutdown();
@@ -110,6 +114,15 @@ void Application::SetFixedTimeStep(double dt) {
 
 void Application::SetTimeScale(double scale) {
     m_timeScale = scale;
+}
+
+void Application::SetInternalResolution(int width, int height) {
+    if (m_useInternalResolution) {
+        UnloadRenderTexture(m_framebuffer);
+    }
+    m_internalResolution = { (float)width, (float)height };
+    m_framebuffer = LoadRenderTexture(width, height);
+    m_useInternalResolution = true;
 }
 
 void Application::ChangeScene(std::shared_ptr<Scene> newScene) {
@@ -169,15 +182,46 @@ void Application::Run() {
         }
 
         // Render loop
-        BeginDrawing();
-        ClearBackground(BLACK);
+        if (m_useInternalResolution) {
+            BeginTextureMode(m_framebuffer);
+            ClearBackground(BLACK);
 
-        if (m_currentScene) {
-            // [RENDER ECS SYSTEMS] e.g. Draw Sprites, Draw UI
-            m_currentScene->OnRender();
+            if (m_currentScene) {
+                m_currentScene->OnRender();
+            }
+
+            EndTextureMode();
+
+            BeginDrawing();
+            ClearBackground(BLACK);
+
+            int screenWidth = GetScreenWidth();
+            int screenHeight = GetScreenHeight();
+
+            float scale = std::min((float)screenWidth / m_internalResolution.x, 
+                                   (float)screenHeight / m_internalResolution.y);
+
+            Rectangle sourceRec = { 0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y };
+            Rectangle destRec = {
+                (screenWidth - m_internalResolution.x * scale) * 0.5f,
+                (screenHeight - m_internalResolution.y * scale) * 0.5f,
+                m_internalResolution.x * scale,
+                m_internalResolution.y * scale
+            };
+
+            DrawTexturePro(m_framebuffer.texture, sourceRec, destRec, { 0.0f, 0.0f }, 0.0f, WHITE);
+            EndDrawing();
+        } else {
+            BeginDrawing();
+            ClearBackground(BLACK);
+
+            if (m_currentScene) {
+                // [RENDER ECS SYSTEMS] e.g. Draw Sprites, Draw UI
+                m_currentScene->OnRender();
+            }
+
+            EndDrawing();
         }
-
-        EndDrawing();
     }
 }
 

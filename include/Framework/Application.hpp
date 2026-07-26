@@ -2,6 +2,7 @@
 #include <string>
 #include <memory>
 #include <soloud.h>
+#include <raylib.h>
 
 namespace brite {
 namespace framework {
@@ -22,6 +23,9 @@ public:
     
     void SetTimeScale(double scale);
     double GetTimeScale() const { return m_timeScale; }
+
+    void SetInternalResolution(int width, int height);
+    Vector2 GetInternalResolution() const { return m_internalResolution; }
 
     void ChangeScene(std::shared_ptr<Scene> newScene);
 
@@ -46,6 +50,11 @@ private:
     std::shared_ptr<Scene> m_nextScene;
 
     SoLoud::Soloud m_soloud;
+
+    // Internal Resolution Management
+    RenderTexture2D m_framebuffer = { 0 };
+    Vector2 m_internalResolution = { 0.0f, 0.0f };
+    bool m_useInternalResolution = false;
 };
 
 } // namespace framework

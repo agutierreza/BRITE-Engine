@@ -6,6 +6,11 @@
 namespace brite {
 namespace framework {
 
+// Helper to calculate the camera zoom required to fit a physical view height (in meters) onto the internal screen height.
+inline float CalculateZoomForViewHeight(float internalHeight, float targetViewHeightMeters, float ppm) {
+    return internalHeight / (targetViewHeightMeters * ppm);
+}
+
 // Framework-agnostic camera update function. 
 // Can be called by the game's ECS systems to update the main Raylib Camera2D.
 inline void UpdateCamera(Camera2D& camera, CameraFollowComponent& follow, Vector2 targetPos, Vector2 targetVelocity, float dt) {
