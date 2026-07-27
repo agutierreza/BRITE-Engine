@@ -3,11 +3,23 @@
 #include <memory>
 #include <soloud.h>
 #include <raylib.h>
+#include <vector>
 
 namespace brite {
 namespace framework {
 
 class Scene;
+
+enum class SceneActionType {
+    Push,
+    Pop,
+    Change
+};
+
+struct SceneAction {
+    SceneActionType type;
+    std::shared_ptr<Scene> scene;
+};
 
 class Application {
 public:
@@ -27,6 +39,8 @@ public:
     void SetInternalResolution(int width, int height);
     Vector2 GetInternalResolution() const { return m_internalResolution; }
 
+    void PushScene(std::shared_ptr<Scene> newScene);
+    void PopScene();
     void ChangeScene(std::shared_ptr<Scene> newScene);
 
     SoLoud::Soloud& GetAudio() { return m_soloud; }
@@ -46,8 +60,8 @@ private:
     double m_fixedDt;
     double m_timeScale;
 
-    std::shared_ptr<Scene> m_currentScene;
-    std::shared_ptr<Scene> m_nextScene;
+    std::vector<std::shared_ptr<Scene>> m_sceneStack;
+    std::vector<SceneAction> m_pendingActions;
 
     SoLoud::Soloud m_soloud;
 

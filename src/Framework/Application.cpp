@@ -90,8 +90,11 @@ void Application::ShutdownSubsystems() {
     spdlog::info("Shutting down BRITE Engine Framework...");
 
     // Clear active scenes to ensure destructors run before subsystems shutdown
-    m_currentScene.reset();
-    m_nextScene.reset();
+    for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
+        (*it)->OnShutdown();
+    }
+    m_sceneStack.clear();
+    m_pendingActions.clear();
 
     // rlImGuiShutdown();
 
@@ -125,8 +128,16 @@ void Application::SetInternalResolution(int width, int height) {
     m_useInternalResolution = true;
 }
 
+void Application::PushScene(std::shared_ptr<Scene> newScene) {
+    m_pendingActions.push_back({SceneActionType::Push, newScene});
+}
+
+void Application::PopScene() {
+    m_pendingActions.push_back({SceneActionType::Pop, nullptr});
+}
+
 void Application::ChangeScene(std::shared_ptr<Scene> newScene) {
-    m_nextScene = newScene;
+    m_pendingActions.push_back({SceneActionType::Change, newScene});
 }
 
 void Application::Quit() {
@@ -142,16 +153,29 @@ void Application::Run() {
 
     while (m_running && !WindowShouldClose()) {
         // Handle Scene Transitions
-        if (m_nextScene) {
-            if (m_currentScene) {
-                m_currentScene->OnShutdown();
-            }
-            m_currentScene = m_nextScene;
-            m_nextScene.reset();
-            if (m_currentScene) {
-                m_currentScene->OnStart();
+        for (auto& action : m_pendingActions) {
+            if (action.type == SceneActionType::Push) {
+                if (action.scene) {
+                    m_sceneStack.push_back(action.scene);
+                    action.scene->OnStart();
+                }
+            } else if (action.type == SceneActionType::Pop) {
+                if (!m_sceneStack.empty()) {
+                    m_sceneStack.back()->OnShutdown();
+                    m_sceneStack.pop_back();
+                }
+            } else if (action.type == SceneActionType::Change) {
+                for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
+                    (*it)->OnShutdown();
+                }
+                m_sceneStack.clear();
+                if (action.scene) {
+                    m_sceneStack.push_back(action.scene);
+                    action.scene->OnStart();
+                }
             }
         }
+        m_pendingActions.clear();
 
         double currentTime = GetTime();
         double frameTime = currentTime - previousTime;
@@ -162,32 +186,47 @@ void Application::Run() {
 
         // Fixed timestep loop
         while (accumulator >= m_fixedDt) {
-            if (m_currentScene) {
+            for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
+                auto& scene = *it;
                 // [PRE-STEP ECS SYSTEMS] e.g. Input, Apply Gravity
-                m_currentScene->OnPreStep(m_fixedDt);
+                scene->OnPreStep(m_fixedDt);
 
                 // Initialize / sync Box2D bodies
-                BRITE::PhysicsSystem::PreStep(m_currentScene->GetRegistry(), m_currentScene->GetPhysicsWorld());
+                BRITE::PhysicsSystem::PreStep(scene->GetRegistry(), scene->GetPhysicsWorld());
 
                 // [BOX2D WORLD STEP]
-                b2World_Step(m_currentScene->GetPhysicsWorld(), m_fixedDt, 4);
+                b2World_Step(scene->GetPhysicsWorld(), m_fixedDt, 4);
 
                 // Sync Box2D bodies back to Transform
-                BRITE::PhysicsSystem::PostStep(m_currentScene->GetRegistry());
+                BRITE::PhysicsSystem::PostStep(scene->GetRegistry());
 
                 // [POST-STEP ECS SYSTEMS] e.g. Sync Transforms, Animations
-                m_currentScene->OnPostStep(m_fixedDt);
+                scene->OnPostStep(m_fixedDt);
+
+                if (scene->BlocksUpdate()) {
+                    break;
+                }
             }
             accumulator -= m_fixedDt;
         }
+
+        // Determine scenes to render (top to bottom to find blocking, then render bottom to top)
+        std::vector<std::shared_ptr<Scene>> scenesToRender;
+        for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
+            scenesToRender.push_back(*it);
+            if ((*it)->BlocksRender()) {
+                break;
+            }
+        }
+        std::reverse(scenesToRender.begin(), scenesToRender.end());
 
         // Render loop
         if (m_useInternalResolution) {
             BeginTextureMode(m_framebuffer);
             ClearBackground(BLACK);
 
-            if (m_currentScene) {
-                m_currentScene->OnRender();
+            for (auto& scene : scenesToRender) {
+                scene->OnRender();
             }
 
             EndTextureMode();
@@ -215,9 +254,8 @@ void Application::Run() {
             BeginDrawing();
             ClearBackground(BLACK);
 
-            if (m_currentScene) {
-                // [RENDER ECS SYSTEMS] e.g. Draw Sprites, Draw UI
-                m_currentScene->OnRender();
+            for (auto& scene : scenesToRender) {
+                scene->OnRender();
             }
 
             EndDrawing();

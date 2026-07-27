@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(BRITEEngine CXX)
+project(BRITEEngine C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -112,6 +112,10 @@ add_library(soloud STATIC
     ${soloud_SOURCE_DIR}/src/core/soloud_queue.cpp
     ${soloud_SOURCE_DIR}/src/core/soloud_thread.cpp
     ${soloud_SOURCE_DIR}/src/backend/miniaudio/soloud_miniaudio.cpp
+    ${soloud_SOURCE_DIR}/src/audiosource/wav/soloud_wav.cpp
+    ${soloud_SOURCE_DIR}/src/audiosource/wav/soloud_wavstream.cpp
+    ${soloud_SOURCE_DIR}/src/audiosource/wav/dr_impl.cpp
+    ${soloud_SOURCE_DIR}/src/audiosource/wav/stb_vorbis.c
 )
 target_compile_definitions(soloud PRIVATE WITH_MINIAUDIO)
 target_include_directories(soloud PUBLIC ${soloud_SOURCE_DIR}/include)
