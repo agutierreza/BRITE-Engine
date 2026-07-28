@@ -1,15 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
 project(BRITEEngine C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Fix Box2D AVX segmentation faults in MinGW due to 16-byte stack alignment
-if(MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mstackrealign")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mstackrealign")
-endif()
+
 
 # Configure release asset packing
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -29,6 +28,10 @@ FetchContent_Declare(
 )
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
+# Disable Raylib's internal audio module to prevent dr_wav symbol collisions with SoLoud
+set(CUSTOMIZE_BUILD ON CACHE BOOL "Allow customizing raylib" FORCE)
+set(SUPPORT_MODULE_RAUDIO OFF CACHE BOOL "Disable raylib audio" FORCE)
+
 FetchContent_MakeAvailable(raylib)
 
 # EnTT
@@ -73,7 +76,7 @@ FetchContent_MakeAvailable(rlImGui)
 # spdlog
 FetchContent_Declare(
     spdlog
-    URL https://github.com/gabime/spdlog/archive/refs/tags/v1.13.0.tar.gz
+    URL https://github.com/gabime/spdlog/archive/refs/tags/v1.17.0.tar.gz
 )
 FetchContent_MakeAvailable(spdlog)
 
@@ -151,6 +154,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 
 # Link Libraries
+
 target_link_libraries(${PROJECT_NAME} PUBLIC 
     raylib 
     EnTT::EnTT 
@@ -161,3 +165,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     TracyClient
     soloud
 )
+
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PUBLIC ws2_32 dbghelp)
+endif()
