@@ -4,6 +4,7 @@
 #include <soloud.h>
 #include <raylib.h>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace brite {
 namespace framework {
@@ -23,7 +24,7 @@ struct SceneAction {
 
 class Application {
 public:
-    Application(const std::string& title = "BRITE Engine", int width = 1280, int height = 720);
+    Application(const std::string& title = "BRITE Engine", const std::string& orgName = "BRITE", const std::string& appName = "BRITE", int width = 1280, int height = 720);
     virtual ~Application();
 
     void Run();
@@ -43,6 +44,10 @@ public:
     void PopScene();
     void ChangeScene(std::shared_ptr<Scene> newScene);
 
+    nlohmann::json& GetGameState() { return m_gameState; }
+    bool SaveState(const std::string& filename);
+    bool LoadState(const std::string& filename);
+
     SoLoud::Soloud& GetAudio() { return m_soloud; }
 
 protected:
@@ -54,6 +59,8 @@ private:
     void ShutdownSubsystems();
 
     std::string m_title;
+    std::string m_orgName;
+    std::string m_appName;
     int m_width;
     int m_height;
     bool m_running;
@@ -62,6 +69,8 @@ private:
 
     std::vector<std::shared_ptr<Scene>> m_sceneStack;
     std::vector<SceneAction> m_pendingActions;
+
+    nlohmann::json m_gameState;
 
     SoLoud::Soloud m_soloud;
 

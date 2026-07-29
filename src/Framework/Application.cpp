@@ -42,8 +42,8 @@ static char* LoadFileTextCustom(const char *fileName) {
     return text;
 }
 
-Application::Application(const std::string& title, int width, int height)
-    : m_title(title), m_width(width), m_height(height), m_running(false), m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
+Application::Application(const std::string& title, const std::string& orgName, const std::string& appName, int width, int height)
+    : m_title(title), m_orgName(orgName), m_appName(appName), m_width(width), m_height(height), m_running(false), m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
     InitSubsystems(title, width, height);
 }
 
@@ -56,9 +56,20 @@ void Application::InitSubsystems(const std::string& title, int width, int height
     spdlog::set_level(spdlog::level::debug);
     spdlog::info("Starting BRITE Engine Framework...");
 
-    // 2. Initialize PhysicsFS (Passing "BRITE" as fallback argv0)
-    if (!PHYSFS_init("BRITE")) {
+    // 2. Initialize PhysicsFS
+    if (!PHYSFS_init(m_appName.c_str())) {
         spdlog::critical("PHYSFS: Failed to initialize! Error: {}", PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+    }
+
+    const char* prefDir = PHYSFS_getPrefDir(m_orgName.c_str(), m_appName.c_str());
+    if (prefDir) {
+        if (PHYSFS_setWriteDir(prefDir) == 0) {
+            spdlog::error("PHYSFS: Failed to set write dir to {}. Error: {}", prefDir, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+        } else {
+            spdlog::info("PHYSFS: Write dir set to {}", prefDir);
+        }
+    } else {
+        spdlog::error("PHYSFS: Failed to get pref dir for {} / {}", m_orgName, m_appName);
     }
 
     if (PHYSFS_mount("assets.pak", NULL, 1)) {
@@ -260,6 +271,66 @@ void Application::Run() {
 
             EndDrawing();
         }
+    }
+}
+
+bool Application::SaveState(const std::string& filename) {
+    try {
+        std::string serialized = m_gameState.dump(4);
+
+        PHYSFS_File* file = PHYSFS_openWrite(filename.c_str());
+        if (!file) {
+            spdlog::error("PHYSFS: Failed to open {} for writing. Error: {}", filename, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+            return false;
+        }
+
+        PHYSFS_sint64 written = PHYSFS_writeBytes(file, serialized.c_str(), serialized.length());
+        PHYSFS_close(file);
+
+        if (written != serialized.length()) {
+            spdlog::error("PHYSFS: Failed to write all bytes to {}", filename);
+            return false;
+        }
+        
+        spdlog::info("Saved state to {}", filename);
+        return true;
+    } catch (const std::exception& e) {
+        spdlog::error("Exception saving state: {}", e.what());
+        return false;
+    }
+}
+
+bool Application::LoadState(const std::string& filename) {
+    if (!PHYSFS_exists(filename.c_str())) {
+        spdlog::warn("Save file {} does not exist", filename);
+        return false;
+    }
+
+    PHYSFS_File* file = PHYSFS_openRead(filename.c_str());
+    if (!file) {
+        spdlog::error("PHYSFS: Failed to open {} for reading. Error: {}", filename, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+        return false;
+    }
+
+    PHYSFS_sint64 size = PHYSFS_fileLength(file);
+    std::string buffer;
+    buffer.resize(size);
+
+    PHYSFS_sint64 readBytes = PHYSFS_readBytes(file, buffer.data(), size);
+    PHYSFS_close(file);
+
+    if (readBytes != size) {
+        spdlog::error("PHYSFS: Failed to read all bytes from {}", filename);
+        return false;
+    }
+
+    try {
+        m_gameState = nlohmann::json::parse(buffer);
+        spdlog::info("Loaded state from {}", filename);
+        return true;
+    } catch (const std::exception& e) {
+        spdlog::error("Exception loading state: {}", e.what());
+        return false;
     }
 }
 
