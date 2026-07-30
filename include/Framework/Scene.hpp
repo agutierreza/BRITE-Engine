@@ -22,8 +22,9 @@ public:
     virtual ~Scene();
 
     virtual void OnStart() {}
-    virtual void OnPreStep(double dt) {}
-    virtual void OnPostStep(double dt) {}
+    virtual void OnInstantiation() {}
+    virtual void OnLogicStep(double dt) {}
+    virtual void OnRenderPrepStep(double dt) {}
     virtual void OnRender() {}
     virtual void OnShutdown() {}
 

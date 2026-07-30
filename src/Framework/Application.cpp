@@ -199,20 +199,24 @@ void Application::Run() {
         while (accumulator >= m_fixedDt) {
             for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
                 auto& scene = *it;
-                // [PRE-STEP ECS SYSTEMS] e.g. Input, Apply Gravity
-                scene->OnPreStep(m_fixedDt);
+                
+                // Phase 1: Instantiation (Entities are spawned/destroyed)
+                scene->OnInstantiation();
 
-                // Initialize / sync Box2D bodies
+                // Phase 2: Physics Initialization (Box2D bodies created)
                 BRITE::PhysicsSystem::PreStep(scene->GetRegistry(), scene->GetPhysicsWorld());
 
-                // [BOX2D WORLD STEP]
+                // Phase 3: Game Logic & Input
+                scene->OnLogicStep(m_fixedDt);
+
+                // Phase 4: Physics Step
                 b2World_Step(scene->GetPhysicsWorld(), m_fixedDt, 4);
 
                 // Sync Box2D bodies back to Transform
                 BRITE::PhysicsSystem::PostStep(scene->GetRegistry());
 
-                // [POST-STEP ECS SYSTEMS] e.g. Sync Transforms, Animations
-                scene->OnPostStep(m_fixedDt);
+                // Phase 5: Render Prep
+                scene->OnRenderPrepStep(m_fixedDt);
 
                 if (scene->BlocksUpdate()) {
                     break;

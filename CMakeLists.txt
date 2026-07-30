@@ -169,3 +169,17 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} PUBLIC ws2_32 dbghelp)
 endif()
+
+if(CMAKE_BUILD_TYPE MATCHES Debug)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        add_compile_options(-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address -fsanitize=undefined)
+    endif()
+endif()
+
+enable_testing()
+add_executable(BRITETests tests/SceneFuzzTest.cpp)
+target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
+
+include(GoogleTest)
+gtest_discover_tests(BRITETests)
