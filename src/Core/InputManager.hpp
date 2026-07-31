@@ -17,14 +17,10 @@ enum class KeyCode {
     // Add more as needed
 };
 
-enum class MouseButtonCode {
-    Left,
-    Right,
-    Middle
-};
+enum class MouseButtonCode { Left, Right, Middle };
 
 class InputManager {
-public:
+  public:
     static void Update(); // Call once per frame before systems
 
     static bool IsKeyPressed(KeyCode key);
@@ -34,7 +30,7 @@ public:
     static bool IsMouseButtonPressed(MouseButtonCode button);
     static bool IsMouseButtonDown(MouseButtonCode button);
     static bool IsMouseButtonReleased(MouseButtonCode button);
-    
+
     // Abstracting mouse position
     static float GetMouseX();
     static float GetMouseY();

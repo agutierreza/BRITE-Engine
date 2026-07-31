@@ -1,15 +1,15 @@
 #pragma once
-#include <entt/entt.hpp>
 #include <box2d/box2d.h>
-#include <raylib.h>
-#include <vector>
+#include <entt/entt.hpp>
 #include <memory>
+#include <raylib.h>
 #include <string>
+#include <vector>
 
 namespace SoLoud {
-    class Wav;
-    class WavStream;
-}
+class Wav;
+class WavStream;
+} // namespace SoLoud
 
 namespace brite {
 namespace framework {
@@ -17,7 +17,7 @@ namespace framework {
 class Application;
 
 class Scene {
-public:
+  public:
     Scene(Application* app);
     virtual ~Scene();
 
@@ -28,14 +28,24 @@ public:
     virtual void OnRender() {}
     virtual void OnShutdown() {}
 
-    virtual bool BlocksUpdate() const { return true; }
-    virtual bool BlocksRender() const { return true; }
+    virtual bool BlocksUpdate() const {
+        return true;
+    }
+    virtual bool BlocksRender() const {
+        return true;
+    }
 
-    entt::registry& GetRegistry() { return m_registry; }
-    b2WorldId GetPhysicsWorld() { return m_worldId; }
-    Application* GetApp() { return m_app; }
+    entt::registry& GetRegistry() {
+        return m_registry;
+    }
+    b2WorldId GetPhysicsWorld() {
+        return m_worldId;
+    }
+    Application* GetApp() {
+        return m_app;
+    }
 
-protected:
+  protected:
     Application* m_app;
     entt::registry m_registry;
     b2WorldId m_worldId;

@@ -23,14 +23,7 @@ void RenderSystem::Update(entt::registry& registry, Camera2D* camera) {
         dest.width *= transform.Scale.x;
         dest.height *= transform.Scale.y;
 
-        DrawTexturePro(
-            sprite.Texture,
-            sprite.SourceRect,
-            dest,
-            sprite.Origin,
-            transform.Rotation,
-            sprite.Tint
-        );
+        DrawTexturePro(sprite.Texture, sprite.SourceRect, dest, sprite.Origin, transform.Rotation, sprite.Tint);
     }
 
     if (camera) {

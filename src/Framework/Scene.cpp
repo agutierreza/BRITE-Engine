@@ -23,7 +23,7 @@ Scene::~Scene() {
     }
     m_trackedTextures.clear();
     m_trackedFonts.clear();
-    
+
     // SoLoud assets are cleaned up automatically via unique_ptr
     m_trackedWavs.clear();
     m_trackedWavStreams.clear();

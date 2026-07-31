@@ -1,49 +1,54 @@
 #include "Framework/Application.hpp"
 #include "Framework/Scene.hpp"
 
-#include <raylib.h>
-#include <physfs.h>
-#include <spdlog/spdlog.h>
-#include <box2d/box2d.h>
 #include "../Systems/PhysicsSystem.hpp"
 #include <algorithm>
+#include <box2d/box2d.h>
+#include <physfs.h>
+#include <raylib.h>
+#include <spdlog/spdlog.h>
 
 namespace brite {
 namespace framework {
 
 // --- PhysFS Raylib Callbacks ---
-static unsigned char* LoadFileDataCustom(const char *fileName, int *dataSize) {
+static unsigned char* LoadFileDataCustom(const char* fileName, int* dataSize) {
     if (!PHYSFS_exists(fileName)) {
         spdlog::error("PHYSFS: File not found: {}", fileName);
         return nullptr;
     }
-    PHYSFS_File *file = PHYSFS_openRead(fileName);
-    if (!file) return nullptr;
+    PHYSFS_File* file = PHYSFS_openRead(fileName);
+    if (!file)
+        return nullptr;
     PHYSFS_sint64 size = PHYSFS_fileLength(file);
-    unsigned char *data = (unsigned char *)MemAlloc(size);
+    unsigned char* data = (unsigned char*)MemAlloc(size);
     PHYSFS_readBytes(file, data, size);
     PHYSFS_close(file);
-    if (dataSize) *dataSize = (int)size;
+    if (dataSize)
+        *dataSize = (int)size;
     return data;
 }
 
-static char* LoadFileTextCustom(const char *fileName) {
+static char* LoadFileTextCustom(const char* fileName) {
     if (!PHYSFS_exists(fileName)) {
         spdlog::error("PHYSFS: File not found: {}", fileName);
         return nullptr;
     }
-    PHYSFS_File *file = PHYSFS_openRead(fileName);
-    if (!file) return nullptr;
+    PHYSFS_File* file = PHYSFS_openRead(fileName);
+    if (!file)
+        return nullptr;
     PHYSFS_sint64 size = PHYSFS_fileLength(file);
-    char *text = (char *)MemAlloc(size + 1);
+    char* text = (char*)MemAlloc(size + 1);
     PHYSFS_readBytes(file, text, size);
     text[size] = '\0';
     PHYSFS_close(file);
     return text;
 }
 
-Application::Application(const std::string& title, const std::string& orgName, const std::string& appName, int width, int height)
-    : m_title(title), m_orgName(orgName), m_appName(appName), m_width(width), m_height(height), m_running(false), m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
+Application::Application(const std::string& title, const std::string& orgName, const std::string& appName, int width,
+                         int height)
+    : m_title(title), m_orgName(orgName), m_appName(appName), m_width(width), m_height(height), m_running(false),
+      m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
     InitSubsystems(title, width, height);
 }
 
@@ -64,7 +69,8 @@ void Application::InitSubsystems(const std::string& title, int width, int height
     const char* prefDir = PHYSFS_getPrefDir(m_orgName.c_str(), m_appName.c_str());
     if (prefDir) {
         if (PHYSFS_setWriteDir(prefDir) == 0) {
-            spdlog::error("PHYSFS: Failed to set write dir to {}. Error: {}", prefDir, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+            spdlog::error("PHYSFS: Failed to set write dir to {}. Error: {}", prefDir,
+                          PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
         } else {
             spdlog::info("PHYSFS: Write dir set to {}", prefDir);
         }
@@ -89,10 +95,10 @@ void Application::InitSubsystems(const std::string& title, int width, int height
     // 4. Initialize Raylib window
     InitWindow(width, height, title.c_str());
     ::SetTargetFPS(144); // Global namespace to avoid name hiding
-    
+
     // 5. Initialize SoLoud
     m_soloud.init();
-    
+
     // ImGui initialization would go here when needed
     // rlImGuiSetup(true);
 }
@@ -134,7 +140,7 @@ void Application::SetInternalResolution(int width, int height) {
     if (m_useInternalResolution) {
         UnloadRenderTexture(m_framebuffer);
     }
-    m_internalResolution = { (float)width, (float)height };
+    m_internalResolution = {(float)width, (float)height};
     m_framebuffer = LoadRenderTexture(width, height);
     m_useInternalResolution = true;
 }
@@ -192,14 +198,15 @@ void Application::Run() {
         double frameTime = currentTime - previousTime;
         previousTime = currentTime;
 
-        if (frameTime > 0.25) frameTime = 0.25; // Spiral of death prevention
+        if (frameTime > 0.25)
+            frameTime = 0.25; // Spiral of death prevention
         accumulator += (frameTime * m_timeScale);
 
         // Fixed timestep loop
         while (accumulator >= m_fixedDt) {
             for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
                 auto& scene = *it;
-                
+
                 // Phase 1: Instantiation (Entities are spawned/destroyed)
                 scene->OnInstantiation();
 
@@ -225,7 +232,8 @@ void Application::Run() {
             accumulator -= m_fixedDt;
         }
 
-        // Determine scenes to render (top to bottom to find blocking, then render bottom to top)
+        // Determine scenes to render (top to bottom to find blocking, then render
+        // bottom to top)
         std::vector<std::shared_ptr<Scene>> scenesToRender;
         for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
             scenesToRender.push_back(*it);
@@ -252,18 +260,15 @@ void Application::Run() {
             int screenWidth = GetScreenWidth();
             int screenHeight = GetScreenHeight();
 
-            float scale = std::min((float)screenWidth / m_internalResolution.x, 
-                                   (float)screenHeight / m_internalResolution.y);
+            float scale =
+                std::min((float)screenWidth / m_internalResolution.x, (float)screenHeight / m_internalResolution.y);
 
-            Rectangle sourceRec = { 0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y };
-            Rectangle destRec = {
-                (screenWidth - m_internalResolution.x * scale) * 0.5f,
-                (screenHeight - m_internalResolution.y * scale) * 0.5f,
-                m_internalResolution.x * scale,
-                m_internalResolution.y * scale
-            };
+            Rectangle sourceRec = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y};
+            Rectangle destRec = {(screenWidth - m_internalResolution.x * scale) * 0.5f,
+                                 (screenHeight - m_internalResolution.y * scale) * 0.5f, m_internalResolution.x * scale,
+                                 m_internalResolution.y * scale};
 
-            DrawTexturePro(m_framebuffer.texture, sourceRec, destRec, { 0.0f, 0.0f }, 0.0f, WHITE);
+            DrawTexturePro(m_framebuffer.texture, sourceRec, destRec, {0.0f, 0.0f}, 0.0f, WHITE);
             EndDrawing();
         } else {
             BeginDrawing();
@@ -284,7 +289,8 @@ bool Application::SaveState(const std::string& filename) {
 
         PHYSFS_File* file = PHYSFS_openWrite(filename.c_str());
         if (!file) {
-            spdlog::error("PHYSFS: Failed to open {} for writing. Error: {}", filename, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+            spdlog::error("PHYSFS: Failed to open {} for writing. Error: {}", filename,
+                          PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
             return false;
         }
 
@@ -295,7 +301,7 @@ bool Application::SaveState(const std::string& filename) {
             spdlog::error("PHYSFS: Failed to write all bytes to {}", filename);
             return false;
         }
-        
+
         spdlog::info("Saved state to {}", filename);
         return true;
     } catch (const std::exception& e) {
@@ -312,7 +318,8 @@ bool Application::LoadState(const std::string& filename) {
 
     PHYSFS_File* file = PHYSFS_openRead(filename.c_str());
     if (!file) {
-        spdlog::error("PHYSFS: Failed to open {} for reading. Error: {}", filename, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+        spdlog::error("PHYSFS: Failed to open {} for reading. Error: {}", filename,
+                      PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
         return false;
     }
 
