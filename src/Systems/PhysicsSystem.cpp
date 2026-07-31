@@ -1,5 +1,6 @@
 #include "PhysicsSystem.hpp"
 #include "../ECS/Components.hpp"
+#include "../ECS/Events.hpp"
 #include <tracy/Tracy.hpp>
 
 namespace BRITE {
@@ -72,7 +73,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
     }
 }
 
-void PhysicsSystem::PostStep(entt::registry& registry) {
+void PhysicsSystem::PostStep(entt::registry& registry, b2WorldId worldId) {
     ZoneScoped;
     auto view = registry.view<TransformComponent, RigidBodyComponent>();
 
@@ -90,6 +91,42 @@ void PhysicsSystem::PostStep(entt::registry& registry) {
 
             // Box2D uses radians, Raylib uses degrees for drawing.
             transform.Rotation = angle * (180.0f / PI);
+        }
+    }
+
+    b2ContactEvents contactEvents = b2World_GetContactEvents(worldId);
+    if (contactEvents.beginCount > 0 || contactEvents.endCount > 0 || contactEvents.hitCount > 0) {
+        entt::dispatcher* dispatcher = registry.ctx().find<entt::dispatcher>();
+        if (!dispatcher) {
+            dispatcher = &registry.ctx().emplace<entt::dispatcher>();
+        }
+
+        for (int i = 0; i < contactEvents.beginCount; ++i) {
+            b2ContactBeginTouchEvent* event = contactEvents.beginEvents + i;
+            b2BodyId bodyA = b2Shape_GetBody(event->shapeIdA);
+            b2BodyId bodyB = b2Shape_GetBody(event->shapeIdB);
+            entt::entity entityA = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyA);
+            entt::entity entityB = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyB);
+            dispatcher->trigger<PhysicsCollisionEvent>(PhysicsCollisionEvent{entityA, entityB});
+        }
+
+        for (int i = 0; i < contactEvents.endCount; ++i) {
+            b2ContactEndTouchEvent* event = contactEvents.endEvents + i;
+            b2BodyId bodyA = b2Shape_GetBody(event->shapeIdA);
+            b2BodyId bodyB = b2Shape_GetBody(event->shapeIdB);
+            entt::entity entityA = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyA);
+            entt::entity entityB = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyB);
+            dispatcher->trigger<PhysicsCollisionEndEvent>(PhysicsCollisionEndEvent{entityA, entityB});
+        }
+
+        for (int i = 0; i < contactEvents.hitCount; ++i) {
+            b2ContactHitEvent* event = contactEvents.hitEvents + i;
+            b2BodyId bodyA = b2Shape_GetBody(event->shapeIdA);
+            b2BodyId bodyB = b2Shape_GetBody(event->shapeIdB);
+            entt::entity entityA = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyA);
+            entt::entity entityB = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyB);
+            dispatcher->trigger<PhysicsHitEvent>(
+                PhysicsHitEvent{entityA, entityB, event->approachSpeed, event->normal.x, event->normal.y});
         }
     }
 }

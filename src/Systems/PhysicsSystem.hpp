@@ -29,6 +29,6 @@ inline b2BodyId GetValidBody(const entt::registry& registry, entt::entity entity
 class PhysicsSystem {
   public:
     static void PreStep(entt::registry& registry, b2WorldId worldId);
-    static void PostStep(entt::registry& registry);
+    static void PostStep(entt::registry& registry, b2WorldId worldId);
 };
 } // namespace BRITE

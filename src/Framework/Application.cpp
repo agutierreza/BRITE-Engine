@@ -219,8 +219,8 @@ void Application::Run() {
                 // Phase 4: Physics Step
                 b2World_Step(scene->GetPhysicsWorld(), m_fixedDt, 4);
 
-                // Sync Box2D bodies back to Transform
-                BRITE::PhysicsSystem::PostStep(scene->GetRegistry());
+                // Sync Box2D bodies back to Transform and route collisions
+                BRITE::PhysicsSystem::PostStep(scene->GetRegistry(), scene->GetPhysicsWorld());
 
                 // Phase 5: Render Prep
                 scene->OnRenderPrepStep(m_fixedDt);
