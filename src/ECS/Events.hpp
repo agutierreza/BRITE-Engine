@@ -25,4 +25,16 @@ struct PhysicsHitEvent {
     float NormalY{0.0f};
 };
 
+/// @brief Fired when a physics body begins overlapping a sensor (trigger) shape.
+struct PhysicsSensorBeginEvent {
+    entt::entity SensorEntity{entt::null};
+    entt::entity VisitorEntity{entt::null};
+};
+
+/// @brief Fired when a physics body stops overlapping a sensor (trigger) shape.
+struct PhysicsSensorEndEvent {
+    entt::entity SensorEntity{entt::null};
+    entt::entity VisitorEntity{entt::null};
+};
+
 } // namespace BRITE

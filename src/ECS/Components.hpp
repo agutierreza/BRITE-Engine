@@ -35,6 +35,7 @@ struct BoxColliderComponent {
     float Density = 1.0f;
     float Friction = 0.3f;
     float Restitution = 0.0f;
+    bool IsSensor = false;
 
     // Internal handle
     b2ShapeId RuntimeShape = b2_nullShapeId;
@@ -46,6 +47,7 @@ struct CircleColliderComponent {
     float Density = 1.0f;
     float Friction = 0.3f;
     float Restitution = 0.0f;
+    bool IsSensor = false;
 
     // Internal handle
     b2ShapeId RuntimeShape = b2_nullShapeId;

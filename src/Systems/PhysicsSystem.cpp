@@ -47,6 +47,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
                 shapeDef.density = box.Density;
                 shapeDef.friction = box.Friction;
                 shapeDef.restitution = box.Restitution;
+                shapeDef.isSensor = box.IsSensor;
 
                 b2Polygon poly = b2MakeOffsetBox(box.Size.x / 2.0f / PPM, box.Size.y / 2.0f / PPM,
                                                  {box.Offset.x / PPM, box.Offset.y / PPM}, 0.0f);
@@ -60,6 +61,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
                 shapeDef.density = circle.Density;
                 shapeDef.friction = circle.Friction;
                 shapeDef.restitution = circle.Restitution;
+                shapeDef.isSensor = circle.IsSensor;
 
                 b2Circle circ = {{circle.Offset.x / PPM, circle.Offset.y / PPM}, circle.Radius / PPM};
                 circle.RuntimeShape = b2CreateCircleShape(rb.RuntimeBody, &shapeDef, &circ);
@@ -127,6 +129,32 @@ void PhysicsSystem::PostStep(entt::registry& registry, b2WorldId worldId) {
             entt::entity entityB = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyB);
             dispatcher->trigger<PhysicsHitEvent>(
                 PhysicsHitEvent{entityA, entityB, event->approachSpeed, event->normal.x, event->normal.y});
+        }
+    }
+
+    b2SensorEvents sensorEvents = b2World_GetSensorEvents(worldId);
+    if (sensorEvents.beginCount > 0 || sensorEvents.endCount > 0) {
+        entt::dispatcher* dispatcher = registry.ctx().find<entt::dispatcher>();
+        if (!dispatcher) {
+            dispatcher = &registry.ctx().emplace<entt::dispatcher>();
+        }
+
+        for (int i = 0; i < sensorEvents.beginCount; ++i) {
+            b2SensorBeginTouchEvent* event = sensorEvents.beginEvents + i;
+            b2BodyId bodyA = b2Shape_GetBody(event->sensorShapeId);
+            b2BodyId bodyB = b2Shape_GetBody(event->visitorShapeId);
+            entt::entity entityA = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyA);
+            entt::entity entityB = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyB);
+            dispatcher->trigger<PhysicsSensorBeginEvent>(PhysicsSensorBeginEvent{entityA, entityB});
+        }
+
+        for (int i = 0; i < sensorEvents.endCount; ++i) {
+            b2SensorEndTouchEvent* event = sensorEvents.endEvents + i;
+            b2BodyId bodyA = b2Shape_GetBody(event->sensorShapeId);
+            b2BodyId bodyB = b2Shape_GetBody(event->visitorShapeId);
+            entt::entity entityA = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyA);
+            entt::entity entityB = (entt::entity)(uintptr_t)b2Body_GetUserData(bodyB);
+            dispatcher->trigger<PhysicsSensorEndEvent>(PhysicsSensorEndEvent{entityA, entityB});
         }
     }
 }
