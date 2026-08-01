@@ -37,4 +37,11 @@ struct PhysicsSensorEndEvent {
     entt::entity VisitorEntity{entt::null};
 };
 
+/// @brief Fired when a JointComponent breaks due to exceeding its break force or structural integrity.
+struct PhysicsJointBreakEvent {
+    entt::entity EntityA{entt::null};
+    entt::entity EntityB{entt::null};
+    float FinalForceMagnitude{0.0f};
+};
+
 } // namespace BRITE

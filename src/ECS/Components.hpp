@@ -1,6 +1,9 @@
 #pragma once
 
+#include "PhysicsMaterial.hpp"
 #include <box2d/box2d.h>
+#include <entt/entt.hpp>
+#include <memory>
 #include <raylib.h>
 
 namespace BRITE {
@@ -32,9 +35,8 @@ struct RigidBodyComponent {
 struct BoxColliderComponent {
     Vector2 Size = {32.0f, 32.0f}; // In pixels
     Vector2 Offset = {0.0f, 0.0f};
-    float Density = 1.0f;
-    float Friction = 0.3f;
-    float Restitution = 0.0f;
+
+    std::shared_ptr<PhysicsMaterial> Material = std::make_shared<PhysicsMaterial>();
     bool IsSensor = false;
 
     // Internal handle
@@ -44,13 +46,42 @@ struct BoxColliderComponent {
 struct CircleColliderComponent {
     float Radius = 16.0f; // In pixels
     Vector2 Offset = {0.0f, 0.0f};
-    float Density = 1.0f;
-    float Friction = 0.3f;
-    float Restitution = 0.0f;
+
+    std::shared_ptr<PhysicsMaterial> Material = std::make_shared<PhysicsMaterial>();
     bool IsSensor = false;
 
     // Internal handle
     b2ShapeId RuntimeShape = b2_nullShapeId;
+};
+
+struct DistanceJointComponent {
+    entt::entity TargetEntity{entt::null}; // The other entity to connect to
+    bool CollideConnected = false;
+    float BreakForce = 0.0f; // The force that instantly snaps the joint. 0.0f means unbreakable.
+
+    float Length = 32.0f; // In pixels
+    bool EnableSpring = false;
+    float Hertz = 1.0f;
+    float DampingRatio = 0.5f;
+
+    // Internal Box2D Handle
+    b2JointId RuntimeJoint = b2_nullJointId;
+};
+
+struct RevoluteJointComponent {
+    entt::entity TargetEntity{entt::null}; // The other entity to connect to
+    bool CollideConnected = false;
+    float BreakForce = 0.0f; // The force that instantly snaps the joint. 0.0f means unbreakable.
+
+    Vector2 LocalAnchorA = {0.0f, 0.0f}; // In pixels
+    Vector2 LocalAnchorB = {0.0f, 0.0f}; // In pixels
+    float ReferenceAngle = 0.0f;         // In degrees
+    bool EnableLimit = false;
+    float LowerAngle = 0.0f; // In degrees
+    float UpperAngle = 0.0f; // In degrees
+
+    // Internal Box2D Handle
+    b2JointId RuntimeJoint = b2_nullJointId;
 };
 
 struct AoIComponent {

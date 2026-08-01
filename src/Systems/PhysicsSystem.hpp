@@ -30,5 +30,9 @@ class PhysicsSystem {
   public:
     static void PreStep(entt::registry& registry, b2WorldId worldId);
     static void PostStep(entt::registry& registry, b2WorldId worldId);
+    static void SetMaterial(entt::registry& registry, entt::entity entity, std::shared_ptr<PhysicsMaterial> material);
+
+    static float GetJointForce(entt::registry& registry, entt::entity entity);
+    static void DestroyJoint(entt::registry& registry, entt::entity entity);
 };
 } // namespace BRITE
