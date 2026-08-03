@@ -50,6 +50,15 @@ set(BOX2D_SAMPLES OFF CACHE BOOL "" FORCE)
 set(BOX2D_VALIDATION OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(box2d)
 
+# Box3D
+FetchContent_Declare(
+    box3d
+    URL https://github.com/erincatto/box3d/archive/refs/heads/main.zip
+)
+set(BOX3D_SAMPLES OFF CACHE BOOL "" FORCE)
+set(BOX3D_VALIDATION OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(box3d)
+
 # nlohmann_json
 FetchContent_Declare(
     nlohmann_json
@@ -159,6 +168,7 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     raylib 
     EnTT::EnTT 
     box2d 
+    box3d
     nlohmann_json::nlohmann_json 
     physfs-static
     spdlog::spdlog
