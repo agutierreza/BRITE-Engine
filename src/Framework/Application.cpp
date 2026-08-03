@@ -1,6 +1,7 @@
 #include "Framework/Application.hpp"
 #include "Framework/Scene.hpp"
 
+#include "../Core/InputManager.hpp"
 #include "../Systems/PhysicsSystem.hpp"
 #include <algorithm>
 #include <box2d/box2d.h>
@@ -194,6 +195,15 @@ void Application::Run() {
         }
         m_pendingActions.clear();
 
+        if (!m_sceneStack.empty()) {
+            auto& activeScene = m_sceneStack.back();
+            entt::dispatcher* dispatcher = activeScene->GetRegistry().ctx().find<entt::dispatcher>();
+            if (!dispatcher) {
+                dispatcher = &activeScene->GetRegistry().ctx().emplace<entt::dispatcher>();
+            }
+            BRITE::InputManager::PollVariable(*dispatcher);
+        }
+
         double currentTime = GetTime();
         double frameTime = currentTime - previousTime;
         previousTime = currentTime;
@@ -204,6 +214,14 @@ void Application::Run() {
 
         // Fixed timestep loop
         while (accumulator >= m_fixedDt) {
+            if (!m_sceneStack.empty()) {
+                auto& activeScene = m_sceneStack.back();
+                entt::dispatcher* dispatcher = activeScene->GetRegistry().ctx().find<entt::dispatcher>();
+                if (dispatcher) {
+                    BRITE::InputManager::FlushFixed(*dispatcher);
+                }
+            }
+
             for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
                 auto& scene = *it;
 
