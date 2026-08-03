@@ -33,7 +33,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
             }
 
             bodyDef.position = {transform.Position.x / PPM, transform.Position.y / PPM};
-            bodyDef.rotation = b2MakeRot(transform.Rotation * (PI / 180.0f));
+            bodyDef.rotation = b2MakeRot(QuaternionToEuler(transform.Rotation).z);
             bodyDef.fixedRotation = rb.FixedRotation;
             bodyDef.gravityScale = rb.GravityScale;
             // Store entity in user data for contact listeners later
@@ -70,7 +70,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
         } else if (rb.Type == RigidBodyComponent::BodyType::Kinematic) {
             // If kinematic, sync Transform -> Box2D before step
             b2Vec2 pos = {transform.Position.x / PPM, transform.Position.y / PPM};
-            b2Rot rot = b2MakeRot(transform.Rotation * (PI / 180.0f));
+            b2Rot rot = b2MakeRot(QuaternionToEuler(transform.Rotation).z);
             b2Body_SetTransform(rb.RuntimeBody, pos, rot);
         }
 
@@ -140,8 +140,8 @@ void PhysicsSystem::PostStep(entt::registry& registry, b2WorldId worldId) {
             transform.Position.x = position.x * PPM;
             transform.Position.y = position.y * PPM;
 
-            // Box2D uses radians, Raylib uses degrees for drawing.
-            transform.Rotation = angle * (180.0f / PI);
+            // Box2D uses radians, map to Z-axis quaternion rotation
+            transform.Rotation = QuaternionFromAxisAngle(Vector3{0.0f, 0.0f, 1.0f}, angle);
         }
     }
 

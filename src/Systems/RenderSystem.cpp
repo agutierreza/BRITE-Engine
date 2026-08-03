@@ -23,7 +23,10 @@ void RenderSystem::Update(entt::registry& registry, Camera2D* camera) {
         dest.width *= transform.Scale.x;
         dest.height *= transform.Scale.y;
 
-        DrawTexturePro(sprite.Texture, sprite.SourceRect, dest, sprite.Origin, transform.Rotation, sprite.Tint);
+        // Extract Z-axis rotation in degrees
+        float rotationDeg = QuaternionToEuler(transform.Rotation).z * RAD2DEG;
+
+        DrawTexturePro(sprite.Texture, sprite.SourceRect, dest, sprite.Origin, rotationDeg, sprite.Tint);
     }
 
     if (camera) {

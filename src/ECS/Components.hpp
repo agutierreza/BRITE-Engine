@@ -5,13 +5,25 @@
 #include <entt/entt.hpp>
 #include <memory>
 #include <raylib.h>
+#include <raymath.h>
 
 namespace BRITE {
 
 struct TransformComponent {
-    Vector2 Position = {0.0f, 0.0f};
-    float Rotation = 0.0f; // in degrees
-    Vector2 Scale = {1.0f, 1.0f};
+    Vector3 Position = {0.0f, 0.0f, 0.0f};
+    Quaternion Rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+    Vector3 Scale = {1.0f, 1.0f, 1.0f};
+
+    TransformComponent() = default;
+
+    TransformComponent(Vector3 pos, Quaternion rot = {0.0f, 0.0f, 0.0f, 1.0f}, Vector3 scale = {1.0f, 1.0f, 1.0f})
+        : Position(pos), Rotation(rot), Scale(scale) {}
+
+    // Backward compatibility constructor for 2D initialization
+    TransformComponent(Vector2 pos, float rotDeg = 0.0f, Vector2 scale = {1.0f, 1.0f})
+        : Position{pos.x, pos.y, 0.0f}, Scale{scale.x, scale.y, 1.0f} {
+        Rotation = QuaternionFromAxisAngle(Vector3{0.0f, 0.0f, 1.0f}, rotDeg * DEG2RAD);
+    }
 };
 
 struct SpriteComponent {
