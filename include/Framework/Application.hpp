@@ -11,6 +11,8 @@ namespace framework {
 
 class Scene;
 
+enum class PhysicsEngineType { Box2D, Box3D };
+
 enum class SceneActionType { Push, Pop, Change };
 
 struct SceneAction {
@@ -55,6 +57,14 @@ class Application {
         return m_soloud;
     }
 
+    void SetPhysicsEngine(PhysicsEngineType type) {
+        m_physicsEngine = type;
+    }
+
+    PhysicsEngineType GetPhysicsEngine() const {
+        return m_physicsEngine;
+    }
+
   protected:
     // Override this to set the initial scene and load global assets
     virtual void OnStart() {}
@@ -78,6 +88,8 @@ class Application {
     nlohmann::json m_gameState;
 
     SoLoud::Soloud m_soloud;
+
+    PhysicsEngineType m_physicsEngine = PhysicsEngineType::Box2D;
 
     // Internal Resolution Management
     RenderTexture2D m_framebuffer = {0};

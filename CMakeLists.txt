@@ -149,6 +149,7 @@ add_library(${PROJECT_NAME} STATIC
     src/Systems/RenderSystem.cpp
     src/Systems/PhysicsSystem.cpp
     src/Systems/Box2DBackend.cpp
+    src/Systems/Box3DBackend.cpp
     src/Systems/AoISystem.cpp
     src/Framework/Application.cpp
     src/Framework/Scene.cpp

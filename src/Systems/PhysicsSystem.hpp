@@ -1,5 +1,6 @@
 #pragma once
 #include "IPhysicsBackend.hpp"
+#include <Framework/Application.hpp>
 #include <entt/entt.hpp>
 #include <memory>
 
@@ -10,7 +11,8 @@ class PhysicsSystem {
     PhysicsSystem();
     ~PhysicsSystem();
 
-    void Init(entt::registry& registry);
+    void Init(entt::registry& registry,
+              brite::framework::PhysicsEngineType backendType = brite::framework::PhysicsEngineType::Box2D);
     void PreStep(entt::registry& registry);
     void Step(entt::registry& registry, float dt);
 

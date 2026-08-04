@@ -1,15 +1,20 @@
 #include "PhysicsSystem.hpp"
 #include "Box2DBackend.hpp"
+#include "Box3DBackend.hpp"
 
 namespace BRITE {
 
-PhysicsSystem::PhysicsSystem() {
-    m_backend = std::make_unique<Box2DBackend>();
-}
+PhysicsSystem::PhysicsSystem() {}
 
 PhysicsSystem::~PhysicsSystem() = default;
 
-void PhysicsSystem::Init(entt::registry& registry) {
+void PhysicsSystem::Init(entt::registry& registry, brite::framework::PhysicsEngineType backendType) {
+    if (backendType == brite::framework::PhysicsEngineType::Box2D) {
+        m_backend = std::make_unique<Box2DBackend>();
+    } else {
+        m_backend = std::make_unique<Box3DBackend>();
+    }
+
     if (m_backend) {
         m_backend->Init(registry);
     }

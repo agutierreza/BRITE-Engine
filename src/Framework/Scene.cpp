@@ -6,7 +6,7 @@ namespace brite {
 namespace framework {
 
 Scene::Scene(Application* app) : m_app(app) {
-    m_physicsSystem.Init(m_registry);
+    m_physicsSystem.Init(m_registry, m_app->GetPhysicsEngine());
 }
 
 Scene::~Scene() {

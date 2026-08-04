@@ -99,6 +99,60 @@ struct RevoluteJointComponent {
     PhysicsHandle RuntimeJoint = NullPhysicsHandle;
 };
 
+struct BoxCollider3DComponent {
+    Vector3 Size = {32.0f, 32.0f, 32.0f}; // In pixels
+    Vector3 Offset = {0.0f, 0.0f, 0.0f};
+
+    std::shared_ptr<PhysicsMaterial> Material = std::make_shared<PhysicsMaterial>();
+    bool IsSensor = false;
+
+    // Internal handle
+    PhysicsHandle RuntimeShape = NullPhysicsHandle;
+};
+
+struct SphereColliderComponent {
+    float Radius = 16.0f; // In pixels
+    Vector3 Offset = {0.0f, 0.0f, 0.0f};
+
+    std::shared_ptr<PhysicsMaterial> Material = std::make_shared<PhysicsMaterial>();
+    bool IsSensor = false;
+
+    // Internal handle
+    PhysicsHandle RuntimeShape = NullPhysicsHandle;
+};
+
+struct DistanceJoint3DComponent {
+    entt::entity TargetEntity{entt::null}; // The other entity to connect to
+    bool CollideConnected = false;
+    float BreakForce = 0.0f; // The force that instantly snaps the joint. 0.0f means unbreakable.
+
+    float Length = 32.0f; // In pixels
+    bool EnableSpring = false;
+    float Hertz = 1.0f;
+    float DampingRatio = 0.5f;
+
+    // Internal Box3D Handle
+    PhysicsHandle RuntimeJoint = NullPhysicsHandle;
+};
+
+struct RevoluteJoint3DComponent {
+    entt::entity TargetEntity{entt::null}; // The other entity to connect to
+    bool CollideConnected = false;
+    float BreakForce = 0.0f; // The force that instantly snaps the joint. 0.0f means unbreakable.
+
+    Vector3 LocalAnchorA = {0.0f, 0.0f, 0.0f}; // In pixels
+    Vector3 LocalAnchorB = {0.0f, 0.0f, 0.0f}; // In pixels
+    Vector3 Axis = {0.0f, 0.0f, 1.0f};         // The rotation axis
+
+    float ReferenceAngle = 0.0f; // In degrees
+    bool EnableLimit = false;
+    float LowerAngle = 0.0f; // In degrees
+    float UpperAngle = 0.0f; // In degrees
+
+    // Internal Box3D Handle
+    PhysicsHandle RuntimeJoint = NullPhysicsHandle;
+};
+
 struct AoIComponent {
     float RadiusPixels = 1000.0f; // Configurable Area of Interest radius in pixels
     bool Active = true;
