@@ -1,13 +1,16 @@
 #pragma once
 
 #include "PhysicsMaterial.hpp"
-#include <box2d/box2d.h>
+#include <cstdint>
 #include <entt/entt.hpp>
 #include <memory>
 #include <raylib.h>
 #include <raymath.h>
 
 namespace BRITE {
+
+using PhysicsHandle = uint64_t;
+constexpr PhysicsHandle NullPhysicsHandle = 0;
 
 struct TransformComponent {
     Vector3 Position = {0.0f, 0.0f, 0.0f};
@@ -41,7 +44,7 @@ struct RigidBodyComponent {
     float GravityScale = 1.0f;
 
     // Internal handle managed by PhysicsSystem
-    b2BodyId RuntimeBody = b2_nullBodyId;
+    PhysicsHandle RuntimeBody = NullPhysicsHandle;
 };
 
 struct BoxColliderComponent {
@@ -52,7 +55,7 @@ struct BoxColliderComponent {
     bool IsSensor = false;
 
     // Internal handle
-    b2ShapeId RuntimeShape = b2_nullShapeId;
+    PhysicsHandle RuntimeShape = NullPhysicsHandle;
 };
 
 struct CircleColliderComponent {
@@ -63,7 +66,7 @@ struct CircleColliderComponent {
     bool IsSensor = false;
 
     // Internal handle
-    b2ShapeId RuntimeShape = b2_nullShapeId;
+    PhysicsHandle RuntimeShape = NullPhysicsHandle;
 };
 
 struct DistanceJointComponent {
@@ -77,7 +80,7 @@ struct DistanceJointComponent {
     float DampingRatio = 0.5f;
 
     // Internal Box2D Handle
-    b2JointId RuntimeJoint = b2_nullJointId;
+    PhysicsHandle RuntimeJoint = NullPhysicsHandle;
 };
 
 struct RevoluteJointComponent {
@@ -93,7 +96,7 @@ struct RevoluteJointComponent {
     float UpperAngle = 0.0f; // In degrees
 
     // Internal Box2D Handle
-    b2JointId RuntimeJoint = b2_nullJointId;
+    PhysicsHandle RuntimeJoint = NullPhysicsHandle;
 };
 
 struct AoIComponent {

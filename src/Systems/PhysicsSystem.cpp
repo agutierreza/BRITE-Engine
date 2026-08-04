@@ -16,7 +16,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
         auto& transform = view.get<TransformComponent>(entity);
         auto& rb = view.get<RigidBodyComponent>(entity);
 
-        if (!b2Body_IsValid(rb.RuntimeBody)) {
+        if (!b2Body_IsValid(GetB2Body(rb.RuntimeBody))) {
             // Create the body
             b2BodyDef bodyDef = b2DefaultBodyDef();
 
@@ -39,7 +39,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
             // Store entity in user data for contact listeners later
             bodyDef.userData = (void*)(uintptr_t)entity;
 
-            rb.RuntimeBody = b2CreateBody(worldId, &bodyDef);
+            rb.RuntimeBody = ToHandle(b2CreateBody(worldId, &bodyDef));
 
             // Check for BoxCollider
             if (registry.all_of<BoxColliderComponent>(entity)) {
@@ -52,7 +52,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
 
                 b2Polygon poly = b2MakeOffsetBox(box.Size.x / 2.0f / PPM, box.Size.y / 2.0f / PPM,
                                                  {box.Offset.x / PPM, box.Offset.y / PPM}, 0.0f);
-                box.RuntimeShape = b2CreatePolygonShape(rb.RuntimeBody, &shapeDef, &poly);
+                box.RuntimeShape = ToHandle(b2CreatePolygonShape(GetB2Body(rb.RuntimeBody), &shapeDef, &poly));
             }
 
             // Check for CircleCollider
@@ -65,25 +65,25 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
                 shapeDef.isSensor = circle.IsSensor;
 
                 b2Circle circ = {{circle.Offset.x / PPM, circle.Offset.y / PPM}, circle.Radius / PPM};
-                circle.RuntimeShape = b2CreateCircleShape(rb.RuntimeBody, &shapeDef, &circ);
+                circle.RuntimeShape = ToHandle(b2CreateCircleShape(GetB2Body(rb.RuntimeBody), &shapeDef, &circ));
             }
         } else if (rb.Type == RigidBodyComponent::BodyType::Kinematic) {
             // If kinematic, sync Transform -> Box2D before step
             b2Vec2 pos = {transform.Position.x / PPM, transform.Position.y / PPM};
             b2Rot rot = b2MakeRot(QuaternionToEuler(transform.Rotation).z);
-            b2Body_SetTransform(rb.RuntimeBody, pos, rot);
+            b2Body_SetTransform(GetB2Body(rb.RuntimeBody), pos, rot);
         }
 
         // Check for DistanceJointComponent
         if (registry.all_of<DistanceJointComponent>(entity)) {
             auto& joint = registry.get<DistanceJointComponent>(entity);
-            if (!b2Joint_IsValid(joint.RuntimeJoint) && registry.valid(joint.TargetEntity)) {
+            if (!b2Joint_IsValid(GetB2Joint(joint.RuntimeJoint)) && registry.valid(joint.TargetEntity)) {
                 if (registry.all_of<RigidBodyComponent>(joint.TargetEntity)) {
                     auto& targetRb = registry.get<RigidBodyComponent>(joint.TargetEntity);
-                    if (b2Body_IsValid(targetRb.RuntimeBody)) {
+                    if (b2Body_IsValid(GetB2Body(targetRb.RuntimeBody))) {
                         b2DistanceJointDef jointDef = b2DefaultDistanceJointDef();
-                        jointDef.bodyIdA = rb.RuntimeBody;
-                        jointDef.bodyIdB = targetRb.RuntimeBody;
+                        jointDef.bodyIdA = GetB2Body(rb.RuntimeBody);
+                        jointDef.bodyIdB = GetB2Body(targetRb.RuntimeBody);
                         jointDef.localAnchorA = {0.0f, 0.0f};
                         jointDef.localAnchorB = {0.0f, 0.0f};
                         jointDef.length = joint.Length / PPM;
@@ -93,7 +93,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
                             jointDef.hertz = joint.Hertz;
                             jointDef.dampingRatio = joint.DampingRatio;
                         }
-                        joint.RuntimeJoint = b2CreateDistanceJoint(worldId, &jointDef);
+                        joint.RuntimeJoint = ToHandle(b2CreateDistanceJoint(worldId, &jointDef));
                     }
                 }
             }
@@ -102,13 +102,13 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
         // Check for RevoluteJointComponent
         if (registry.all_of<RevoluteJointComponent>(entity)) {
             auto& joint = registry.get<RevoluteJointComponent>(entity);
-            if (!b2Joint_IsValid(joint.RuntimeJoint) && registry.valid(joint.TargetEntity)) {
+            if (!b2Joint_IsValid(GetB2Joint(joint.RuntimeJoint)) && registry.valid(joint.TargetEntity)) {
                 if (registry.all_of<RigidBodyComponent>(joint.TargetEntity)) {
                     auto& targetRb = registry.get<RigidBodyComponent>(joint.TargetEntity);
-                    if (b2Body_IsValid(targetRb.RuntimeBody)) {
+                    if (b2Body_IsValid(GetB2Body(targetRb.RuntimeBody))) {
                         b2RevoluteJointDef jointDef = b2DefaultRevoluteJointDef();
-                        jointDef.bodyIdA = rb.RuntimeBody;
-                        jointDef.bodyIdB = targetRb.RuntimeBody;
+                        jointDef.bodyIdA = GetB2Body(rb.RuntimeBody);
+                        jointDef.bodyIdB = GetB2Body(targetRb.RuntimeBody);
                         jointDef.localAnchorA = {joint.LocalAnchorA.x / PPM, joint.LocalAnchorA.y / PPM};
                         jointDef.localAnchorB = {joint.LocalAnchorB.x / PPM, joint.LocalAnchorB.y / PPM};
                         jointDef.referenceAngle = joint.ReferenceAngle * (PI / 180.0f);
@@ -116,7 +116,7 @@ void PhysicsSystem::PreStep(entt::registry& registry, b2WorldId worldId) {
                         jointDef.lowerAngle = joint.LowerAngle * (PI / 180.0f);
                         jointDef.upperAngle = joint.UpperAngle * (PI / 180.0f);
                         jointDef.collideConnected = joint.CollideConnected;
-                        joint.RuntimeJoint = b2CreateRevoluteJoint(worldId, &jointDef);
+                        joint.RuntimeJoint = ToHandle(b2CreateRevoluteJoint(worldId, &jointDef));
                     }
                 }
             }
@@ -132,9 +132,9 @@ void PhysicsSystem::PostStep(entt::registry& registry, b2WorldId worldId) {
         auto& transform = view.get<TransformComponent>(entity);
         auto& rb = view.get<RigidBodyComponent>(entity);
 
-        if (b2Body_IsValid(rb.RuntimeBody) && rb.Type != RigidBodyComponent::BodyType::Static) {
-            b2Vec2 position = b2Body_GetPosition(rb.RuntimeBody);
-            b2Rot rotation = b2Body_GetRotation(rb.RuntimeBody);
+        if (b2Body_IsValid(GetB2Body(rb.RuntimeBody)) && rb.Type != RigidBodyComponent::BodyType::Static) {
+            b2Vec2 position = b2Body_GetPosition(GetB2Body(rb.RuntimeBody));
+            b2Rot rotation = b2Body_GetRotation(GetB2Body(rb.RuntimeBody));
             float angle = b2Rot_GetAngle(rotation);
 
             transform.Position.x = position.x * PPM;
@@ -208,12 +208,12 @@ void PhysicsSystem::PostStep(entt::registry& registry, b2WorldId worldId) {
     }
 
     auto checkJointBreak = [&registry](auto entity, auto& joint) {
-        if (joint.BreakForce > 0.0f && b2Joint_IsValid(joint.RuntimeJoint)) {
-            b2Vec2 force = b2Joint_GetConstraintForce(joint.RuntimeJoint);
+        if (joint.BreakForce > 0.0f && b2Joint_IsValid(GetB2Joint(joint.RuntimeJoint))) {
+            b2Vec2 force = b2Joint_GetConstraintForce(GetB2Joint(joint.RuntimeJoint));
             float magnitude = b2Length(force);
             if (magnitude > joint.BreakForce) {
-                b2DestroyJoint(joint.RuntimeJoint);
-                joint.RuntimeJoint = b2_nullJointId;
+                b2DestroyJoint(GetB2Joint(joint.RuntimeJoint));
+                joint.RuntimeJoint = NullPhysicsHandle;
 
                 entt::dispatcher* dispatcher = registry.ctx().find<entt::dispatcher>();
                 if (dispatcher) {
@@ -248,19 +248,19 @@ void PhysicsSystem::SetMaterial(entt::registry& registry, entt::entity entity,
     if (registry.all_of<BoxColliderComponent>(entity)) {
         auto& box = registry.get<BoxColliderComponent>(entity);
         box.Material = material;
-        if (b2Shape_IsValid(box.RuntimeShape)) {
-            b2Shape_SetDensity(box.RuntimeShape, material->Density);
-            b2Shape_SetFriction(box.RuntimeShape, material->Friction);
-            b2Shape_SetRestitution(box.RuntimeShape, material->Restitution);
+        if (b2Shape_IsValid(GetB2Shape(box.RuntimeShape))) {
+            b2Shape_SetDensity(GetB2Shape(box.RuntimeShape), material->Density);
+            b2Shape_SetFriction(GetB2Shape(box.RuntimeShape), material->Friction);
+            b2Shape_SetRestitution(GetB2Shape(box.RuntimeShape), material->Restitution);
         }
     }
     if (registry.all_of<CircleColliderComponent>(entity)) {
         auto& circle = registry.get<CircleColliderComponent>(entity);
         circle.Material = material;
-        if (b2Shape_IsValid(circle.RuntimeShape)) {
-            b2Shape_SetDensity(circle.RuntimeShape, material->Density);
-            b2Shape_SetFriction(circle.RuntimeShape, material->Friction);
-            b2Shape_SetRestitution(circle.RuntimeShape, material->Restitution);
+        if (b2Shape_IsValid(GetB2Shape(circle.RuntimeShape))) {
+            b2Shape_SetDensity(GetB2Shape(circle.RuntimeShape), material->Density);
+            b2Shape_SetFriction(GetB2Shape(circle.RuntimeShape), material->Friction);
+            b2Shape_SetRestitution(GetB2Shape(circle.RuntimeShape), material->Restitution);
         }
     }
 }
@@ -268,15 +268,15 @@ void PhysicsSystem::SetMaterial(entt::registry& registry, entt::entity entity,
 float PhysicsSystem::GetJointForce(entt::registry& registry, entt::entity entity) {
     if (registry.all_of<DistanceJointComponent>(entity)) {
         auto& joint = registry.get<DistanceJointComponent>(entity);
-        if (b2Joint_IsValid(joint.RuntimeJoint)) {
-            b2Vec2 force = b2Joint_GetConstraintForce(joint.RuntimeJoint);
+        if (b2Joint_IsValid(GetB2Joint(joint.RuntimeJoint))) {
+            b2Vec2 force = b2Joint_GetConstraintForce(GetB2Joint(joint.RuntimeJoint));
             return b2Length(force);
         }
     }
     if (registry.all_of<RevoluteJointComponent>(entity)) {
         auto& joint = registry.get<RevoluteJointComponent>(entity);
-        if (b2Joint_IsValid(joint.RuntimeJoint)) {
-            b2Vec2 force = b2Joint_GetConstraintForce(joint.RuntimeJoint);
+        if (b2Joint_IsValid(GetB2Joint(joint.RuntimeJoint))) {
+            b2Vec2 force = b2Joint_GetConstraintForce(GetB2Joint(joint.RuntimeJoint));
             return b2Length(force);
         }
     }
@@ -286,15 +286,15 @@ float PhysicsSystem::GetJointForce(entt::registry& registry, entt::entity entity
 void PhysicsSystem::DestroyJoint(entt::registry& registry, entt::entity entity) {
     if (registry.all_of<DistanceJointComponent>(entity)) {
         auto& joint = registry.get<DistanceJointComponent>(entity);
-        if (b2Joint_IsValid(joint.RuntimeJoint)) {
-            b2DestroyJoint(joint.RuntimeJoint);
+        if (b2Joint_IsValid(GetB2Joint(joint.RuntimeJoint))) {
+            b2DestroyJoint(GetB2Joint(joint.RuntimeJoint));
         }
         registry.remove<DistanceJointComponent>(entity);
     }
     if (registry.all_of<RevoluteJointComponent>(entity)) {
         auto& joint = registry.get<RevoluteJointComponent>(entity);
-        if (b2Joint_IsValid(joint.RuntimeJoint)) {
-            b2DestroyJoint(joint.RuntimeJoint);
+        if (b2Joint_IsValid(GetB2Joint(joint.RuntimeJoint))) {
+            b2DestroyJoint(GetB2Joint(joint.RuntimeJoint));
         }
         registry.remove<RevoluteJointComponent>(entity);
     }

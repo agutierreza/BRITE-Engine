@@ -1,5 +1,6 @@
 #include "AoISystem.hpp"
 #include <ECS/Components.hpp>
+#include <Systems/PhysicsSystem.hpp>
 #include <box2d/box2d.h>
 #include <cmath>
 
@@ -37,16 +38,18 @@ void AoISystem::Update(entt::registry& registry, const AoIConfig& config) {
             registry.emplace<InAoITag>(entity);
             if (registry.all_of<RigidBodyComponent>(entity)) {
                 auto& rb = registry.get<RigidBodyComponent>(entity);
-                if (b2Body_IsValid(rb.RuntimeBody) && !b2Body_IsEnabled(rb.RuntimeBody)) {
-                    b2Body_Enable(rb.RuntimeBody);
+                b2BodyId b2Body = PhysicsSystem::GetB2Body(rb.RuntimeBody);
+                if (b2Body_IsValid(b2Body) && !b2Body_IsEnabled(b2Body)) {
+                    b2Body_Enable(b2Body);
                 }
             }
         } else if (!inAoI && currentlyHasTag) {
             registry.remove<InAoITag>(entity);
             if (registry.all_of<RigidBodyComponent>(entity)) {
                 auto& rb = registry.get<RigidBodyComponent>(entity);
-                if (b2Body_IsValid(rb.RuntimeBody) && b2Body_IsEnabled(rb.RuntimeBody)) {
-                    b2Body_Disable(rb.RuntimeBody);
+                b2BodyId b2Body = PhysicsSystem::GetB2Body(rb.RuntimeBody);
+                if (b2Body_IsValid(b2Body) && b2Body_IsEnabled(b2Body)) {
+                    b2Body_Disable(b2Body);
                 }
             }
         }
