@@ -1,5 +1,5 @@
 #pragma once
-#include <box2d/box2d.h>
+#include <Systems/PhysicsSystem.hpp>
 #include <entt/entt.hpp>
 #include <memory>
 #include <raylib.h>
@@ -38,8 +38,8 @@ class Scene {
     entt::registry& GetRegistry() {
         return m_registry;
     }
-    b2WorldId GetPhysicsWorld() {
-        return m_worldId;
+    BRITE::PhysicsSystem& GetPhysicsSystem() {
+        return m_physicsSystem;
     }
     Application* GetApp() {
         return m_app;
@@ -48,7 +48,7 @@ class Scene {
   protected:
     Application* m_app;
     entt::registry m_registry;
-    b2WorldId m_worldId;
+    BRITE::PhysicsSystem m_physicsSystem;
 
     // Automated Asset Tracking
     std::vector<Texture2D> m_trackedTextures;
