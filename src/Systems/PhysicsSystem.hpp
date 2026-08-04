@@ -1,38 +1,32 @@
 #pragma once
-
-#include <ECS/Components.hpp>
-#include <box2d/box2d.h>
-#include <cassert>
+#include "IPhysicsBackend.hpp"
+#include <Framework/Application.hpp>
 #include <entt/entt.hpp>
+#include <memory>
 
 namespace BRITE {
 
-inline b2BodyId GetValidBody(const entt::registry& registry, entt::entity entity) {
-    if (!registry.valid(entity) || !registry.all_of<RigidBodyComponent>(entity)) {
-#ifndef NDEBUG
-        assert(false && "Entity is invalid or missing RigidBodyComponent");
-#endif
-        return b2_nullBodyId;
-    }
-
-    auto& rb = registry.get<RigidBodyComponent>(entity);
-    if (!b2Body_IsValid(rb.RuntimeBody)) {
-#ifndef NDEBUG
-        assert(false && "Box2D body is uninitialized or invalid!");
-#endif
-        return b2_nullBodyId;
-    }
-
-    return rb.RuntimeBody;
-}
-
 class PhysicsSystem {
   public:
-    static void PreStep(entt::registry& registry, b2WorldId worldId);
-    static void PostStep(entt::registry& registry, b2WorldId worldId);
-    static void SetMaterial(entt::registry& registry, entt::entity entity, std::shared_ptr<PhysicsMaterial> material);
+    PhysicsSystem();
+    ~PhysicsSystem();
 
-    static float GetJointForce(entt::registry& registry, entt::entity entity);
-    static void DestroyJoint(entt::registry& registry, entt::entity entity);
+    void Init(entt::registry& registry,
+              brite::framework::PhysicsEngineType backendType = brite::framework::PhysicsEngineType::Box2D);
+    void PreStep(entt::registry& registry);
+    void Step(entt::registry& registry, float dt);
+
+    void SetMaterial(entt::registry& registry, entt::entity entity, std::shared_ptr<PhysicsMaterial> material);
+
+    float GetJointForce(entt::registry& registry, entt::entity entity);
+    void DestroyJoint(entt::registry& registry, entt::entity entity);
+
+    IPhysicsBackend* GetBackend() {
+        return m_backend.get();
+    }
+
+  private:
+    std::unique_ptr<IPhysicsBackend> m_backend;
 };
+
 } // namespace BRITE

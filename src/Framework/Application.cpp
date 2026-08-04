@@ -4,7 +4,6 @@
 #include "../Core/InputManager.hpp"
 #include "../Systems/PhysicsSystem.hpp"
 #include <algorithm>
-#include <box2d/box2d.h>
 #include <physfs.h>
 #include <raylib.h>
 #include <spdlog/spdlog.h>
@@ -229,16 +228,13 @@ void Application::Run() {
                 scene->OnInstantiation();
 
                 // Phase 2: Physics Initialization (Box2D bodies created)
-                BRITE::PhysicsSystem::PreStep(scene->GetRegistry(), scene->GetPhysicsWorld());
+                scene->GetPhysicsSystem().PreStep(scene->GetRegistry());
 
                 // Phase 3: Game Logic & Input
                 scene->OnLogicStep(m_fixedDt);
 
-                // Phase 4: Physics Step
-                b2World_Step(scene->GetPhysicsWorld(), m_fixedDt, 4);
-
-                // Sync Box2D bodies back to Transform and route collisions
-                BRITE::PhysicsSystem::PostStep(scene->GetRegistry(), scene->GetPhysicsWorld());
+                // Phase 4: Physics Step (b2World_Step + PostStep sync)
+                scene->GetPhysicsSystem().Step(scene->GetRegistry(), m_fixedDt);
 
                 // Phase 5: Render Prep
                 scene->OnRenderPrepStep(m_fixedDt);
