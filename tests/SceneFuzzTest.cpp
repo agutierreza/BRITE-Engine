@@ -25,11 +25,19 @@ class FuzzScene : public Scene {
     void OnLogicStep(double dt) override;
 };
 
+#include <Backends/Raylib/RaylibApplicationBackend.hpp>
+#include <Backends/Raylib/RaylibInputBackend.hpp>
+#include <Backends/Raylib/RaylibRenderBackend.hpp>
+
 class FuzzApp : public Application {
   public:
     int totalFrames = 0;
 
-    FuzzApp() : Application("BRITE Fuzz Test", "BRITE", "Engine", 800, 600) {}
+    FuzzApp()
+        : Application(std::make_unique<BRITE::Backends::Raylib::RaylibApplicationBackend>(),
+                      std::make_unique<BRITE::Backends::Raylib::RaylibInputBackend>(),
+                      std::make_unique<BRITE::Backends::Raylib::RaylibRenderBackend>(), "BRITE Fuzz Test", "BRITE",
+                      "Engine", 800, 600) {}
 
     void OnStart() override {
         ChangeScene(std::make_shared<FuzzScene>(this));

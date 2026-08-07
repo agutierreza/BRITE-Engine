@@ -1,11 +1,11 @@
 #pragma once
 
+#include "Math/BriteMath.hpp"
 #include "PhysicsMaterial.hpp"
+#include <cmath>
 #include <cstdint>
 #include <entt/entt.hpp>
 #include <memory>
-#include <raylib.h>
-#include <raymath.h>
 
 namespace BRITE {
 
@@ -25,13 +25,14 @@ struct TransformComponent {
     // Backward compatibility constructor for 2D initialization
     TransformComponent(Vector2 pos, float rotDeg = 0.0f, Vector2 scale = {1.0f, 1.0f})
         : Position{pos.x, pos.y, 0.0f}, Scale{scale.x, scale.y, 1.0f} {
-        Rotation = QuaternionFromAxisAngle(Vector3{0.0f, 0.0f, 1.0f}, rotDeg * DEG2RAD);
+        float halfAngle = rotDeg * Deg2Rad * 0.5f;
+        Rotation = {0.0f, 0.0f, std::sin(halfAngle), std::cos(halfAngle)};
     }
 };
 
 struct SpriteComponent {
-    Texture2D Texture;
-    Color Tint = WHITE;
+    TextureHandle Texture = NullTextureHandle;
+    Color Tint = White;
     Rectangle SourceRect;
     Rectangle DestRect;
     Vector2 Origin = {0.0f, 0.0f}; // for rotation/scaling around a point

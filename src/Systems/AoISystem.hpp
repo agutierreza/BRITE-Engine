@@ -1,7 +1,7 @@
 #pragma once
 
+#include "Math/BriteMath.hpp"
 #include <entt/entt.hpp>
-#include <raylib.h>
 
 namespace BRITE {
 

@@ -153,6 +153,9 @@ add_library(${PROJECT_NAME} STATIC
     src/Systems/AoISystem.cpp
     src/Framework/Application.cpp
     src/Framework/Scene.cpp
+    src/Backends/Raylib/RaylibApplicationBackend.cpp
+    src/Backends/Raylib/RaylibInputBackend.cpp
+    src/Backends/Raylib/RaylibRenderBackend.cpp
 )
 
 # Include external header-only libraries and our own src

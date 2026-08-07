@@ -1,13 +1,16 @@
 #include "RenderSystem.hpp"
 #include "../ECS/Components.hpp"
+#include <cmath>
 #include <tracy/Tracy.hpp>
-
 namespace BRITE {
 
-void RenderSystem::Update(entt::registry& registry, Camera2D* camera) {
+void RenderSystem::Update(entt::registry& registry, Backends::IRenderBackend* backend, Camera2D* camera) {
     ZoneScoped;
+    if (!backend)
+        return;
+
     if (camera) {
-        BeginMode2D(*camera);
+        backend->BeginMode2D(*camera);
     }
 
     auto view = registry.view<TransformComponent, SpriteComponent>();
@@ -23,14 +26,14 @@ void RenderSystem::Update(entt::registry& registry, Camera2D* camera) {
         dest.width *= transform.Scale.x;
         dest.height *= transform.Scale.y;
 
-        // Extract Z-axis rotation in degrees
-        float rotationDeg = QuaternionToEuler(transform.Rotation).z * RAD2DEG;
+        // Extract Z-axis rotation in degrees from quaternion (assuming only Z rotation)
+        float rotationDeg = 2.0f * std::atan2(transform.Rotation.z, transform.Rotation.w) * Rad2Deg;
 
-        DrawTexturePro(sprite.Texture, sprite.SourceRect, dest, sprite.Origin, rotationDeg, sprite.Tint);
+        backend->DrawSprite(sprite.Texture, sprite.SourceRect, dest, sprite.Origin, rotationDeg, sprite.Tint);
     }
 
     if (camera) {
-        EndMode2D();
+        backend->EndMode2D();
     }
 }
 

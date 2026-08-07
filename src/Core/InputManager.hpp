@@ -6,10 +6,14 @@
 #include <unordered_map>
 #include <vector>
 
+#include "Backends/IInputBackend.hpp"
+
 namespace BRITE {
 
 class InputManager {
   public:
+    static void Initialize(Backends::IInputBackend* backend);
+
     // Called once per render frame
     static void PollVariable(entt::dispatcher& dispatcher);
 
@@ -115,6 +119,8 @@ class InputManager {
     static float s_mouseY;
     static float s_mouseDeltaX;
     static float s_mouseDeltaY;
+
+    static Backends::IInputBackend* s_backend;
 };
 
 } // namespace BRITE

@@ -1,5 +1,4 @@
 #include "InputManager.hpp"
-#include <raylib.h>
 
 namespace BRITE {
 
@@ -25,109 +24,10 @@ float InputManager::s_mouseX = 0.0f;
 float InputManager::s_mouseY = 0.0f;
 float InputManager::s_mouseDeltaX = 0.0f;
 float InputManager::s_mouseDeltaY = 0.0f;
+Backends::IInputBackend* InputManager::s_backend = nullptr;
 
-static int MapKey(KeyCode key) {
-    switch (key) {
-    case KeyCode::Space:
-        return KEY_SPACE;
-    case KeyCode::Escape:
-        return KEY_ESCAPE;
-    case KeyCode::Enter:
-        return KEY_ENTER;
-    case KeyCode::Up:
-        return KEY_UP;
-    case KeyCode::Down:
-        return KEY_DOWN;
-    case KeyCode::Left:
-        return KEY_LEFT;
-    case KeyCode::Right:
-        return KEY_RIGHT;
-    case KeyCode::W:
-        return KEY_W;
-    case KeyCode::A:
-        return KEY_A;
-    case KeyCode::S:
-        return KEY_S;
-    case KeyCode::D:
-        return KEY_D;
-    default:
-        return 0;
-    }
-}
-
-static int MapMouseButton(MouseButtonCode button) {
-    switch (button) {
-    case MouseButtonCode::Left:
-        return MOUSE_BUTTON_LEFT;
-    case MouseButtonCode::Right:
-        return MOUSE_BUTTON_RIGHT;
-    case MouseButtonCode::Middle:
-        return MOUSE_BUTTON_MIDDLE;
-    default:
-        return 0;
-    }
-}
-
-static int MapGamepadButton(GamepadButtonCode button) {
-    switch (button) {
-    case GamepadButtonCode::Unknown:
-        return GAMEPAD_BUTTON_UNKNOWN;
-    case GamepadButtonCode::LeftFaceUp:
-        return GAMEPAD_BUTTON_LEFT_FACE_UP;
-    case GamepadButtonCode::LeftFaceRight:
-        return GAMEPAD_BUTTON_LEFT_FACE_RIGHT;
-    case GamepadButtonCode::LeftFaceDown:
-        return GAMEPAD_BUTTON_LEFT_FACE_DOWN;
-    case GamepadButtonCode::LeftFaceLeft:
-        return GAMEPAD_BUTTON_LEFT_FACE_LEFT;
-    case GamepadButtonCode::RightFaceUp:
-        return GAMEPAD_BUTTON_RIGHT_FACE_UP;
-    case GamepadButtonCode::RightFaceRight:
-        return GAMEPAD_BUTTON_RIGHT_FACE_RIGHT;
-    case GamepadButtonCode::RightFaceDown:
-        return GAMEPAD_BUTTON_RIGHT_FACE_DOWN;
-    case GamepadButtonCode::RightFaceLeft:
-        return GAMEPAD_BUTTON_RIGHT_FACE_LEFT;
-    case GamepadButtonCode::LeftTrigger1:
-        return GAMEPAD_BUTTON_LEFT_TRIGGER_1;
-    case GamepadButtonCode::LeftTrigger2:
-        return GAMEPAD_BUTTON_LEFT_TRIGGER_2;
-    case GamepadButtonCode::RightTrigger1:
-        return GAMEPAD_BUTTON_RIGHT_TRIGGER_1;
-    case GamepadButtonCode::RightTrigger2:
-        return GAMEPAD_BUTTON_RIGHT_TRIGGER_2;
-    case GamepadButtonCode::MiddleLeft:
-        return GAMEPAD_BUTTON_MIDDLE_LEFT;
-    case GamepadButtonCode::Middle:
-        return GAMEPAD_BUTTON_MIDDLE;
-    case GamepadButtonCode::MiddleRight:
-        return GAMEPAD_BUTTON_MIDDLE_RIGHT;
-    case GamepadButtonCode::LeftThumb:
-        return GAMEPAD_BUTTON_LEFT_THUMB;
-    case GamepadButtonCode::RightThumb:
-        return GAMEPAD_BUTTON_RIGHT_THUMB;
-    default:
-        return GAMEPAD_BUTTON_UNKNOWN;
-    }
-}
-
-static int MapGamepadAxis(GamepadAxisCode axis) {
-    switch (axis) {
-    case GamepadAxisCode::LeftX:
-        return GAMEPAD_AXIS_LEFT_X;
-    case GamepadAxisCode::LeftY:
-        return GAMEPAD_AXIS_LEFT_Y;
-    case GamepadAxisCode::RightX:
-        return GAMEPAD_AXIS_RIGHT_X;
-    case GamepadAxisCode::RightY:
-        return GAMEPAD_AXIS_RIGHT_Y;
-    case GamepadAxisCode::LeftTrigger:
-        return GAMEPAD_AXIS_LEFT_TRIGGER;
-    case GamepadAxisCode::RightTrigger:
-        return GAMEPAD_AXIS_RIGHT_TRIGGER;
-    default:
-        return GAMEPAD_AXIS_LEFT_X;
-    }
+void InputManager::Initialize(Backends::IInputBackend* backend) {
+    s_backend = backend;
 }
 
 static const KeyCode AllKeys[] = {KeyCode::Space, KeyCode::Escape, KeyCode::Enter, KeyCode::Up,
@@ -150,42 +50,39 @@ static const GamepadAxisCode AllGamepadAxes[] = {GamepadAxisCode::LeftX,       G
                                                  GamepadAxisCode::LeftTrigger, GamepadAxisCode::RightTrigger};
 
 void InputManager::PollVariable(entt::dispatcher& dispatcher) {
+    if (!s_backend)
+        return;
+
     for (KeyCode key : AllKeys) {
-        int rlKey = MapKey(key);
-        if (::IsKeyPressed(rlKey))
+        if (s_backend->IsKeyPressed(key))
             dispatcher.enqueue<KeyDownEvent>(KeyDownEvent{key});
-        if (::IsKeyReleased(rlKey))
+        if (s_backend->IsKeyReleased(key))
             dispatcher.enqueue<KeyUpEvent>(KeyUpEvent{key});
     }
 
     for (MouseButtonCode btn : AllMouseButtons) {
-        int rlBtn = MapMouseButton(btn);
-        if (::IsMouseButtonPressed(rlBtn))
+        if (s_backend->IsMouseButtonPressed(btn))
             dispatcher.enqueue<MouseButtonDownEvent>(MouseButtonDownEvent{btn});
-        if (::IsMouseButtonReleased(rlBtn))
+        if (s_backend->IsMouseButtonReleased(btn))
             dispatcher.enqueue<MouseButtonUpEvent>(MouseButtonUpEvent{btn});
     }
 
-    Vector2 delta = ::GetMouseDelta();
-    if (delta.x != 0.0f || delta.y != 0.0f) {
-        dispatcher.enqueue<MouseMoveEvent>(
-            MouseMoveEvent{delta.x, delta.y, (float)::GetMouseX(), (float)::GetMouseY()});
+    float dx = s_backend->GetMouseDeltaX();
+    float dy = s_backend->GetMouseDeltaY();
+    if (dx != 0.0f || dy != 0.0f) {
+        dispatcher.enqueue<MouseMoveEvent>(MouseMoveEvent{dx, dy, s_backend->GetMouseX(), s_backend->GetMouseY()});
     }
 
-    if (::IsGamepadAvailable(0)) {
-        for (GamepadButtonCode btn : AllGamepadButtons) {
-            int rlBtn = MapGamepadButton(btn);
-            if (::IsGamepadButtonPressed(0, rlBtn))
-                dispatcher.enqueue<GamepadButtonDownEvent>(GamepadButtonDownEvent{btn});
-            if (::IsGamepadButtonReleased(0, rlBtn))
-                dispatcher.enqueue<GamepadButtonUpEvent>(GamepadButtonUpEvent{btn});
-        }
+    for (GamepadButtonCode btn : AllGamepadButtons) {
+        if (s_backend->IsGamepadButtonPressed(btn))
+            dispatcher.enqueue<GamepadButtonDownEvent>(GamepadButtonDownEvent{btn});
+        if (s_backend->IsGamepadButtonReleased(btn))
+            dispatcher.enqueue<GamepadButtonUpEvent>(GamepadButtonUpEvent{btn});
+    }
 
-        for (GamepadAxisCode axis : AllGamepadAxes) {
-            int rlAxis = MapGamepadAxis(axis);
-            float value = ::GetGamepadAxisMovement(0, rlAxis);
-            dispatcher.enqueue<GamepadAxisEvent>(GamepadAxisEvent{axis, value});
-        }
+    for (GamepadAxisCode axis : AllGamepadAxes) {
+        float value = s_backend->GetGamepadAxis(axis);
+        dispatcher.enqueue<GamepadAxisEvent>(GamepadAxisEvent{axis, value});
     }
 }
 

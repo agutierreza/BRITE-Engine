@@ -1,8 +1,10 @@
 #pragma once
+#include "Backends/IApplicationBackend.hpp"
+#include "Backends/IInputBackend.hpp"
+#include "Backends/IRenderBackend.hpp"
+#include "Math/BriteMath.hpp"
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <raylib.h>
-#include <soloud.h>
 #include <string>
 #include <vector>
 
@@ -22,7 +24,10 @@ struct SceneAction {
 
 class Application {
   public:
-    Application(const std::string& title = "BRITE Engine", const std::string& orgName = "BRITE",
+    Application(std::unique_ptr<BRITE::Backends::IApplicationBackend> appBackend,
+                std::unique_ptr<BRITE::Backends::IInputBackend> inputBackend,
+                std::unique_ptr<BRITE::Backends::IRenderBackend> renderBackend,
+                const std::string& title = "BRITE Engine", const std::string& orgName = "BRITE",
                 const std::string& appName = "BRITE", int width = 1280, int height = 720);
     virtual ~Application();
 
@@ -39,7 +44,7 @@ class Application {
     }
 
     void SetInternalResolution(int width, int height);
-    Vector2 GetInternalResolution() const {
+    BRITE::Vector2 GetInternalResolution() const {
         return m_internalResolution;
     }
 
@@ -53,8 +58,10 @@ class Application {
     bool SaveState(const std::string& filename);
     bool LoadState(const std::string& filename);
 
-    SoLoud::Soloud& GetAudio() {
-        return m_soloud;
+    // Removed GetAudio() to decouple SoLoud from the core framework
+
+    BRITE::Backends::IRenderBackend* GetRenderBackend() {
+        return m_renderBackend.get();
     }
 
     void SetPhysicsEngine(PhysicsEngineType type) {
@@ -87,13 +94,15 @@ class Application {
 
     nlohmann::json m_gameState;
 
-    SoLoud::Soloud m_soloud;
+    std::unique_ptr<BRITE::Backends::IApplicationBackend> m_appBackend;
+    std::unique_ptr<BRITE::Backends::IInputBackend> m_inputBackend;
+    std::unique_ptr<BRITE::Backends::IRenderBackend> m_renderBackend;
 
     PhysicsEngineType m_physicsEngine = PhysicsEngineType::Box2D;
 
     // Internal Resolution Management
-    RenderTexture2D m_framebuffer = {0};
-    Vector2 m_internalResolution = {0.0f, 0.0f};
+    BRITE::TextureHandle m_framebuffer = BRITE::NullTextureHandle;
+    BRITE::Vector2 m_internalResolution = {0.0f, 0.0f};
     bool m_useInternalResolution = false;
 };
 

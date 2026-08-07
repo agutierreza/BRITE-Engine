@@ -2,6 +2,7 @@
 #include <ECS/Components.hpp>
 #include <ECS/Events.hpp>
 #include <box2d/math_functions.h>
+#include <cmath>
 #include <tracy/Tracy.hpp>
 
 namespace BRITE {
@@ -52,7 +53,8 @@ void Box2DBackend::PreStep(entt::registry& registry) {
                 }
 
                 bodyDef.position = {transform.Position.x / PPM, transform.Position.y / PPM};
-                bodyDef.rotation = b2MakeRot(QuaternionToEuler(transform.Rotation).z);
+                float zRot = 2.0f * std::atan2(transform.Rotation.z, transform.Rotation.w);
+                bodyDef.rotation = b2MakeRot(zRot);
                 bodyDef.fixedRotation = rb.FixedRotation;
                 bodyDef.gravityScale = rb.GravityScale;
                 // Store entity in user data for contact listeners later
@@ -89,7 +91,8 @@ void Box2DBackend::PreStep(entt::registry& registry) {
             } else if (rb.Type == RigidBodyComponent::BodyType::Kinematic) {
                 // If kinematic, sync Transform -> Box2D before step
                 b2Vec2 pos = {transform.Position.x / PPM, transform.Position.y / PPM};
-                b2Rot rot = b2MakeRot(QuaternionToEuler(transform.Rotation).z);
+                float zRot = 2.0f * std::atan2(transform.Rotation.z, transform.Rotation.w);
+                b2Rot rot = b2MakeRot(zRot);
                 b2Body_SetTransform(GetB2Body(rb.RuntimeBody), pos, rot);
             }
 
@@ -130,10 +133,10 @@ void Box2DBackend::PreStep(entt::registry& registry) {
                             jointDef.bodyIdB = GetB2Body(targetRb.RuntimeBody);
                             jointDef.localAnchorA = {joint.LocalAnchorA.x / PPM, joint.LocalAnchorA.y / PPM};
                             jointDef.localAnchorB = {joint.LocalAnchorB.x / PPM, joint.LocalAnchorB.y / PPM};
-                            jointDef.referenceAngle = joint.ReferenceAngle * (PI / 180.0f);
+                            jointDef.referenceAngle = joint.ReferenceAngle * (Pi / 180.0f);
                             jointDef.enableLimit = joint.EnableLimit;
-                            jointDef.lowerAngle = joint.LowerAngle * (PI / 180.0f);
-                            jointDef.upperAngle = joint.UpperAngle * (PI / 180.0f);
+                            jointDef.lowerAngle = joint.LowerAngle * (Pi / 180.0f);
+                            jointDef.upperAngle = joint.UpperAngle * (Pi / 180.0f);
                             jointDef.collideConnected = joint.CollideConnected;
                             joint.RuntimeJoint = ToHandle(b2CreateRevoluteJoint(m_worldId, &jointDef));
                         }
@@ -166,7 +169,11 @@ void Box2DBackend::Step(entt::registry& registry, float dt) {
                 transform.Position.y = position.y * PPM;
 
                 // Box2D uses radians, map to Z-axis quaternion rotation
-                transform.Rotation = QuaternionFromAxisAngle(Vector3{0.0f, 0.0f, 1.0f}, angle);
+                float halfAngle = angle * 0.5f;
+                transform.Rotation.x = 0.0f;
+                transform.Rotation.y = 0.0f;
+                transform.Rotation.z = std::sin(halfAngle);
+                transform.Rotation.w = std::cos(halfAngle);
             }
         }
 

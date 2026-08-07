@@ -5,7 +5,6 @@
 #include "../Systems/PhysicsSystem.hpp"
 #include <algorithm>
 #include <physfs.h>
-#include <raylib.h>
 #include <spdlog/spdlog.h>
 
 namespace brite {
@@ -45,10 +44,13 @@ static char* LoadFileTextCustom(const char* fileName) {
     return text;
 }
 
-Application::Application(const std::string& title, const std::string& orgName, const std::string& appName, int width,
-                         int height)
-    : m_title(title), m_orgName(orgName), m_appName(appName), m_width(width), m_height(height), m_running(false),
-      m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
+Application::Application(std::unique_ptr<BRITE::Backends::IApplicationBackend> appBackend,
+                         std::unique_ptr<BRITE::Backends::IInputBackend> inputBackend,
+                         std::unique_ptr<BRITE::Backends::IRenderBackend> renderBackend, const std::string& title,
+                         const std::string& orgName, const std::string& appName, int width, int height)
+    : m_appBackend(std::move(appBackend)), m_inputBackend(std::move(inputBackend)),
+      m_renderBackend(std::move(renderBackend)), m_title(title), m_orgName(orgName), m_appName(appName), m_width(width),
+      m_height(height), m_running(false), m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
     InitSubsystems(title, width, height);
 }
 
@@ -88,19 +90,19 @@ void Application::InitSubsystems(const std::string& title, int width, int height
         spdlog::warn("PHYSFS: Failed to mount any assets!");
     }
 
-    // 3. Route Raylib file callbacks through PhysicsFS
-    SetLoadFileDataCallback(LoadFileDataCustom);
-    SetLoadFileTextCallback(LoadFileTextCustom);
+    // 3. (Removed Raylib file callbacks through PhysicsFS; should be handled by backend or manually if needed)
 
-    // 4. Initialize Raylib window
-    InitWindow(width, height, title.c_str());
-    ::SetTargetFPS(144); // Global namespace to avoid name hiding
+    if (m_inputBackend) {
+        BRITE::InputManager::Initialize(m_inputBackend.get());
+    }
 
-    // 5. Initialize SoLoud
-    m_soloud.init();
+    // 4. Initialize backend window
+    if (m_appBackend) {
+        m_appBackend->Init(title, width, height);
+        m_appBackend->SetTargetFPS(144);
+    }
 
-    // ImGui initialization would go here when needed
-    // rlImGuiSetup(true);
+    // 5. Initialize SoLoud removed
 }
 
 void Application::ShutdownSubsystems() {
@@ -115,17 +117,20 @@ void Application::ShutdownSubsystems() {
 
     // rlImGuiShutdown();
 
-    m_soloud.deinit();
-    if (m_useInternalResolution) {
-        UnloadRenderTexture(m_framebuffer);
+    if (m_useInternalResolution && m_renderBackend) {
+        m_renderBackend->UnloadRenderTexture(m_framebuffer);
     }
-    CloseWindow();
+    if (m_appBackend) {
+        m_appBackend->Shutdown();
+    }
     PHYSFS_deinit();
     spdlog::shutdown();
 }
 
 void Application::SetTargetFPS(int fps) {
-    ::SetTargetFPS(fps);
+    if (m_appBackend) {
+        m_appBackend->SetTargetFPS(fps);
+    }
 }
 
 void Application::SetFixedTimeStep(double dt) {
@@ -137,11 +142,13 @@ void Application::SetTimeScale(double scale) {
 }
 
 void Application::SetInternalResolution(int width, int height) {
-    if (m_useInternalResolution) {
-        UnloadRenderTexture(m_framebuffer);
+    if (m_useInternalResolution && m_renderBackend) {
+        m_renderBackend->UnloadRenderTexture(m_framebuffer);
     }
     m_internalResolution = {(float)width, (float)height};
-    m_framebuffer = LoadRenderTexture(width, height);
+    if (m_renderBackend) {
+        m_framebuffer = m_renderBackend->LoadRenderTexture(width, height);
+    }
     m_useInternalResolution = true;
 }
 
@@ -164,11 +171,11 @@ void Application::Quit() {
 void Application::Run() {
     m_running = true;
     double accumulator = 0.0;
-    double previousTime = GetTime();
+    double previousTime = m_appBackend ? m_appBackend->GetTime() : 0.0;
 
     OnStart(); // Let the user game configure the initial scene
 
-    while (m_running && !WindowShouldClose()) {
+    while (m_running && (!m_appBackend || !m_appBackend->WindowShouldClose())) {
         // Handle Scene Transitions
         for (auto& action : m_pendingActions) {
             if (action.type == SceneActionType::Push) {
@@ -203,7 +210,11 @@ void Application::Run() {
             BRITE::InputManager::PollVariable(*dispatcher);
         }
 
-        double currentTime = GetTime();
+        if (m_inputBackend) {
+            m_inputBackend->PollEvents();
+        }
+
+        double currentTime = m_appBackend ? m_appBackend->GetTime() : 0.0;
         double frameTime = currentTime - previousTime;
         previousTime = currentTime;
 
@@ -258,41 +269,42 @@ void Application::Run() {
         std::reverse(scenesToRender.begin(), scenesToRender.end());
 
         // Render loop
-        if (m_useInternalResolution) {
-            BeginTextureMode(m_framebuffer);
-            ClearBackground(BLACK);
+        if (m_useInternalResolution && m_renderBackend) {
+            m_renderBackend->BeginTextureMode(m_framebuffer);
+            m_renderBackend->ClearBackground({0, 0, 0, 255}); // BLACK
 
             for (auto& scene : scenesToRender) {
                 scene->OnRender();
             }
 
-            EndTextureMode();
+            m_renderBackend->EndTextureMode();
 
-            BeginDrawing();
-            ClearBackground(BLACK);
+            m_renderBackend->BeginDrawing();
+            m_renderBackend->ClearBackground({0, 0, 0, 255}); // BLACK
 
-            int screenWidth = GetScreenWidth();
-            int screenHeight = GetScreenHeight();
+            int screenWidth = m_appBackend->GetScreenWidth();
+            int screenHeight = m_appBackend->GetScreenHeight();
 
             float scale =
                 std::min((float)screenWidth / m_internalResolution.x, (float)screenHeight / m_internalResolution.y);
 
-            Rectangle sourceRec = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y};
-            Rectangle destRec = {(screenWidth - m_internalResolution.x * scale) * 0.5f,
-                                 (screenHeight - m_internalResolution.y * scale) * 0.5f, m_internalResolution.x * scale,
-                                 m_internalResolution.y * scale};
+            BRITE::Rectangle sourceRec = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y};
+            BRITE::Rectangle destRec = {(screenWidth - m_internalResolution.x * scale) * 0.5f,
+                                        (screenHeight - m_internalResolution.y * scale) * 0.5f,
+                                        m_internalResolution.x * scale, m_internalResolution.y * scale};
 
-            DrawTexturePro(m_framebuffer.texture, sourceRec, destRec, {0.0f, 0.0f}, 0.0f, WHITE);
-            EndDrawing();
-        } else {
-            BeginDrawing();
-            ClearBackground(BLACK);
+            m_renderBackend->DrawSprite(m_framebuffer, sourceRec, destRec, {0.0f, 0.0f}, 0.0f,
+                                        {255, 255, 255, 255}); // WHITE
+            m_renderBackend->EndDrawing();
+        } else if (m_appBackend && m_renderBackend) {
+            m_renderBackend->BeginDrawing();
+            m_renderBackend->ClearBackground({0, 0, 0, 255}); // BLACK
 
             for (auto& scene : scenesToRender) {
                 scene->OnRender();
             }
 
-            EndDrawing();
+            m_renderBackend->EndDrawing();
         }
     }
 }
