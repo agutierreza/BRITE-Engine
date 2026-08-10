@@ -1,4 +1,5 @@
 #pragma once
+#include <Backends/RenderPass.hpp>
 #include <Systems/PhysicsSystem.hpp>
 #include <entt/entt.hpp>
 #include <memory>
@@ -25,7 +26,7 @@ class Scene {
     virtual void OnInstantiation() {}
     virtual void OnLogicStep(double dt) {}
     virtual void OnRenderPrepStep(double dt) {}
-    virtual void OnRender() {}
+    virtual void OnRender(BRITE::RenderPass& pass) {}
     virtual void OnShutdown() {}
 
     virtual bool BlocksUpdate() const {

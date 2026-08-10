@@ -270,17 +270,20 @@ void Application::Run() {
 
         // Render loop
         if (m_useInternalResolution && m_renderBackend) {
-            m_renderBackend->BeginTextureMode(m_framebuffer);
-            m_renderBackend->ClearBackground({0, 0, 0, 255}); // BLACK
+            BRITE::RenderPass internalPass;
+            internalPass.TargetFramebuffer = m_framebuffer;
+            internalPass.ClearColor = BRITE::Black; // BLACK
+            internalPass.ShouldClear = true;
 
             for (auto& scene : scenesToRender) {
-                scene->OnRender();
+                scene->OnRender(internalPass);
             }
+            m_renderBackend->SubmitRenderPass(internalPass);
 
-            m_renderBackend->EndTextureMode();
-
-            m_renderBackend->BeginDrawing();
-            m_renderBackend->ClearBackground({0, 0, 0, 255}); // BLACK
+            BRITE::RenderPass screenPass;
+            screenPass.TargetFramebuffer = BRITE::NullTextureHandle;
+            screenPass.ClearColor = BRITE::Black; // BLACK
+            screenPass.ShouldClear = true;
 
             int screenWidth = m_appBackend->GetScreenWidth();
             int screenHeight = m_appBackend->GetScreenHeight();
@@ -293,18 +296,28 @@ void Application::Run() {
                                         (screenHeight - m_internalResolution.y * scale) * 0.5f,
                                         m_internalResolution.x * scale, m_internalResolution.y * scale};
 
-            m_renderBackend->DrawSprite(m_framebuffer, sourceRec, destRec, {0.0f, 0.0f}, 0.0f,
-                                        {255, 255, 255, 255}); // WHITE
-            m_renderBackend->EndDrawing();
+            BRITE::SpriteDrawCommand screenSprite;
+            screenSprite.Texture = m_framebuffer;
+            screenSprite.SourceRect = sourceRec;
+            screenSprite.DestRect = destRec;
+            screenSprite.Origin = {0.0f, 0.0f};
+            screenSprite.RotationDeg = 0.0f;
+            screenSprite.Tint = BRITE::White; // WHITE
+
+            screenPass.SpriteCommands.push_back(screenSprite);
+
+            m_renderBackend->SubmitRenderPass(screenPass);
         } else if (m_appBackend && m_renderBackend) {
-            m_renderBackend->BeginDrawing();
-            m_renderBackend->ClearBackground({0, 0, 0, 255}); // BLACK
+            BRITE::RenderPass screenPass;
+            screenPass.TargetFramebuffer = BRITE::NullTextureHandle;
+            screenPass.ClearColor = BRITE::Black; // BLACK
+            screenPass.ShouldClear = true;
 
             for (auto& scene : scenesToRender) {
-                scene->OnRender();
+                scene->OnRender(screenPass);
             }
 
-            m_renderBackend->EndDrawing();
+            m_renderBackend->SubmitRenderPass(screenPass);
         }
     }
 }

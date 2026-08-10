@@ -7,6 +7,6 @@
 namespace BRITE {
 class RenderSystem {
   public:
-    static void Update(entt::registry& registry, Backends::IRenderBackend* backend, Camera2D* camera = nullptr);
+    static void Update(entt::registry& registry, RenderPass& pass, Camera2D* camera = nullptr);
 };
 } // namespace BRITE

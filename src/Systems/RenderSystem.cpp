@@ -4,13 +4,11 @@
 #include <tracy/Tracy.hpp>
 namespace BRITE {
 
-void RenderSystem::Update(entt::registry& registry, Backends::IRenderBackend* backend, Camera2D* camera) {
+void RenderSystem::Update(entt::registry& registry, RenderPass& pass, Camera2D* camera) {
     ZoneScoped;
-    if (!backend)
-        return;
 
     if (camera) {
-        backend->BeginMode2D(*camera);
+        pass.Camera = camera;
     }
 
     auto view = registry.view<TransformComponent, SpriteComponent>();
@@ -29,11 +27,8 @@ void RenderSystem::Update(entt::registry& registry, Backends::IRenderBackend* ba
         // Extract Z-axis rotation in degrees from quaternion (assuming only Z rotation)
         float rotationDeg = 2.0f * std::atan2(transform.Rotation.z, transform.Rotation.w) * Rad2Deg;
 
-        backend->DrawSprite(sprite.Texture, sprite.SourceRect, dest, sprite.Origin, rotationDeg, sprite.Tint);
-    }
-
-    if (camera) {
-        backend->EndMode2D();
+        pass.SpriteCommands.push_back(
+            {sprite.Texture, sprite.SourceRect, dest, sprite.Origin, rotationDeg, sprite.Tint});
     }
 }
 

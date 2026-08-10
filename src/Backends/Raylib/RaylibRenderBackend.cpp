@@ -5,69 +5,96 @@ namespace BRITE {
 namespace Backends {
 namespace Raylib {
 
-void RaylibRenderBackend::BeginDrawing() {
-    ::BeginDrawing();
-}
-
-void RaylibRenderBackend::EndDrawing() {
-    ::EndDrawing();
-}
-
-void RaylibRenderBackend::BeginTextureMode(BRITE::TextureHandle renderTarget) {
-    if (renderTarget == BRITE::NullTextureHandle)
-        return;
-    auto it = m_textures.find(renderTarget);
-    if (it != m_textures.end() && it->second.isRenderTexture) {
-        RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
-        ::BeginTextureMode(*rt);
-    }
-}
-
-void RaylibRenderBackend::EndTextureMode() {
-    ::EndTextureMode();
-}
-
-void RaylibRenderBackend::BeginMode2D(const BRITE::Camera2D& camera) {
-    ::Camera2D rlCamera;
-    rlCamera.offset = {camera.offset.x, camera.offset.y};
-    rlCamera.target = {camera.target.x, camera.target.y};
-    rlCamera.rotation = camera.rotation;
-    rlCamera.zoom = camera.zoom;
-    ::BeginMode2D(rlCamera);
-}
-
-void RaylibRenderBackend::EndMode2D() {
-    ::EndMode2D();
-}
-
-void RaylibRenderBackend::ClearBackground(BRITE::Color color) {
-    ::ClearBackground({color.r, color.g, color.b, color.a});
-}
-
-void RaylibRenderBackend::DrawSprite(BRITE::TextureHandle texture, BRITE::Rectangle source, BRITE::Rectangle dest,
-                                     BRITE::Vector2 origin, float rotationDeg, BRITE::Color tint) {
-    if (texture == BRITE::NullTextureHandle)
-        return;
-
-    auto it = m_textures.find(texture);
-    if (it == m_textures.end())
-        return;
-
-    ::Texture2D rlTexture;
-    if (it->second.isRenderTexture) {
-        RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
-        rlTexture = rt->texture;
+void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
+    if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
+        auto it = m_textures.find(pass.TargetFramebuffer);
+        if (it != m_textures.end() && it->second.isRenderTexture) {
+            RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
+            ::BeginTextureMode(*rt);
+        } else {
+            return; // Invalid target
+        }
     } else {
-        ::Texture2D* tex = static_cast<::Texture2D*>(it->second.ptr);
-        rlTexture = *tex;
+        ::BeginDrawing();
     }
 
-    ::Rectangle rlSource = {source.x, source.y, source.width, source.height};
-    ::Rectangle rlDest = {dest.x, dest.y, dest.width, dest.height};
-    ::Vector2 rlOrigin = {origin.x, origin.y};
-    ::Color rlTint = {tint.r, tint.g, tint.b, tint.a};
+    if (pass.ShouldClear) {
+        ::ClearBackground({pass.ClearColor.r, pass.ClearColor.g, pass.ClearColor.b, pass.ClearColor.a});
+    }
 
-    ::DrawTexturePro(rlTexture, rlSource, rlDest, rlOrigin, rotationDeg, rlTint);
+    for (auto& cb : pass.BackgroundDrawCallbacks) {
+        if (cb)
+            cb();
+    }
+
+    if (pass.Camera) {
+        ::Camera2D rlCamera;
+        rlCamera.offset = {pass.Camera->offset.x, pass.Camera->offset.y};
+        rlCamera.target = {pass.Camera->target.x, pass.Camera->target.y};
+        rlCamera.rotation = pass.Camera->rotation;
+        rlCamera.zoom = pass.Camera->zoom;
+        ::BeginMode2D(rlCamera);
+    }
+
+    for (auto& cb : pass.WorldDrawCallbacks) {
+        if (cb)
+            cb();
+    }
+
+    for (const auto& cmd : pass.SpriteCommands) {
+        if (cmd.Texture == BRITE::NullTextureHandle)
+            continue;
+        auto it = m_textures.find(cmd.Texture);
+        if (it == m_textures.end())
+            continue;
+
+        ::Texture2D rlTexture;
+        if (it->second.isRenderTexture) {
+            RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
+            rlTexture = rt->texture;
+        } else {
+            ::Texture2D* tex = static_cast<::Texture2D*>(it->second.ptr);
+            rlTexture = *tex;
+        }
+
+        ::Rectangle rlSource = {cmd.SourceRect.x, cmd.SourceRect.y, cmd.SourceRect.width, cmd.SourceRect.height};
+        ::Rectangle rlDest = {cmd.DestRect.x, cmd.DestRect.y, cmd.DestRect.width, cmd.DestRect.height};
+        ::Vector2 rlOrigin = {cmd.Origin.x, cmd.Origin.y};
+        ::Color rlTint = {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a};
+
+        ::DrawTexturePro(rlTexture, rlSource, rlDest, rlOrigin, cmd.RotationDeg, rlTint);
+    }
+
+    for (const auto& cmd : pass.LineCommands) {
+        ::DrawLine(cmd.Start.x, cmd.Start.y, cmd.End.x, cmd.End.y, {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a});
+    }
+
+    for (const auto& cmd : pass.RectCommands) {
+        ::Rectangle rlDest = {cmd.DestRect.x, cmd.DestRect.y, cmd.DestRect.width, cmd.DestRect.height};
+        ::Vector2 rlOrigin = {cmd.Origin.x, cmd.Origin.y};
+        ::Color rlTint = {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a};
+        if (cmd.IsFilled) {
+            ::DrawRectanglePro(rlDest, rlOrigin, cmd.RotationDeg, rlTint);
+        } else {
+            ::DrawRectangleLines(cmd.DestRect.x - cmd.Origin.x, cmd.DestRect.y - cmd.Origin.y, cmd.DestRect.width,
+                                 cmd.DestRect.height, rlTint);
+        }
+    }
+
+    if (pass.Camera) {
+        ::EndMode2D();
+    }
+
+    for (auto& cb : pass.UIDrawCallbacks) {
+        if (cb)
+            cb();
+    }
+
+    if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
+        ::EndTextureMode();
+    } else {
+        ::EndDrawing();
+    }
 }
 
 BRITE::TextureHandle RaylibRenderBackend::LoadRenderTexture(int width, int height) {

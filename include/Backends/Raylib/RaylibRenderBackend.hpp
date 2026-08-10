@@ -9,19 +9,7 @@ namespace Raylib {
 
 class RaylibRenderBackend : public IRenderBackend {
   public:
-    void BeginDrawing() override;
-    void EndDrawing() override;
-
-    void BeginTextureMode(BRITE::TextureHandle renderTarget) override;
-    void EndTextureMode() override;
-
-    void BeginMode2D(const BRITE::Camera2D& camera) override;
-    void EndMode2D() override;
-
-    void ClearBackground(BRITE::Color color) override;
-
-    void DrawSprite(BRITE::TextureHandle texture, BRITE::Rectangle source, BRITE::Rectangle dest, BRITE::Vector2 origin,
-                    float rotationDeg, BRITE::Color tint) override;
+    void SubmitRenderPass(const BRITE::RenderPass& pass) override;
 
     BRITE::TextureHandle LoadRenderTexture(int width, int height) override;
     void UnloadRenderTexture(BRITE::TextureHandle target) override;
