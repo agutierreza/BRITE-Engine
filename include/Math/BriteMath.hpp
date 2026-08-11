@@ -44,6 +44,16 @@ struct Camera2D {
     float zoom;
 };
 
+enum class CameraProjection { Perspective, Orthographic };
+
+struct Camera3D {
+    Vector3 position;
+    Vector3 target;
+    Vector3 up;
+    float fovy;
+    CameraProjection projection;
+};
+
 // TODO: Once we implement a rich translation layer for rendering,
 // we should re-introduce default color constants (e.g. WHITE) here.
 // Not possible right now because of collisions with clients using Raylib directly...
@@ -58,6 +68,8 @@ using Quaternion = Math::Quaternion;
 using Rectangle = Math::Rectangle;
 using Color = Math::Color;
 using Camera2D = Math::Camera2D;
+using Camera3D = Math::Camera3D;
+using CameraProjection = Math::CameraProjection;
 using Math::Black;
 using Math::White;
 

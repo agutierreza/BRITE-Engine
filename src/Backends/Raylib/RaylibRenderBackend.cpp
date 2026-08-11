@@ -1,5 +1,7 @@
 #include "Backends/Raylib/RaylibRenderBackend.hpp"
 #include <raylib.h>
+#include <raymath.h>
+#include <rlgl.h>
 
 namespace BRITE {
 namespace Backends {
@@ -25,6 +27,58 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     for (auto& cb : pass.BackgroundDrawCallbacks) {
         if (cb)
             cb();
+    }
+
+    if (pass.Camera3DPtr) {
+        ::Camera3D rlCamera3D = {0};
+        rlCamera3D.position = {pass.Camera3DPtr->position.x, pass.Camera3DPtr->position.y,
+                               pass.Camera3DPtr->position.z};
+        rlCamera3D.target = {pass.Camera3DPtr->target.x, pass.Camera3DPtr->target.y, pass.Camera3DPtr->target.z};
+        rlCamera3D.up = {pass.Camera3DPtr->up.x, pass.Camera3DPtr->up.y, pass.Camera3DPtr->up.z};
+        rlCamera3D.fovy = pass.Camera3DPtr->fovy;
+        rlCamera3D.projection = (pass.Camera3DPtr->projection == BRITE::Math::CameraProjection::Perspective)
+                                    ? CAMERA_PERSPECTIVE
+                                    : CAMERA_ORTHOGRAPHIC;
+        ::BeginMode3D(rlCamera3D);
+    }
+
+    for (const auto& cmd : pass.Primitive3DCommands) {
+        ::Color rlTint = {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a};
+
+        ::rlPushMatrix();
+        ::rlTranslatef(cmd.Position.x, cmd.Position.y, cmd.Position.z);
+
+        ::Vector3 axis;
+        float angle;
+        ::Quaternion rlQuat = {cmd.Rotation.x, cmd.Rotation.y, cmd.Rotation.z, cmd.Rotation.w};
+        ::QuaternionToAxisAngle(rlQuat, &axis, &angle);
+        ::rlRotatef(angle * RAD2DEG, axis.x, axis.y, axis.z);
+
+        ::rlScalef(cmd.Scale.x, cmd.Scale.y, cmd.Scale.z);
+
+        switch (cmd.Type) {
+        case BRITE::Primitive3DType::Cube:
+            ::DrawCube({0, 0, 0}, cmd.Size.x, cmd.Size.y, cmd.Size.z, rlTint);
+            break;
+        case BRITE::Primitive3DType::CubeWires:
+            ::DrawCubeWires({0, 0, 0}, cmd.Size.x, cmd.Size.y, cmd.Size.z, rlTint);
+            break;
+        case BRITE::Primitive3DType::Sphere:
+            ::DrawSphere({0, 0, 0}, cmd.Size.x, rlTint); // Size.x is radius
+            break;
+        case BRITE::Primitive3DType::SphereWires:
+            ::DrawSphereWires({0, 0, 0}, cmd.Size.x, 16, 16, rlTint); // Size.x is radius
+            break;
+        case BRITE::Primitive3DType::Grid:
+            ::DrawGrid((int)cmd.Size.x, cmd.Size.y); // Size.x is slices, Size.y is spacing
+            break;
+        }
+
+        ::rlPopMatrix();
+    }
+
+    if (pass.Camera3DPtr) {
+        ::EndMode3D();
     }
 
     if (pass.Camera) {

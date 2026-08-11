@@ -6,6 +6,17 @@
 
 namespace BRITE {
 
+enum class Primitive3DType { Cube, CubeWires, Sphere, SphereWires, Grid };
+
+struct Primitive3DDrawCommand {
+    Primitive3DType Type;
+    Vector3 Position;
+    Quaternion Rotation;
+    Vector3 Scale;
+    Vector3 Size;
+    Color Tint;
+};
+
 struct SpriteDrawCommand {
     TextureHandle Texture;
     Rectangle SourceRect;
@@ -33,11 +44,13 @@ struct RenderPass {
     TextureHandle TargetFramebuffer = NullTextureHandle; // NullTextureHandle means default screen
     Color ClearColor = Black;
     bool ShouldClear = true;
-    Camera2D* Camera = nullptr; // Optional 2D Camera
+    Camera2D* Camera = nullptr;      // Optional 2D Camera
+    Camera3D* Camera3DPtr = nullptr; // Optional 3D Camera
 
     std::vector<SpriteDrawCommand> SpriteCommands;
     std::vector<LineDrawCommand> LineCommands;
     std::vector<RectDrawCommand> RectCommands;
+    std::vector<Primitive3DDrawCommand> Primitive3DCommands;
 
     // Optional callbacks executed immediately after ClearBackground, before anything else.
     // Useful for full-screen shaders like TorusStarsRenderSystem.

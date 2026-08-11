@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Backends/RenderPass.hpp"
 #include "Math/BriteMath.hpp"
 #include "PhysicsMaterial.hpp"
 #include <cmath>
@@ -36,6 +37,16 @@ struct SpriteComponent {
     Rectangle SourceRect;
     Rectangle DestRect;
     Vector2 Origin = {0.0f, 0.0f}; // for rotation/scaling around a point
+};
+
+struct Primitive3DComponent {
+    Primitive3DType Type = Primitive3DType::Cube;
+    Vector3 Size = {1.0f, 1.0f, 1.0f};
+    Color Tint = White;
+};
+
+struct Camera3DComponent {
+    Camera3D Camera;
 };
 
 struct RigidBodyComponent {

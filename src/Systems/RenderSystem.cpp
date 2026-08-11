@@ -4,11 +4,23 @@
 #include <tracy/Tracy.hpp>
 namespace BRITE {
 
-void RenderSystem::Update(entt::registry& registry, RenderPass& pass, Camera2D* camera) {
+void RenderSystem::Update(entt::registry& registry, RenderPass& pass, Camera2D* camera, Camera3D* camera3d) {
     ZoneScoped;
 
     if (camera) {
         pass.Camera = camera;
+    }
+    if (camera3d) {
+        pass.Camera3DPtr = camera3d;
+    }
+
+    auto view3d = registry.view<TransformComponent, Primitive3DComponent>();
+    for (auto entity : view3d) {
+        auto& transform = view3d.get<TransformComponent>(entity);
+        auto& primitive = view3d.get<Primitive3DComponent>(entity);
+
+        pass.Primitive3DCommands.push_back(
+            {primitive.Type, transform.Position, transform.Rotation, transform.Scale, primitive.Size, primitive.Tint});
     }
 
     auto view = registry.view<TransformComponent, SpriteComponent>();
