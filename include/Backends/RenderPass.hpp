@@ -42,6 +42,7 @@ struct RectDrawCommand {
 
 struct RenderPass {
     TextureHandle TargetFramebuffer = NullTextureHandle; // NullTextureHandle means default screen
+    ShaderHandle Shader = NullShaderHandle;              // NullShaderHandle means no post-processing shader
     Color ClearColor = Black;
     bool ShouldClear = true;
     Camera2D* Camera = nullptr;      // Optional 2D Camera

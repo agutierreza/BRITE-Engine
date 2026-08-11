@@ -18,6 +18,10 @@ class IRenderBackend {
 
     virtual BRITE::TextureHandle LoadTexture(const char* fileName) = 0;
     virtual void UnloadTexture(BRITE::TextureHandle texture) = 0;
+
+    virtual BRITE::ShaderHandle LoadShader(const char* vsFileName, const char* fsFileName) = 0;
+    virtual BRITE::ShaderHandle LoadShaderFromMemory(const char* vsCode, const char* fsCode) = 0;
+    virtual void UnloadShader(BRITE::ShaderHandle shader) = 0;
 };
 
 } // namespace Backends

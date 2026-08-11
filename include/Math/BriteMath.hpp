@@ -77,6 +77,10 @@ using Math::White;
 using TextureHandle = uint64_t;
 constexpr TextureHandle NullTextureHandle = 0;
 
+// A generic shader handle
+using ShaderHandle = uint64_t;
+constexpr ShaderHandle NullShaderHandle = 0;
+
 constexpr float Pi = 3.14159265358979323846f;
 constexpr float Deg2Rad = Pi / 180.0f;
 constexpr float Rad2Deg = 180.0f / Pi;

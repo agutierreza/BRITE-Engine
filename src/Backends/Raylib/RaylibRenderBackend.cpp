@@ -29,6 +29,14 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             cb();
     }
 
+    if (pass.Shader != BRITE::NullShaderHandle) {
+        auto it = m_shaders.find(pass.Shader);
+        if (it != m_shaders.end()) {
+            ::Shader* shader = static_cast<::Shader*>(it->second);
+            ::BeginShaderMode(*shader);
+        }
+    }
+
     if (pass.Camera3DPtr) {
         ::Camera3D rlCamera3D = {0};
         rlCamera3D.position = {pass.Camera3DPtr->position.x, pass.Camera3DPtr->position.y,
@@ -144,6 +152,13 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             cb();
     }
 
+    if (pass.Shader != BRITE::NullShaderHandle) {
+        auto it = m_shaders.find(pass.Shader);
+        if (it != m_shaders.end()) {
+            ::EndShaderMode();
+        }
+    }
+
     if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
         ::EndTextureMode();
     } else {
@@ -182,6 +197,30 @@ void RaylibRenderBackend::UnloadTexture(BRITE::TextureHandle texture) {
         ::UnloadTexture(*tex);
         delete tex;
         m_textures.erase(it);
+    }
+}
+
+BRITE::ShaderHandle RaylibRenderBackend::LoadShader(const char* vsFileName, const char* fsFileName) {
+    ::Shader* shader = new ::Shader(::LoadShader(vsFileName, fsFileName));
+    BRITE::ShaderHandle handle = m_nextShaderId++;
+    m_shaders[handle] = shader;
+    return handle;
+}
+
+BRITE::ShaderHandle RaylibRenderBackend::LoadShaderFromMemory(const char* vsCode, const char* fsCode) {
+    ::Shader* shader = new ::Shader(::LoadShaderFromMemory(vsCode, fsCode));
+    BRITE::ShaderHandle handle = m_nextShaderId++;
+    m_shaders[handle] = shader;
+    return handle;
+}
+
+void RaylibRenderBackend::UnloadShader(BRITE::ShaderHandle shader) {
+    auto it = m_shaders.find(shader);
+    if (it != m_shaders.end()) {
+        ::Shader* rlShader = static_cast<::Shader*>(it->second);
+        ::UnloadShader(*rlShader);
+        delete rlShader;
+        m_shaders.erase(it);
     }
 }
 
