@@ -119,6 +119,9 @@ void Application::ShutdownSubsystems() {
 
     if (m_useInternalResolution && m_renderBackend) {
         m_renderBackend->UnloadRenderTexture(m_framebuffer);
+        if (m_framebufferAlt != BRITE::NullTextureHandle) {
+            m_renderBackend->UnloadRenderTexture(m_framebufferAlt);
+        }
     }
     if (m_appBackend) {
         m_appBackend->Shutdown();
@@ -144,10 +147,14 @@ void Application::SetTimeScale(double scale) {
 void Application::SetInternalResolution(int width, int height) {
     if (m_useInternalResolution && m_renderBackend) {
         m_renderBackend->UnloadRenderTexture(m_framebuffer);
+        if (m_framebufferAlt != BRITE::NullTextureHandle) {
+            m_renderBackend->UnloadRenderTexture(m_framebufferAlt);
+        }
     }
     m_internalResolution = {(float)width, (float)height};
     if (m_renderBackend) {
         m_framebuffer = m_renderBackend->LoadRenderTexture(width, height);
+        m_framebufferAlt = m_renderBackend->LoadRenderTexture(width, height);
     }
     m_useInternalResolution = true;
 }
@@ -280,6 +287,38 @@ void Application::Run() {
             }
             m_renderBackend->SubmitRenderPass(internalPass);
 
+            // Post-Processing Ping-Pong
+            BRITE::TextureHandle finalFramebuffer = m_framebuffer;
+
+            if (!m_postProcessShaders.empty()) {
+                BRITE::TextureHandle sourceFBO = m_framebuffer;
+                BRITE::TextureHandle destFBO = m_framebufferAlt;
+
+                for (size_t i = 0; i < m_postProcessShaders.size(); ++i) {
+                    BRITE::RenderPass ppPass;
+                    ppPass.TargetFramebuffer = destFBO;
+                    ppPass.ClearColor = BRITE::Black;
+                    ppPass.ShouldClear = true;
+                    ppPass.Shader = m_postProcessShaders[i];
+
+                    BRITE::SpriteDrawCommand ppSprite;
+                    ppSprite.Texture = sourceFBO;
+                    ppSprite.SourceRect = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y}; // Flip Y
+                    ppSprite.DestRect = {0.0f, 0.0f, m_internalResolution.x, m_internalResolution.y};
+                    ppSprite.Origin = {0.0f, 0.0f};
+                    ppSprite.RotationDeg = 0.0f;
+                    ppSprite.Tint = BRITE::White;
+
+                    ppPass.SpriteCommands.push_back(ppSprite);
+
+                    m_renderBackend->SubmitRenderPass(ppPass);
+
+                    // Swap for next iteration
+                    finalFramebuffer = destFBO;
+                    std::swap(sourceFBO, destFBO);
+                }
+            }
+
             BRITE::RenderPass screenPass;
             screenPass.TargetFramebuffer = BRITE::NullTextureHandle;
             screenPass.ClearColor = BRITE::Black; // BLACK
@@ -297,7 +336,7 @@ void Application::Run() {
                                         m_internalResolution.x * scale, m_internalResolution.y * scale};
 
             BRITE::SpriteDrawCommand screenSprite;
-            screenSprite.Texture = m_framebuffer;
+            screenSprite.Texture = finalFramebuffer;
             screenSprite.SourceRect = sourceRec;
             screenSprite.DestRect = destRec;
             screenSprite.Origin = {0.0f, 0.0f};

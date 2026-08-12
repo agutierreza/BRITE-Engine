@@ -224,6 +224,56 @@ void RaylibRenderBackend::UnloadShader(BRITE::ShaderHandle shader) {
     }
 }
 
+int RaylibRenderBackend::GetShaderLocation(BRITE::ShaderHandle shader, const char* uniformName) {
+    auto it = m_shaders.find(shader);
+    if (it != m_shaders.end()) {
+        ::Shader* rlShader = static_cast<::Shader*>(it->second);
+        return ::GetShaderLocation(*rlShader, uniformName);
+    }
+    return -1;
+}
+
+void RaylibRenderBackend::SetShaderValue(BRITE::ShaderHandle shader, int locIndex, const void* value,
+                                         ShaderUniformDataType uniformType) {
+    auto it = m_shaders.find(shader);
+    if (it != m_shaders.end()) {
+        ::Shader* rlShader = static_cast<::Shader*>(it->second);
+
+        int rlUniformType = 0;
+        switch (uniformType) {
+        case ShaderUniformDataType::Float:
+            rlUniformType = SHADER_UNIFORM_FLOAT;
+            break;
+        case ShaderUniformDataType::Vec2:
+            rlUniformType = SHADER_UNIFORM_VEC2;
+            break;
+        case ShaderUniformDataType::Vec3:
+            rlUniformType = SHADER_UNIFORM_VEC3;
+            break;
+        case ShaderUniformDataType::Vec4:
+            rlUniformType = SHADER_UNIFORM_VEC4;
+            break;
+        case ShaderUniformDataType::Int:
+            rlUniformType = SHADER_UNIFORM_INT;
+            break;
+        case ShaderUniformDataType::IVec2:
+            rlUniformType = SHADER_UNIFORM_IVEC2;
+            break;
+        case ShaderUniformDataType::IVec3:
+            rlUniformType = SHADER_UNIFORM_IVEC3;
+            break;
+        case ShaderUniformDataType::IVec4:
+            rlUniformType = SHADER_UNIFORM_IVEC4;
+            break;
+        case ShaderUniformDataType::Sampler2D:
+            rlUniformType = SHADER_UNIFORM_SAMPLER2D;
+            break;
+        }
+
+        ::SetShaderValue(*rlShader, locIndex, value, rlUniformType);
+    }
+}
+
 } // namespace Raylib
 } // namespace Backends
 } // namespace BRITE

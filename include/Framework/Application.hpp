@@ -58,6 +58,15 @@ class Application {
     bool SaveState(const std::string& filename);
     bool LoadState(const std::string& filename);
 
+    // TODO: We need an architecture to extract all parameters from existing and future shaders
+    // dynamically, rather than relying on hardcoded GetShaderLocation/SetShaderValue calls in client code.
+    void AddPostProcessShader(BRITE::ShaderHandle shader) {
+        m_postProcessShaders.push_back(shader);
+    }
+    void ClearPostProcessShaders() {
+        m_postProcessShaders.clear();
+    }
+
     // Removed GetAudio() to decouple SoLoud from the core framework
 
     BRITE::Backends::IRenderBackend* GetRenderBackend() {
@@ -102,8 +111,11 @@ class Application {
 
     // Internal Resolution Management
     BRITE::TextureHandle m_framebuffer = BRITE::NullTextureHandle;
+    BRITE::TextureHandle m_framebufferAlt = BRITE::NullTextureHandle;
     BRITE::Vector2 m_internalResolution = {0.0f, 0.0f};
     bool m_useInternalResolution = false;
+
+    std::vector<BRITE::ShaderHandle> m_postProcessShaders;
 };
 
 } // namespace framework

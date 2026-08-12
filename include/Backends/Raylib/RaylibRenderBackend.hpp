@@ -21,6 +21,10 @@ class RaylibRenderBackend : public IRenderBackend {
     BRITE::ShaderHandle LoadShaderFromMemory(const char* vsCode, const char* fsCode) override;
     void UnloadShader(BRITE::ShaderHandle shader) override;
 
+    int GetShaderLocation(BRITE::ShaderHandle shader, const char* uniformName) override;
+    void SetShaderValue(BRITE::ShaderHandle shader, int locIndex, const void* value,
+                        ShaderUniformDataType uniformType) override;
+
   private:
     uint64_t m_nextId = 1;
     uint64_t m_nextShaderId = 1;
