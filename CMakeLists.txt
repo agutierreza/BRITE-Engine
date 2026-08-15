@@ -141,6 +141,29 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # ---------------------------------------------------------
+# CMake Macros
+# ---------------------------------------------------------
+
+macro(brite_setup_assets TARGET_NAME)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_custom_command(
+            TARGET ${TARGET_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../BRITE-Engine/assets" "$<TARGET_FILE_DIR:${TARGET_NAME}>/assets"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:${TARGET_NAME}>/assets"
+            COMMAND ${CMAKE_COMMAND} -E tar "cfv" "$<TARGET_FILE_DIR:${TARGET_NAME}>/assets.pak" --format=zip "$<TARGET_FILE_DIR:${TARGET_NAME}>/assets"
+            COMMENT "Packaging engine and client assets into assets.pak..."
+        )
+    else()
+        add_custom_command(
+            TARGET ${TARGET_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../BRITE-Engine/assets" "$<TARGET_FILE_DIR:${TARGET_NAME}>/assets"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets" "$<TARGET_FILE_DIR:${TARGET_NAME}>/assets"
+            COMMENT "Merging engine and client assets to build directory..."
+        )
+    endif()
+endmacro()
+
+# ---------------------------------------------------------
 # Core Engine Library
 # ---------------------------------------------------------
 
