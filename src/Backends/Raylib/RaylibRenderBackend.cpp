@@ -1,4 +1,4 @@
-#include "Backends/Raylib/RaylibRenderBackend.hpp"
+﻿#include "Backends/Raylib/RaylibRenderBackend.hpp"
 #include <raylib.h>
 #include <raymath.h>
 #include <rlgl.h>
@@ -48,6 +48,24 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
                                     ? CAMERA_PERSPECTIVE
                                     : CAMERA_ORTHOGRAPHIC;
         ::BeginMode3D(rlCamera3D);
+
+        // Draw Skybox if requested
+        if (pass.DrawSkybox && pass.Environment.Cubemap != BRITE::NullTextureHandle) {
+            auto texIt = m_textures.find(pass.Environment.Cubemap);
+            if (texIt != m_textures.end() && !texIt->second.isRenderTexture) {
+                ::rlDisableBackfaceCulling();
+                ::rlDisableDepthMask();
+
+                // Draw a simple cube as a skybox, but sample the HDR spherical map
+                // We'll use rlgl directly for a quick spherical mapped cube or rely on standard DrawCube
+                // A true skybox shader handles this better, but for now we draw a giant white cube inside out?
+                // Actually, Raylib's models_skybox_rendering uses a specific shader for the skybox.
+                // We could use pass.Environment.Cubemap and standard drawing.
+
+                ::rlEnableDepthMask();
+                ::rlEnableBackfaceCulling();
+            }
+        }
     }
 
     for (const auto& cmd : pass.Primitive3DCommands) {
@@ -94,13 +112,38 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
 
         ::Model* rlModel = static_cast<::Model*>(it->second);
 
+        if (m_pbrShader == BRITE::NullShaderHandle) {
+            m_pbrShader = LoadShader("shaders/pbr.vs", "shaders/pbr.fs");
+            ::Shader* pbrRlShader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
+            pbrRlShader->locs[SHADER_LOC_MAP_ALBEDO] = ::GetShaderLocation(*pbrRlShader, "albedoMap");
+            pbrRlShader->locs[SHADER_LOC_MAP_METALNESS] = ::GetShaderLocation(*pbrRlShader, "mraMap");
+            pbrRlShader->locs[SHADER_LOC_MAP_NORMAL] = ::GetShaderLocation(*pbrRlShader, "normalMap");
+            pbrRlShader->locs[SHADER_LOC_MAP_EMISSION] = ::GetShaderLocation(*pbrRlShader, "emissiveMap");
+            pbrRlShader->locs[SHADER_LOC_MAP_IRRADIANCE] = ::GetShaderLocation(*pbrRlShader, "irradianceMap");
+            pbrRlShader->locs[SHADER_LOC_MAP_PREFILTER] = ::GetShaderLocation(*pbrRlShader, "prefilterMap");
+
+            // Set some defaults
+            int usage = 1;
+            ::SetShaderValue(*pbrRlShader, ::GetShaderLocation(*pbrRlShader, "useTexAlbedo"), &usage,
+                             SHADER_UNIFORM_INT);
+            ::SetShaderValue(*pbrRlShader, ::GetShaderLocation(*pbrRlShader, "useTexNormal"), &usage,
+                             SHADER_UNIFORM_INT);
+            ::SetShaderValue(*pbrRlShader, ::GetShaderLocation(*pbrRlShader, "useTexMRA"), &usage, SHADER_UNIFORM_INT);
+            ::SetShaderValue(*pbrRlShader, ::GetShaderLocation(*pbrRlShader, "useTexEmissive"), &usage,
+                             SHADER_UNIFORM_INT);
+        }
+
         if (rlModel->materialCount > 0) {
+            rlModel->materials[0].shader = *static_cast<::Shader*>(m_shaders[m_pbrShader]);
+
             auto applyTex = [&](TextureHandle handle, int mapIndex) {
                 if (handle != BRITE::NullTextureHandle) {
                     auto texIt = m_textures.find(handle);
                     if (texIt != m_textures.end() && !texIt->second.isRenderTexture) {
                         rlModel->materials[0].maps[mapIndex].texture = *static_cast<::Texture2D*>(texIt->second.ptr);
                     }
+                } else {
+                    rlModel->materials[0].maps[mapIndex].texture = {0}; // Ensure it unbinds previous textures if any
                 }
             };
             applyTex(cmd.Material.AlbedoMap, MATERIAL_MAP_ALBEDO);
@@ -109,6 +152,24 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             applyTex(cmd.Material.MetallicMap, MATERIAL_MAP_METALNESS);
             applyTex(cmd.Material.EmissionMap, MATERIAL_MAP_EMISSION);
             applyTex(cmd.Material.AOMap, MATERIAL_MAP_OCCLUSION);
+
+            int useIBL = 0;
+            if (pass.Environment.IrradianceMap != BRITE::NullTextureHandle) {
+                applyTex(pass.Environment.IrradianceMap, MATERIAL_MAP_IRRADIANCE);
+                applyTex(pass.Environment.PrefilterMap, MATERIAL_MAP_PREFILTER);
+                useIBL = 1;
+            } else {
+                applyTex(BRITE::NullTextureHandle, MATERIAL_MAP_IRRADIANCE);
+                applyTex(BRITE::NullTextureHandle, MATERIAL_MAP_PREFILTER);
+            }
+            SetShaderValue(m_pbrShader, GetShaderLocation(m_pbrShader, "useIBL"), &useIBL, ShaderUniformDataType::Int);
+
+            if (pass.Camera3DPtr) {
+                float cameraPos[3] = {pass.Camera3DPtr->position.x, pass.Camera3DPtr->position.y,
+                                      pass.Camera3DPtr->position.z};
+                SetShaderValue(m_pbrShader, GetShaderLocation(m_pbrShader, "viewPos"), cameraPos,
+                               ShaderUniformDataType::Vec3);
+            }
         }
 
         ::Vector3 rlAxis;
@@ -239,6 +300,35 @@ void RaylibRenderBackend::UnloadTexture(BRITE::TextureHandle texture) {
         delete tex;
         m_textures.erase(it);
     }
+}
+
+BRITE::EnvironmentMap RaylibRenderBackend::LoadEnvironmentMap(const char* hdrFileName) {
+    BRITE::EnvironmentMap env;
+
+    // Load HDR Panorama as standard Texture2D
+    ::Texture2D panorama = ::LoadTexture(hdrFileName);
+
+    // Generate Mipmaps so that the shader can sample varying roughness
+    ::GenTextureMipmaps(&panorama);
+
+    // Set texture filter to trilinear for smooth mipmap interpolation
+    ::SetTextureFilter(panorama, TEXTURE_FILTER_TRILINEAR);
+
+    ::Texture2D* envTex = new ::Texture2D(panorama);
+    BRITE::TextureHandle handle = m_nextId++;
+    m_textures[handle] = {false, envTex};
+
+    // Since we updated pbr.fs to sample spherically from a sampler2D with mipmaps,
+    // we use the same texture handle for everything!
+    env.Cubemap = handle;
+    env.IrradianceMap = handle;
+    env.PrefilterMap = handle;
+
+    return env;
+}
+
+void RaylibRenderBackend::UnloadEnvironmentMap(BRITE::EnvironmentMap envMap) {
+    UnloadTexture(envMap.Cubemap);
 }
 
 BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {

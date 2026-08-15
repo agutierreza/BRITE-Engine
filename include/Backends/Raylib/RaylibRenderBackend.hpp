@@ -24,6 +24,9 @@ class RaylibRenderBackend : public IRenderBackend {
     BRITE::ShaderHandle LoadShaderFromMemory(const char* vsCode, const char* fsCode) override;
     void UnloadShader(BRITE::ShaderHandle shader) override;
 
+    BRITE::EnvironmentMap LoadEnvironmentMap(const char* hdrFileName) override;
+    void UnloadEnvironmentMap(BRITE::EnvironmentMap envMap) override;
+
     int GetShaderLocation(BRITE::ShaderHandle shader, const char* uniformName) override;
     void SetShaderValue(BRITE::ShaderHandle shader, int locIndex, const void* value,
                         ShaderUniformDataType uniformType) override;
@@ -31,6 +34,8 @@ class RaylibRenderBackend : public IRenderBackend {
   private:
     uint64_t m_nextId = 1;
     uint64_t m_nextShaderId = 1;
+
+    BRITE::ShaderHandle m_pbrShader = BRITE::NullShaderHandle;
 
     // To cleanly separate Texture2D vs RenderTexture2D, we store a boolean.
     // Real implementation would just use a wrapper struct allocated on heap.

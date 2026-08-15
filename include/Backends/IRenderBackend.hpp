@@ -28,6 +28,9 @@ class IRenderBackend {
     virtual BRITE::ShaderHandle LoadShaderFromMemory(const char* vsCode, const char* fsCode) = 0;
     virtual void UnloadShader(BRITE::ShaderHandle shader) = 0;
 
+    virtual BRITE::EnvironmentMap LoadEnvironmentMap(const char* hdrFileName) = 0;
+    virtual void UnloadEnvironmentMap(BRITE::EnvironmentMap envMap) = 0;
+
     virtual int GetShaderLocation(BRITE::ShaderHandle shader, const char* uniformName) = 0;
     virtual void SetShaderValue(BRITE::ShaderHandle shader, int locIndex, const void* value,
                                 ShaderUniformDataType uniformType) = 0;

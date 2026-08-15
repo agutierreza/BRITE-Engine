@@ -95,6 +95,13 @@ struct PBRMaterial {
     Color AlbedoTint = White;
 };
 
+struct EnvironmentMap {
+    TextureHandle Cubemap = NullTextureHandle;
+    TextureHandle IrradianceMap = NullTextureHandle;
+    TextureHandle PrefilterMap = NullTextureHandle;
+    TextureHandle BRDFLUT = NullTextureHandle;
+};
+
 constexpr float Pi = 3.14159265358979323846f;
 constexpr float Deg2Rad = Pi / 180.0f;
 constexpr float Rad2Deg = 180.0f / Pi;

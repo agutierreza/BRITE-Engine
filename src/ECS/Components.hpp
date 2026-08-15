@@ -176,4 +176,9 @@ struct AoIComponent {
 
 struct InAoITag {}; // Empty tag attached to entities currently inside the simulation AoI
 
+struct EnvironmentComponent {
+    EnvironmentMap Map = {};
+    bool DrawSkybox = true;
+};
+
 } // namespace BRITE

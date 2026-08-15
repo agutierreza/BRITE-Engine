@@ -55,6 +55,9 @@ struct RenderPass {
     Camera2D* Camera = nullptr;      // Optional 2D Camera
     Camera3D* Camera3DPtr = nullptr; // Optional 3D Camera
 
+    EnvironmentMap Environment = {};
+    bool DrawSkybox = true;
+
     std::vector<ModelDrawCommand> ModelCommands;
     std::vector<SpriteDrawCommand> SpriteCommands;
     std::vector<LineDrawCommand> LineCommands;

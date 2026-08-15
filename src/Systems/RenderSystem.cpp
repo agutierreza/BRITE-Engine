@@ -14,6 +14,14 @@ void RenderSystem::Update(entt::registry& registry, RenderPass& pass, Camera2D* 
         pass.Camera3DPtr = camera3d;
     }
 
+    auto envView = registry.view<EnvironmentComponent>();
+    if (!envView.empty()) {
+        auto entity = envView.front();
+        auto& env = envView.get<EnvironmentComponent>(entity);
+        pass.Environment = env.Map;
+        pass.DrawSkybox = env.DrawSkybox;
+    }
+
     auto view3d = registry.view<TransformComponent, Primitive3DComponent>();
     for (auto entity : view3d) {
         auto& transform = view3d.get<TransformComponent>(entity);
