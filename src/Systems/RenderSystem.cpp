@@ -39,8 +39,7 @@ void RenderSystem::Update(entt::registry& registry, RenderPass& pass, Camera2D* 
         // Extract Z-axis rotation in degrees from quaternion (assuming only Z rotation)
         float rotationDeg = 2.0f * std::atan2(transform.Rotation.z, transform.Rotation.w) * Rad2Deg;
 
-        pass.SpriteCommands.push_back(
-            {sprite.Texture, sprite.SourceRect, dest, sprite.Origin, rotationDeg, sprite.Tint});
+        pass.SpriteCommands.push_back({sprite.Material, sprite.SourceRect, dest, sprite.Origin, rotationDeg});
     }
 }
 

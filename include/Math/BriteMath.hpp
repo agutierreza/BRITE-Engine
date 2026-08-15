@@ -81,6 +81,20 @@ constexpr TextureHandle NullTextureHandle = 0;
 using ShaderHandle = uint64_t;
 constexpr ShaderHandle NullShaderHandle = 0;
 
+// A generic 3D model handle
+using ModelHandle = uint64_t;
+constexpr ModelHandle NullModelHandle = 0;
+
+struct PBRMaterial {
+    TextureHandle AlbedoMap = NullTextureHandle;
+    TextureHandle NormalMap = NullTextureHandle;
+    TextureHandle RoughnessMap = NullTextureHandle;
+    TextureHandle MetallicMap = NullTextureHandle;
+    TextureHandle EmissionMap = NullTextureHandle;
+    TextureHandle AOMap = NullTextureHandle;
+    Color AlbedoTint = White;
+};
+
 constexpr float Pi = 3.14159265358979323846f;
 constexpr float Deg2Rad = Pi / 180.0f;
 constexpr float Rad2Deg = 180.0f / Pi;

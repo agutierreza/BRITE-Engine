@@ -302,12 +302,12 @@ void Application::Run() {
                     ppPass.Shader = m_postProcessShaders[i];
 
                     BRITE::SpriteDrawCommand ppSprite;
-                    ppSprite.Texture = sourceFBO;
+                    ppSprite.Material.AlbedoMap = sourceFBO;
                     ppSprite.SourceRect = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y}; // Flip Y
                     ppSprite.DestRect = {0.0f, 0.0f, m_internalResolution.x, m_internalResolution.y};
                     ppSprite.Origin = {0.0f, 0.0f};
                     ppSprite.RotationDeg = 0.0f;
-                    ppSprite.Tint = BRITE::White;
+                    ppSprite.Material.AlbedoTint = BRITE::White;
 
                     ppPass.SpriteCommands.push_back(ppSprite);
 
@@ -336,12 +336,12 @@ void Application::Run() {
                                         m_internalResolution.x * scale, m_internalResolution.y * scale};
 
             BRITE::SpriteDrawCommand screenSprite;
-            screenSprite.Texture = finalFramebuffer;
+            screenSprite.Material.AlbedoMap = finalFramebuffer;
             screenSprite.SourceRect = sourceRec;
             screenSprite.DestRect = destRec;
             screenSprite.Origin = {0.0f, 0.0f};
             screenSprite.RotationDeg = 0.0f;
-            screenSprite.Tint = BRITE::White; // WHITE
+            screenSprite.Material.AlbedoTint = BRITE::White; // WHITE
 
             screenPass.SpriteCommands.push_back(screenSprite);
 

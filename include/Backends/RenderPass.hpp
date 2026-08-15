@@ -17,13 +17,20 @@ struct Primitive3DDrawCommand {
     Color Tint;
 };
 
+struct ModelDrawCommand {
+    ModelHandle Model;
+    PBRMaterial Material;
+    Vector3 Position;
+    Quaternion Rotation;
+    Vector3 Scale;
+};
+
 struct SpriteDrawCommand {
-    TextureHandle Texture;
+    PBRMaterial Material;
     Rectangle SourceRect;
     Rectangle DestRect;
     Vector2 Origin;
     float RotationDeg;
-    Color Tint;
 };
 
 struct LineDrawCommand {
@@ -48,6 +55,7 @@ struct RenderPass {
     Camera2D* Camera = nullptr;      // Optional 2D Camera
     Camera3D* Camera3DPtr = nullptr; // Optional 3D Camera
 
+    std::vector<ModelDrawCommand> ModelCommands;
     std::vector<SpriteDrawCommand> SpriteCommands;
     std::vector<LineDrawCommand> LineCommands;
     std::vector<RectDrawCommand> RectCommands;

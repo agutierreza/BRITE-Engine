@@ -85,6 +85,46 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         ::rlPopMatrix();
     }
 
+    for (const auto& cmd : pass.ModelCommands) {
+        if (cmd.Model == BRITE::NullModelHandle)
+            continue;
+        auto it = m_models.find(cmd.Model);
+        if (it == m_models.end())
+            continue;
+
+        ::Model* rlModel = static_cast<::Model*>(it->second);
+
+        if (rlModel->materialCount > 0) {
+            auto applyTex = [&](TextureHandle handle, int mapIndex) {
+                if (handle != BRITE::NullTextureHandle) {
+                    auto texIt = m_textures.find(handle);
+                    if (texIt != m_textures.end() && !texIt->second.isRenderTexture) {
+                        rlModel->materials[0].maps[mapIndex].texture = *static_cast<::Texture2D*>(texIt->second.ptr);
+                    }
+                }
+            };
+            applyTex(cmd.Material.AlbedoMap, MATERIAL_MAP_ALBEDO);
+            applyTex(cmd.Material.NormalMap, MATERIAL_MAP_NORMAL);
+            applyTex(cmd.Material.RoughnessMap, MATERIAL_MAP_ROUGHNESS);
+            applyTex(cmd.Material.MetallicMap, MATERIAL_MAP_METALNESS);
+            applyTex(cmd.Material.EmissionMap, MATERIAL_MAP_EMISSION);
+            applyTex(cmd.Material.AOMap, MATERIAL_MAP_OCCLUSION);
+        }
+
+        ::Vector3 rlAxis;
+        float rlAngle;
+        ::Quaternion rlQuat = {cmd.Rotation.x, cmd.Rotation.y, cmd.Rotation.z, cmd.Rotation.w};
+        ::QuaternionToAxisAngle(rlQuat, &rlAxis, &rlAngle);
+        rlAngle *= RAD2DEG;
+
+        ::Vector3 rlPos = {cmd.Position.x, cmd.Position.y, cmd.Position.z};
+        ::Vector3 rlScale = {cmd.Scale.x, cmd.Scale.y, cmd.Scale.z};
+        ::Color rlTint = {cmd.Material.AlbedoTint.r, cmd.Material.AlbedoTint.g, cmd.Material.AlbedoTint.b,
+                          cmd.Material.AlbedoTint.a};
+
+        ::DrawModelEx(*rlModel, rlPos, rlAxis, rlAngle, rlScale, rlTint);
+    }
+
     if (pass.Camera3DPtr) {
         ::EndMode3D();
     }
@@ -104,9 +144,9 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     }
 
     for (const auto& cmd : pass.SpriteCommands) {
-        if (cmd.Texture == BRITE::NullTextureHandle)
+        if (cmd.Material.AlbedoMap == BRITE::NullTextureHandle)
             continue;
-        auto it = m_textures.find(cmd.Texture);
+        auto it = m_textures.find(cmd.Material.AlbedoMap);
         if (it == m_textures.end())
             continue;
 
@@ -122,7 +162,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         ::Rectangle rlSource = {cmd.SourceRect.x, cmd.SourceRect.y, cmd.SourceRect.width, cmd.SourceRect.height};
         ::Rectangle rlDest = {cmd.DestRect.x, cmd.DestRect.y, cmd.DestRect.width, cmd.DestRect.height};
         ::Vector2 rlOrigin = {cmd.Origin.x, cmd.Origin.y};
-        ::Color rlTint = {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a};
+        ::Color rlTint = {cmd.Material.AlbedoTint.r, cmd.Material.AlbedoTint.g, cmd.Material.AlbedoTint.b,
+                          cmd.Material.AlbedoTint.a};
 
         ::DrawTexturePro(rlTexture, rlSource, rlDest, rlOrigin, cmd.RotationDeg, rlTint);
     }
@@ -197,6 +238,23 @@ void RaylibRenderBackend::UnloadTexture(BRITE::TextureHandle texture) {
         ::UnloadTexture(*tex);
         delete tex;
         m_textures.erase(it);
+    }
+}
+
+BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
+    ::Model* model = new ::Model(::LoadModel(fileName));
+    BRITE::ModelHandle handle = m_nextModelId++;
+    m_models[handle] = model;
+    return handle;
+}
+
+void RaylibRenderBackend::UnloadModel(BRITE::ModelHandle model) {
+    auto it = m_models.find(model);
+    if (it != m_models.end()) {
+        ::Model* rlModel = static_cast<::Model*>(it->second);
+        ::UnloadModel(*rlModel);
+        delete rlModel;
+        m_models.erase(it);
     }
 }
 

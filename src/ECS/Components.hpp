@@ -31,9 +31,13 @@ struct TransformComponent {
     }
 };
 
+struct Model3DComponent {
+    ModelHandle Model = NullModelHandle;
+    PBRMaterial Material;
+};
+
 struct SpriteComponent {
-    TextureHandle Texture = NullTextureHandle;
-    Color Tint = White;
+    PBRMaterial Material;
     Rectangle SourceRect;
     Rectangle DestRect;
     Vector2 Origin = {0.0f, 0.0f}; // for rotation/scaling around a point

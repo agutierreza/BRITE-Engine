@@ -17,6 +17,9 @@ class RaylibRenderBackend : public IRenderBackend {
     BRITE::TextureHandle LoadTexture(const char* fileName) override;
     void UnloadTexture(BRITE::TextureHandle texture) override;
 
+    BRITE::ModelHandle LoadModel(const char* fileName) override;
+    void UnloadModel(BRITE::ModelHandle model) override;
+
     BRITE::ShaderHandle LoadShader(const char* vsFileName, const char* fsFileName) override;
     BRITE::ShaderHandle LoadShaderFromMemory(const char* vsCode, const char* fsCode) override;
     void UnloadShader(BRITE::ShaderHandle shader) override;
@@ -39,6 +42,10 @@ class RaylibRenderBackend : public IRenderBackend {
 
     // Track raylib ::Shader objects by ShaderHandle
     std::unordered_map<BRITE::ShaderHandle, void*> m_shaders;
+
+    uint64_t m_nextModelId = 1;
+    // Track raylib ::Model objects by ModelHandle
+    std::unordered_map<BRITE::ModelHandle, void*> m_models;
 };
 
 } // namespace Raylib
