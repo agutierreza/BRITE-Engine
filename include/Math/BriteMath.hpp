@@ -131,6 +131,66 @@ struct Quaternion {
     float w;
 };
 
+inline Quaternion QuaternionFromLookRotation(const Vector3& forward, const Vector3& up) {
+    Vector3 f = Normalize(forward);
+    // If forward is zero (or very close), return identity
+    if (Length(f) < 0.0001f) {
+        return {0.0f, 0.0f, 0.0f, 1.0f};
+    }
+
+    Vector3 r = Normalize(CrossProduct(up, f));
+    // If forward and up are parallel, right will be zero. Handle it by picking an arbitrary right vector.
+    if (Length(r) < 0.0001f) {
+        r = Normalize(CrossProduct({1.0f, 0.0f, 0.0f}, f));
+        if (Length(r) < 0.0001f) {
+            r = Normalize(CrossProduct({0.0f, 1.0f, 0.0f}, f));
+        }
+    }
+    Vector3 u = CrossProduct(f, r);
+
+    float m00 = r.x, m01 = u.x, m02 = f.x;
+    float m10 = r.y, m11 = u.y, m12 = f.y;
+    float m20 = r.z, m21 = u.z, m22 = f.z;
+
+    float trace = m00 + m11 + m22;
+    Quaternion q;
+    if (trace > 0.0f) {
+        float s = std::sqrt(trace + 1.0f) * 2.0f;
+        q.w = 0.25f * s;
+        q.x = (m21 - m12) / s;
+        q.y = (m02 - m20) / s;
+        q.z = (m10 - m01) / s;
+    } else if ((m00 >= m11) && (m00 >= m22)) {
+        float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q.w = (m21 - m12) / s;
+        q.x = 0.25f * s;
+        q.y = (m01 + m10) / s;
+        q.z = (m02 + m20) / s;
+    } else if (m11 >= m22) {
+        float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q.w = (m02 - m20) / s;
+        q.x = (m01 + m10) / s;
+        q.y = 0.25f * s;
+        q.z = (m12 + m21) / s;
+    } else {
+        float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q.w = (m10 - m01) / s;
+        q.x = (m02 + m20) / s;
+        q.y = (m12 + m21) / s;
+        q.z = 0.25f * s;
+    }
+
+    float len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (len > 0.0f) {
+        q.x /= len;
+        q.y /= len;
+        q.z /= len;
+        q.w /= len;
+    }
+
+    return q;
+}
+
 struct Rectangle {
     float x;
     float y;
