@@ -3,9 +3,9 @@
 namespace BRITE {
 
 // Initialize statics
-std::unordered_map<KeyCode, bool> InputManager::s_keysDown;
-std::unordered_map<KeyCode, bool> InputManager::s_keysPressedThisTick;
-std::unordered_map<KeyCode, bool> InputManager::s_keysReleasedThisTick;
+std::array<bool, InputManager::KeyCount> InputManager::s_keysDown{};
+std::array<bool, InputManager::KeyCount> InputManager::s_keysPressedThisTick{};
+std::array<bool, InputManager::KeyCount> InputManager::s_keysReleasedThisTick{};
 
 std::unordered_map<MouseButtonCode, bool> InputManager::s_buttonsDown;
 std::unordered_map<MouseButtonCode, bool> InputManager::s_buttonsPressedThisTick;
@@ -30,10 +30,6 @@ void InputManager::Initialize(Backends::IInputBackend* backend) {
     s_backend = backend;
 }
 
-static const KeyCode AllKeys[] = {KeyCode::Space, KeyCode::Escape, KeyCode::Enter, KeyCode::Up,
-                                  KeyCode::Down,  KeyCode::Left,   KeyCode::Right, KeyCode::W,
-                                  KeyCode::A,     KeyCode::S,      KeyCode::D};
-
 static const MouseButtonCode AllMouseButtons[] = {MouseButtonCode::Left, MouseButtonCode::Right,
                                                   MouseButtonCode::Middle};
 
@@ -53,7 +49,8 @@ void InputManager::PollVariable(entt::dispatcher& dispatcher) {
     if (!s_backend)
         return;
 
-    for (KeyCode key : AllKeys) {
+    for (size_t i = 0; i < KeyCount; ++i) {
+        KeyCode key = static_cast<KeyCode>(i);
         if (s_backend->IsKeyPressed(key))
             dispatcher.enqueue<KeyDownEvent>(KeyDownEvent{key});
         if (s_backend->IsKeyReleased(key))
@@ -87,8 +84,8 @@ void InputManager::PollVariable(entt::dispatcher& dispatcher) {
 }
 
 void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
-    s_keysPressedThisTick.clear();
-    s_keysReleasedThisTick.clear();
+    s_keysPressedThisTick.fill(false);
+    s_keysReleasedThisTick.fill(false);
     s_buttonsPressedThisTick.clear();
     s_buttonsReleasedThisTick.clear();
     s_gamepadButtonsPressedThisTick.clear();
@@ -125,15 +122,21 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
 }
 
 void InputManager::OnKeyDown(const KeyDownEvent& event) {
-    if (!s_keysDown[event.key]) {
-        s_keysPressedThisTick[event.key] = true;
+    size_t idx = static_cast<size_t>(event.key);
+    if (idx < KeyCount) {
+        if (!s_keysDown[idx]) {
+            s_keysPressedThisTick[idx] = true;
+        }
+        s_keysDown[idx] = true;
     }
-    s_keysDown[event.key] = true;
 }
 
 void InputManager::OnKeyUp(const KeyUpEvent& event) {
-    s_keysReleasedThisTick[event.key] = true;
-    s_keysDown[event.key] = false;
+    size_t idx = static_cast<size_t>(event.key);
+    if (idx < KeyCount) {
+        s_keysReleasedThisTick[idx] = true;
+        s_keysDown[idx] = false;
+    }
 }
 
 void InputManager::OnMouseDown(const MouseButtonDownEvent& event) {
@@ -172,13 +175,16 @@ void InputManager::OnGamepadAxisMove(const GamepadAxisEvent& event) {
 }
 
 bool InputManager::IsKeyPressed(KeyCode key) {
-    return s_keysPressedThisTick[key];
+    size_t idx = static_cast<size_t>(key);
+    return idx < KeyCount ? s_keysPressedThisTick[idx] : false;
 }
 bool InputManager::IsKeyDown(KeyCode key) {
-    return s_keysDown[key];
+    size_t idx = static_cast<size_t>(key);
+    return idx < KeyCount ? s_keysDown[idx] : false;
 }
 bool InputManager::IsKeyReleased(KeyCode key) {
-    return s_keysReleasedThisTick[key];
+    size_t idx = static_cast<size_t>(key);
+    return idx < KeyCount ? s_keysReleasedThisTick[idx] : false;
 }
 bool InputManager::IsMouseButtonPressed(MouseButtonCode button) {
     return s_buttonsPressedThisTick[button];

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InputEvents.hpp"
+#include <array>
 #include <cstdint>
 #include <entt/entt.hpp>
 #include <unordered_map>
@@ -97,9 +98,10 @@ class InputManager {
     static void OnGamepadButtonUp(const GamepadButtonUpEvent& event);
     static void OnGamepadAxisMove(const GamepadAxisEvent& event);
 
-    static std::unordered_map<KeyCode, bool> s_keysDown;
-    static std::unordered_map<KeyCode, bool> s_keysPressedThisTick;
-    static std::unordered_map<KeyCode, bool> s_keysReleasedThisTick;
+    static constexpr size_t KeyCount = static_cast<size_t>(KeyCode::Count);
+    static std::array<bool, KeyCount> s_keysDown;
+    static std::array<bool, KeyCount> s_keysPressedThisTick;
+    static std::array<bool, KeyCount> s_keysReleasedThisTick;
 
     static std::unordered_map<MouseButtonCode, bool> s_buttonsDown;
     static std::unordered_map<MouseButtonCode, bool> s_buttonsPressedThisTick;
