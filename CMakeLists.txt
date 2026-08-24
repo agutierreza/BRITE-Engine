@@ -208,10 +208,34 @@ if(WIN32)
     target_link_libraries(${PROJECT_NAME} PUBLIC ws2_32 dbghelp)
 endif()
 
+# ---------------------------------------------------------
+# Sanitizers (ASan + UBSan)
+# ---------------------------------------------------------
+# These MUST be usage requirements on the engine target, not directory-level
+# add_compile_options(). Directory properties are snapshotted by a target when it
+# is created, so a bare add_compile_options() placed after add_library() misses
+# the engine entirely, and never reaches clients at all (clients add_subdirectory()
+# this file before declaring their own targets, and directory properties only
+# flow parent -> child). PUBLIC here propagates to BRITETests and to every client
+# executable that links BRITEEngine, so the whole program is instrumented
+# consistently.
 if(CMAKE_BUILD_TYPE MATCHES Debug)
+    set(BRITE_SANITIZERS_DEFAULT ON)
+else()
+    set(BRITE_SANITIZERS_DEFAULT OFF)
+endif()
+option(BRITE_ENABLE_SANITIZERS "Build BRITE and its clients with AddressSanitizer and UBSan"
+       ${BRITE_SANITIZERS_DEFAULT})
+
+if(BRITE_ENABLE_SANITIZERS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-        add_compile_options(-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
-        add_link_options(-fsanitize=address -fsanitize=undefined)
+        target_compile_options(${PROJECT_NAME} PUBLIC
+            -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
+        target_link_options(${PROJECT_NAME} PUBLIC
+            -fsanitize=address -fsanitize=undefined)
+        message(STATUS "BRITE: ASan + UBSan enabled (engine, tests, and clients)")
+    else()
+        message(WARNING "BRITE_ENABLE_SANITIZERS is ON but compiler '${CMAKE_CXX_COMPILER_ID}' is unsupported; ignoring")
     endif()
 endif()
 
