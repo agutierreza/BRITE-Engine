@@ -187,6 +187,13 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     }
 
     if (pass.Camera3DPtr) {
+        // After the models, so a segment sharing their depth resolves in front of
+        // them rather than behind.
+        for (const auto& cmd : pass.Line3DCommands) {
+            ::DrawLine3D({cmd.Start.x, cmd.Start.y, cmd.Start.z}, {cmd.End.x, cmd.End.y, cmd.End.z},
+                         {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a});
+        }
+
         ::EndMode3D();
     }
 

@@ -39,6 +39,15 @@ struct LineDrawCommand {
     Color Tint;
 };
 
+// LineDrawCommand one dimension up: endpoints in world space, drawn under the
+// pass's 3D camera and ignored when it has none. No thickness and no depth-test
+// control.
+struct Line3DDrawCommand {
+    Vector3 Start;
+    Vector3 End;
+    Color Tint;
+};
+
 struct RectDrawCommand {
     Rectangle DestRect;
     Vector2 Origin;
@@ -63,6 +72,7 @@ struct RenderPass {
     std::vector<LineDrawCommand> LineCommands;
     std::vector<RectDrawCommand> RectCommands;
     std::vector<Primitive3DDrawCommand> Primitive3DCommands;
+    std::vector<Line3DDrawCommand> Line3DCommands;
 
     // Optional callbacks executed immediately after ClearBackground, before anything else.
     // Useful for full-screen shaders like TorusStarsRenderSystem.
