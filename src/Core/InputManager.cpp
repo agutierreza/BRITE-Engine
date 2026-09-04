@@ -206,7 +206,11 @@ bool InputManager::IsGamepadButtonReleased(GamepadButtonCode button) {
     return s_gamepadButtonsReleasedThisTick[button];
 }
 float InputManager::GetGamepadAxis(GamepadAxisCode axis) {
-    return s_gamepadAxes[axis];
+    // An axis that has never been polled is at rest, and rest is not 0.0 for
+    // every axis -- see GamepadAxisRestValue. operator[] would insert a zero and
+    // hand a trigger reader a half-pull on the first tick.
+    const auto it = s_gamepadAxes.find(axis);
+    return it == s_gamepadAxes.end() ? GamepadAxisRestValue(axis) : it->second;
 }
 
 float InputManager::GetMouseX() {

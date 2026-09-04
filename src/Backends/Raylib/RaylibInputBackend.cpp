@@ -377,8 +377,12 @@ bool RaylibInputBackend::IsGamepadButtonReleased(GamepadButtonCode button) {
 }
 
 float RaylibInputBackend::GetGamepadAxis(GamepadAxisCode axis) {
+    // No pad means every axis is at rest -- and rest is -1.0 for a trigger, not
+    // 0.0, which is what raylib itself reports for a released trigger on an
+    // attached pad. Returning 0.0 here read as a half-pulled trigger to any
+    // caller that could not tell an absent pad from a present one.
     if (!::IsGamepadAvailable(0))
-        return 0.0f;
+        return GamepadAxisRestValue(axis);
     return ::GetGamepadAxisMovement(0, MapGamepadAxis(axis));
 }
 

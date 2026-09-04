@@ -29,6 +29,8 @@ class IInputBackend {
     virtual bool IsGamepadButtonDown(GamepadButtonCode button) = 0;
     virtual bool IsGamepadButtonPressed(GamepadButtonCode button) = 0;
     virtual bool IsGamepadButtonReleased(GamepadButtonCode button) = 0;
+    // Sticks over [-1, 1] resting at 0; triggers over [-1, 1] resting at -1.
+    // With no gamepad attached, report GamepadAxisRestValue(axis), never 0.0.
     virtual float GetGamepadAxis(GamepadAxisCode axis) = 0;
 };
 

@@ -157,6 +157,18 @@ enum class GamepadButtonCode {
 
 enum class GamepadAxisCode { LeftX, LeftY, RightX, RightY, LeftTrigger, RightTrigger };
 
+/// The value an axis reports when nothing is touching it.
+///
+/// Not zero for every axis: the sticks rest at 0.0, but the analog triggers
+/// report their pressure over [-1, 1] with -1.0 fully released, which is the
+/// convention of every backend this engine has and of the hardware underneath.
+/// Both the manager (before its first poll) and a backend with no gamepad
+/// attached report THIS rather than 0.0, so a caller reading a trigger never
+/// sees a phantom half-pull from a pad that does not exist.
+constexpr float GamepadAxisRestValue(GamepadAxisCode axis) {
+    return (axis == GamepadAxisCode::LeftTrigger || axis == GamepadAxisCode::RightTrigger) ? -1.0f : 0.0f;
+}
+
 struct KeyDownEvent {
     KeyCode key;
 };
