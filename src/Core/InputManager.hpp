@@ -11,6 +11,31 @@
 
 namespace BRITE {
 
+// Which kinds of device an input came from. Flags, because an action bound to
+// several devices can be held on more than one of them at once.
+enum class InputDevice : uint8_t {
+    None = 0,
+    Keyboard = 1 << 0,
+    Gamepad = 1 << 1,
+    Mouse = 1 << 2,
+};
+
+constexpr InputDevice operator|(InputDevice a, InputDevice b) {
+    return static_cast<InputDevice>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+}
+constexpr InputDevice operator&(InputDevice a, InputDevice b) {
+    return static_cast<InputDevice>(static_cast<uint8_t>(a) & static_cast<uint8_t>(b));
+}
+constexpr InputDevice& operator|=(InputDevice& a, InputDevice b) {
+    a = a | b;
+    return a;
+}
+// True when `devices` shares any flag with `device`: for a single flag, whether
+// that device is among them.
+constexpr bool Includes(InputDevice devices, InputDevice device) {
+    return (devices & device) != InputDevice::None;
+}
+
 class InputManager {
   public:
     static void Initialize(Backends::IInputBackend* backend);
@@ -53,21 +78,36 @@ class InputManager {
         s_actionMouseBindings[static_cast<uint32_t>(action)].push_back(button);
     }
 
-    template <typename TEnum> static bool IsActionDown(TEnum action) {
+    // Which devices are holding this action down: each device with at least one
+    // of the action's own bindings down. None while the action is up. An input
+    // that is down but not bound to the action does not count.
+    template <typename TEnum> static InputDevice ActionDownDevices(TEnum action) {
         uint32_t actionId = static_cast<uint32_t>(action);
+        InputDevice devices = InputDevice::None;
         for (KeyCode k : s_actionKeyBindings[actionId]) {
-            if (IsKeyDown(k))
-                return true;
+            if (IsKeyDown(k)) {
+                devices |= InputDevice::Keyboard;
+                break;
+            }
         }
         for (GamepadButtonCode b : s_actionGamepadBindings[actionId]) {
-            if (IsGamepadButtonDown(b))
-                return true;
+            if (IsGamepadButtonDown(b)) {
+                devices |= InputDevice::Gamepad;
+                break;
+            }
         }
         for (MouseButtonCode m : s_actionMouseBindings[actionId]) {
-            if (IsMouseButtonDown(m))
-                return true;
+            if (IsMouseButtonDown(m)) {
+                devices |= InputDevice::Mouse;
+                break;
+            }
         }
-        return false;
+        return devices;
+    }
+
+    // One implementation of "down", so the two queries cannot disagree.
+    template <typename TEnum> static bool IsActionDown(TEnum action) {
+        return ActionDownDevices(action) != InputDevice::None;
     }
 
     template <typename TEnum> static bool IsActionPressed(TEnum action) {
