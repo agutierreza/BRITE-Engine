@@ -176,6 +176,7 @@ add_library(${PROJECT_NAME} STATIC
     src/Systems/AoISystem.cpp
     src/Framework/Application.cpp
     src/Framework/Scene.cpp
+    src/Backends/MeshData.cpp
     src/Backends/Raylib/RaylibApplicationBackend.cpp
     src/Backends/Raylib/RaylibInputBackend.cpp
     src/Backends/Raylib/RaylibRenderBackend.cpp
@@ -189,6 +190,20 @@ target_include_directories(${PROJECT_NAME} PUBLIC
     ${physfs_SOURCE_DIR}/src
     ${rlimgui_SOURCE_DIR}
 )
+
+# The PBR shader is compiled INTO the engine, so a client draws lit models
+# without staging any asset files. The GLSL stays in assets/shaders/ as the
+# editable source; it is read here at configure time into a generated header of
+# string literals, and listing the two files in CMAKE_CONFIGURE_DEPENDS makes a
+# build after editing them reconfigure on its own rather than link a stale copy.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.vs" BRITE_PBR_VS)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.fs" BRITE_PBR_FS)
+configure_file(src/Backends/Raylib/PbrShaderSource.hpp.in
+               "${CMAKE_CURRENT_BINARY_DIR}/generated/Backends/Raylib/PbrShaderSource.hpp" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.vs"
+             "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.fs")
+target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # Link Libraries
 
@@ -240,7 +255,7 @@ if(BRITE_ENABLE_SANITIZERS)
 endif()
 
 enable_testing()
-add_executable(BRITETests tests/SceneFuzzTest.cpp)
+add_executable(BRITETests tests/SceneFuzzTest.cpp tests/MeshDataTests.cpp)
 target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
 
 include(GoogleTest)

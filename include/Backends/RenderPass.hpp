@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Math/BriteMath.hpp"
+#include <cstddef>
 #include <functional>
 #include <vector>
 
@@ -56,6 +57,23 @@ struct RectDrawCommand {
     bool IsFilled; // true for DrawRectanglePro, false for DrawRectangleLinesEx (thickness could be added later)
 };
 
+enum class LightType { Directional, Point };
+
+// One analytic light for the model path. Primitives are unlit and ignore it.
+struct Light {
+    LightType Type = LightType::Directional;
+    // Point lights: where the light is. Ignored by a directional light.
+    Vector3 Position = {0.0f, 0.0f, 0.0f};
+    // Directional lights: the direction the light TRAVELS -- straight down for a
+    // sun at the zenith. Ignored by a point light.
+    Vector3 Direction = {0.0f, -1.0f, 0.0f};
+    Color Tint = White;
+    float Intensity = 1.0f;
+};
+
+// The most lights a backend honours per pass; entries beyond it are ignored.
+inline constexpr std::size_t MaxLightsPerPass = 4;
+
 struct RenderPass {
     TextureHandle TargetFramebuffer = NullTextureHandle; // NullTextureHandle means default screen
     ShaderHandle Shader = NullShaderHandle;              // NullShaderHandle means no post-processing shader
@@ -66,6 +84,14 @@ struct RenderPass {
 
     EnvironmentMap Environment = {};
     bool DrawSkybox = true;
+
+    // Lighting for ModelCommands. A model under no lights and zero ambient draws
+    // black, which is the honest result of asking for a lit surface in the dark:
+    // set at least one of the two. With an Environment map the ambient comes from
+    // the map instead and these two ambient fields are unused.
+    std::vector<Light> Lights;
+    Color AmbientColor = White;
+    float AmbientIntensity = 0.0f;
 
     std::vector<ModelDrawCommand> ModelCommands;
     std::vector<SpriteDrawCommand> SpriteCommands;

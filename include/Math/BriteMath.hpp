@@ -261,6 +261,13 @@ struct PBRMaterial {
     TextureHandle EmissionMap = NullTextureHandle;
     TextureHandle AOMap = NullTextureHandle;
     Color AlbedoTint = White;
+    // Scalar surface parameters, used where the corresponding map is absent.
+    // Roughness 1 is fully rough, glTF's default; anything glossier is the
+    // caller's choice. Metallic 0 is NOT glTF's default (glTF says 1, meaning
+    // "as the metallic map says"): with no map, a surface is a dielectric
+    // unless the caller asks for metal.
+    float Metallic = 0.0f;
+    float Roughness = 1.0f;
 };
 
 struct EnvironmentMap {
