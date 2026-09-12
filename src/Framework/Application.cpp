@@ -4,6 +4,7 @@
 #include "../Core/InputManager.hpp"
 #include "../Systems/PhysicsSystem.hpp"
 #include <algorithm>
+#include <cassert>
 #include <physfs.h>
 #include <spdlog/spdlog.h>
 
@@ -177,7 +178,8 @@ void Application::Quit() {
 
 void Application::Run() {
     m_running = true;
-    double accumulator = 0.0;
+    m_accumulator = 0.0;
+    m_tickFraction = 0.0;
     double previousTime = m_appBackend ? m_appBackend->GetTime() : 0.0;
 
     OnStart(); // Let the user game configure the initial scene
@@ -227,10 +229,10 @@ void Application::Run() {
 
         if (frameTime > 0.25)
             frameTime = 0.25; // Spiral of death prevention
-        accumulator += (frameTime * m_timeScale);
+        m_accumulator += (frameTime * m_timeScale);
 
         // Fixed timestep loop
-        while (accumulator >= m_fixedDt) {
+        while (m_accumulator >= m_fixedDt) {
             if (!m_sceneStack.empty()) {
                 auto& activeScene = m_sceneStack.back();
                 entt::dispatcher* dispatcher = activeScene->GetRegistry().ctx().find<entt::dispatcher>();
@@ -261,8 +263,17 @@ void Application::Run() {
                     break;
                 }
             }
-            accumulator -= m_fixedDt;
+            m_accumulator -= m_fixedDt;
         }
+
+        // The residual, stored once per frame and only here. The loop above
+        // has just guaranteed m_accumulator < m_fixedDt, so the fraction is in
+        // [0, 1) by construction; anything else is a broken invariant, not an
+        // input to clamp. Read it during rendering -- see TickFraction() for
+        // what it means in the other phases.
+        m_tickFraction = m_accumulator / m_fixedDt;
+        assert(m_tickFraction >= 0.0 && m_tickFraction < 1.0 &&
+               "the tick loop left more than a tick in the accumulator");
 
         // Determine scenes to render (top to bottom to find blocking, then render
         // bottom to top)

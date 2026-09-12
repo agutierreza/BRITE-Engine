@@ -43,6 +43,27 @@ class Application {
         return m_timeScale;
     }
 
+    // How far the clock has advanced into the fixed tick that has not run yet,
+    // as a fraction of a tick, in [0, 1).
+    //
+    // A fixed-timestep loop that renders faster than it simulates draws the
+    // same state on every frame between two ticks, so anything drawn moves in
+    // steps of one tick however many frames are drawn. This is the missing
+    // half of the fixed timestep: the residual time the loop could not turn
+    // into a tick. A consumer that keeps the previous tick's state can draw
+    // previous + (current - previous) * TickFraction() and move on every frame.
+    //
+    // VALID DURING RENDERING -- OnRender -- and set once per frame, after the
+    // tick loop has drained the accumulator and before any scene is rendered.
+    // During the fixed-tick phases (OnInstantiation, OnLogicStep,
+    // OnRenderPrepStep) it still holds the PREVIOUS frame's value, which says
+    // nothing about the tick in progress: a tick is a whole step, and the
+    // residual belongs to the frame drawn after it. Zero before the first
+    // frame has run.
+    double TickFraction() const {
+        return m_tickFraction;
+    }
+
     void SetInternalResolution(int width, int height);
     BRITE::Vector2 GetInternalResolution() const {
         return m_internalResolution;
@@ -97,6 +118,13 @@ class Application {
     bool m_running;
     double m_fixedDt;
     double m_timeScale;
+
+    // Frame time not yet turned into ticks, in seconds; what the tick loop
+    // drains. Kept between frames, which is what makes the timestep fixed.
+    double m_accumulator = 0.0;
+    // m_accumulator / m_fixedDt, taken once per frame after the tick loop.
+    // See TickFraction().
+    double m_tickFraction = 0.0;
 
     std::vector<std::shared_ptr<Scene>> m_sceneStack;
     std::vector<SceneAction> m_pendingActions;
