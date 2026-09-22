@@ -31,7 +31,10 @@ void main()
     mat3 normalMatrix = mat3(matNormal);
 
     fragPosition = vec3(matModel*vec4(vertexPosition, 1.0));
-    fragTexCoord = vertexTexCoord*2.0;
+    // As the mesh gives it: a texture spans its UV range once. It was doubled
+    // here, which drew every texture twice across and twice down; repeating a
+    // texture is the fragment stage's tiling uniform's job.
+    fragTexCoord = vertexTexCoord;
     // The vertex colour was declared and never passed on, which is why a model
     // with baked colours drew as if it had none.
     fragColor = vertexColor;

@@ -7,10 +7,18 @@
 #include <rlgl.h>
 #include <spdlog/spdlog.h>
 #include <string>
+#include <utility>
 
 namespace BRITE {
 namespace Backends {
 namespace Raylib {
+
+namespace {
+// How many maps every raylib Material holds: rmodels.c's MAX_MATERIAL_MAPS, which
+// raylib.h does not export. Each material's maps array is allocated this long and
+// DrawMesh reads this many, so a copy of one must be exactly this long.
+constexpr int MATERIAL_MAPS_PER_MATERIAL = 12;
+} // namespace
 
 void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
@@ -120,51 +128,81 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         if (it == m_models.end())
             continue;
 
-        ::Model* rlModel = static_cast<::Model*>(it->second);
+        const ::Model* rlModel = static_cast<::Model*>(it->second);
+        const ::Shader& pbrShader = *static_cast<::Shader*>(m_shaders[m_pbrShader]);
 
-        if (rlModel->materialCount > 0) {
-            rlModel->materials[0].shader = *static_cast<::Shader*>(m_shaders[m_pbrShader]);
+        // A texture the draw command names, or nothing when it names none or the
+        // handle is not a plain texture.
+        auto commandTexture = [&](TextureHandle handle) -> const ::Texture2D* {
+            if (handle == BRITE::NullTextureHandle)
+                return nullptr;
+            auto texIt = m_textures.find(handle);
+            if (texIt == m_textures.end() || texIt->second.isRenderTexture)
+                return nullptr;
+            return static_cast<const ::Texture2D*>(texIt->second.ptr);
+        };
+        const std::pair<TextureHandle, int> overrides[] = {
+            {cmd.Material.AlbedoMap, MATERIAL_MAP_ALBEDO},       {cmd.Material.NormalMap, MATERIAL_MAP_NORMAL},
+            {cmd.Material.RoughnessMap, MATERIAL_MAP_ROUGHNESS}, {cmd.Material.MetallicMap, MATERIAL_MAP_METALNESS},
+            {cmd.Material.EmissionMap, MATERIAL_MAP_EMISSION},   {cmd.Material.AOMap, MATERIAL_MAP_OCCLUSION},
+        };
+        const ::Texture2D* irradiance = commandTexture(pass.Environment.IrradianceMap);
+        const ::Texture2D* prefilter = commandTexture(pass.Environment.PrefilterMap);
 
-            auto applyTex = [&](TextureHandle handle, int mapIndex) {
-                if (handle != BRITE::NullTextureHandle) {
-                    auto texIt = m_textures.find(handle);
-                    if (texIt != m_textures.end() && !texIt->second.isRenderTexture) {
-                        rlModel->materials[0].maps[mapIndex].texture = *static_cast<::Texture2D*>(texIt->second.ptr);
-                    }
-                } else {
-                    rlModel->materials[0].maps[mapIndex].texture = {0}; // Ensure it unbinds previous textures if any
-                }
-            };
-            applyTex(cmd.Material.AlbedoMap, MATERIAL_MAP_ALBEDO);
-            applyTex(cmd.Material.NormalMap, MATERIAL_MAP_NORMAL);
-            applyTex(cmd.Material.RoughnessMap, MATERIAL_MAP_ROUGHNESS);
-            applyTex(cmd.Material.MetallicMap, MATERIAL_MAP_METALNESS);
-            applyTex(cmd.Material.EmissionMap, MATERIAL_MAP_EMISSION);
-            applyTex(cmd.Material.AOMap, MATERIAL_MAP_OCCLUSION);
-
-            if (pass.Environment.IrradianceMap != BRITE::NullTextureHandle) {
-                applyTex(pass.Environment.IrradianceMap, MATERIAL_MAP_IRRADIANCE);
-                applyTex(pass.Environment.PrefilterMap, MATERIAL_MAP_PREFILTER);
-            } else {
-                applyTex(BRITE::NullTextureHandle, MATERIAL_MAP_IRRADIANCE);
-                applyTex(BRITE::NullTextureHandle, MATERIAL_MAP_PREFILTER);
-            }
-
-            ApplyMaterial(cmd.Material);
-        }
-
+        // The model's placement, built exactly as DrawModelEx builds it (scale,
+        // then rotation, then translation, after the model's own transform), so
+        // a model lands where it always has.
         ::Vector3 rlAxis;
         float rlAngle;
         ::Quaternion rlQuat = {cmd.Rotation.x, cmd.Rotation.y, cmd.Rotation.z, cmd.Rotation.w};
         ::QuaternionToAxisAngle(rlQuat, &rlAxis, &rlAngle);
         rlAngle *= RAD2DEG;
+        const ::Matrix placement =
+            ::MatrixMultiply(::MatrixMultiply(::MatrixScale(cmd.Scale.x, cmd.Scale.y, cmd.Scale.z),
+                                              ::MatrixRotate(rlAxis, rlAngle * DEG2RAD)),
+                             ::MatrixTranslate(cmd.Position.x, cmd.Position.y, cmd.Position.z));
+        const ::Matrix transform = ::MatrixMultiply(rlModel->transform, placement);
+        const ::Color tint = {cmd.Material.AlbedoTint.r, cmd.Material.AlbedoTint.g, cmd.Material.AlbedoTint.b,
+                              cmd.Material.AlbedoTint.a};
 
-        ::Vector3 rlPos = {cmd.Position.x, cmd.Position.y, cmd.Position.z};
-        ::Vector3 rlScale = {cmd.Scale.x, cmd.Scale.y, cmd.Scale.z};
-        ::Color rlTint = {cmd.Material.AlbedoTint.r, cmd.Material.AlbedoTint.g, cmd.Material.AlbedoTint.b,
-                          cmd.Material.AlbedoTint.a};
+        // Mesh by mesh, each with ITS OWN material: a model loaded from a file
+        // keeps its materials in slots 1..n (raylib reserves slot 0 for a
+        // default), and every one of them is drawn lit. The material is copied,
+        // maps and all, so nothing below changes the model: the draw command's
+        // textures replace the model's own for this draw only, and a slot the
+        // command leaves empty keeps what the model brought.
+        for (int m = 0; m < rlModel->meshCount; ++m) {
+            const ::Material& own = rlModel->materials[rlModel->meshMaterial[m]];
+            ::MaterialMap maps[MATERIAL_MAPS_PER_MATERIAL];
+            std::memcpy(maps, own.maps, sizeof(maps));
+            ::Material material = own;
+            material.maps = maps;
+            material.shader = pbrShader;
 
-        ::DrawModelEx(*rlModel, rlPos, rlAxis, rlAngle, rlScale, rlTint);
+            // The loader's placeholder is a 1x1 white texture, which is no texture.
+            const unsigned int ownAlbedo = maps[MATERIAL_MAP_ALBEDO].texture.id;
+            const bool modelHasAlbedo = ownAlbedo != 0 && ownAlbedo != ::rlGetTextureIdDefault();
+
+            for (const auto& [handle, mapIndex] : overrides) {
+                if (const ::Texture2D* texture = commandTexture(handle))
+                    maps[mapIndex].texture = *texture;
+            }
+            // The environment belongs to the pass, never to the model.
+            maps[MATERIAL_MAP_IRRADIANCE].texture = irradiance ? *irradiance : ::Texture2D{0};
+            maps[MATERIAL_MAP_PREFILTER].texture = prefilter ? *prefilter : ::Texture2D{0};
+
+            ApplyMaterial(cmd.Material, modelHasAlbedo);
+
+            // The draw tint times the material's own colour, as DrawModelEx does.
+            const ::Color ownColour = maps[MATERIAL_MAP_DIFFUSE].color;
+            maps[MATERIAL_MAP_DIFFUSE].color = {
+                static_cast<unsigned char>((static_cast<int>(ownColour.r) * tint.r) / 255),
+                static_cast<unsigned char>((static_cast<int>(ownColour.g) * tint.g) / 255),
+                static_cast<unsigned char>((static_cast<int>(ownColour.b) * tint.b) / 255),
+                static_cast<unsigned char>((static_cast<int>(ownColour.a) * tint.a) / 255)};
+
+            ::DrawMesh(rlModel->meshes[m], material, transform);
+        }
     }
 
     if (pass.Camera3DPtr) {
@@ -361,13 +399,15 @@ void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass) {
     }
 }
 
-void RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material) {
+void RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo) {
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
 
     // Which maps are bound. The shader used to assume all of them, so a model
     // with no albedo texture sampled whatever was on texture unit 0 -- black on
-    // the first draw -- instead of its colour.
-    const int useAlbedo = material.AlbedoMap != BRITE::NullTextureHandle ? 1 : 0;
+    // the first draw -- instead of its colour. An albedo texture is the draw
+    // command's or, failing that, the one the model's own material brought; the
+    // other maps come from the draw command alone.
+    const int useAlbedo = (material.AlbedoMap != BRITE::NullTextureHandle || modelHasAlbedo) ? 1 : 0;
     const int useNormal = material.NormalMap != BRITE::NullTextureHandle ? 1 : 0;
     const int useMRA =
         (material.MetallicMap != BRITE::NullTextureHandle || material.RoughnessMap != BRITE::NullTextureHandle) ? 1 : 0;
@@ -534,10 +574,33 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModelFromMesh(const BRITE::MeshData&
     return handle;
 }
 
+std::vector<unsigned int> RaylibRenderBackend::TexturesOwnedByModel(const std::vector<unsigned int>& boundTextureIds,
+                                                                    unsigned int placeholderTextureId) {
+    std::vector<unsigned int> owned;
+    for (const unsigned int id : boundTextureIds) {
+        if (id == 0 || id == placeholderTextureId)
+            continue;
+        if (std::find(owned.begin(), owned.end(), id) == owned.end())
+            owned.push_back(id);
+    }
+    return owned;
+}
+
 void RaylibRenderBackend::UnloadModel(BRITE::ModelHandle model) {
     auto it = m_models.find(model);
     if (it != m_models.end()) {
         ::Model* rlModel = static_cast<::Model*>(it->second);
+        // raylib's UnloadModel frees a model's meshes but leaves its textures to
+        // the caller. The textures a loader created for the model's materials are
+        // the model's alone -- a draw command's textures are never written into
+        // it -- so they go with it.
+        std::vector<unsigned int> bound;
+        for (int m = 0; m < rlModel->materialCount; ++m) {
+            for (int map = 0; map < MATERIAL_MAPS_PER_MATERIAL; ++map)
+                bound.push_back(rlModel->materials[m].maps[map].texture.id);
+        }
+        for (const unsigned int id : TexturesOwnedByModel(bound, ::rlGetTextureIdDefault()))
+            ::rlUnloadTexture(id);
         ::UnloadModel(*rlModel);
         delete rlModel;
         m_models.erase(it);

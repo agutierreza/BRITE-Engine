@@ -17,6 +17,12 @@ class RaylibRenderBackend : public IRenderBackend {
     // index a portable mesh may use is 65534, which addresses 65535 vertices.
     static constexpr std::size_t MaxVerticesPerMesh = 65535;
 
+    // Which of the texture ids bound in a model's materials belong to the model
+    // and are freed with it: every id once, except 0 (no texture) and the
+    // placeholder a loader puts in a slot it has nothing for.
+    static std::vector<unsigned int> TexturesOwnedByModel(const std::vector<unsigned int>& boundTextureIds,
+                                                          unsigned int placeholderTextureId);
+
     void SubmitRenderPass(const BRITE::RenderPass& pass) override;
 
     BRITE::TextureHandle LoadRenderTexture(int width, int height) override;
@@ -49,8 +55,9 @@ class RaylibRenderBackend : public IRenderBackend {
     // Hand the pass's lights, ambient and camera position to the PBR shader.
     // Once per pass, before the model commands.
     void ApplyPassLighting(const BRITE::RenderPass& pass);
-    // The per-draw material scalars and which texture maps are bound.
-    void ApplyMaterial(const BRITE::PBRMaterial& material);
+    // The per-mesh material scalars and which texture maps are bound.
+    // modelHasAlbedo: the mesh's own material brought an albedo texture.
+    void ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo);
 
     uint64_t m_nextId = 1;
     uint64_t m_nextShaderId = 1;
