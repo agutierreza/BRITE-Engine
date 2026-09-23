@@ -65,6 +65,23 @@ class InputManager {
     static float GetMouseDeltaX();
     static float GetMouseDeltaY();
 
+    // Claiming a key.
+    //
+    // A layer drawn over the rest of the application -- a menu, a text field, a
+    // console -- reads keys that the application also has actions bound to, and
+    // one press must not do both. ClaimKey takes `key` away from every ACTION for
+    // the rest of this fixed tick: IsActionPressed, IsActionDown and
+    // ActionDownDevices behave as if it were up. The raw key queries --
+    // IsKeyPressed, IsKeyDown, IsKeyReleased -- still see it, which is how the
+    // layer that claimed it reads it. Gamepad and mouse bindings of the same
+    // action are untouched: only the key is claimed.
+    //
+    // A claim lasts until the next FlushFixed. A layer that owns keys for as long
+    // as it is open claims them on every tick it is open, BEFORE anything reads
+    // the actions bound to them that tick.
+    static void ClaimKey(KeyCode key);
+    static bool IsKeyClaimed(KeyCode key);
+
     // Action Mapping
     template <typename TEnum> static void BindAction(TEnum action, KeyCode key) {
         s_actionKeyBindings[static_cast<uint32_t>(action)].push_back(key);
@@ -85,7 +102,7 @@ class InputManager {
         uint32_t actionId = static_cast<uint32_t>(action);
         InputDevice devices = InputDevice::None;
         for (KeyCode k : s_actionKeyBindings[actionId]) {
-            if (IsKeyDown(k)) {
+            if (IsKeyDown(k) && !IsKeyClaimed(k)) {
                 devices |= InputDevice::Keyboard;
                 break;
             }
@@ -113,7 +130,7 @@ class InputManager {
     template <typename TEnum> static bool IsActionPressed(TEnum action) {
         uint32_t actionId = static_cast<uint32_t>(action);
         for (KeyCode k : s_actionKeyBindings[actionId]) {
-            if (IsKeyPressed(k))
+            if (IsKeyPressed(k) && !IsKeyClaimed(k))
                 return true;
         }
         for (GamepadButtonCode b : s_actionGamepadBindings[actionId]) {
@@ -142,6 +159,7 @@ class InputManager {
     static std::array<bool, KeyCount> s_keysDown;
     static std::array<bool, KeyCount> s_keysPressedThisTick;
     static std::array<bool, KeyCount> s_keysReleasedThisTick;
+    static std::array<bool, KeyCount> s_keysClaimedThisTick; // see ClaimKey
 
     static std::unordered_map<MouseButtonCode, bool> s_buttonsDown;
     static std::unordered_map<MouseButtonCode, bool> s_buttonsPressedThisTick;

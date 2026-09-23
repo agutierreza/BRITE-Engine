@@ -36,6 +36,7 @@ enum class Action : uint32_t {
     BothForRelease,
     MouseOnly,
     Stray,
+    Claimable,
 };
 
 /// Reports each input as pressed on exactly one poll and released on exactly
@@ -110,8 +111,9 @@ class InputManagerDevices : public ::testing::Test {
     // cases touch is released, then the backend is detached.
     void TearDown() override {
         m_backend.Clear();
-        m_backend.keysReleased = {KeyCode::G, KeyCode::H, KeyCode::J, KeyCode::K};
-        m_backend.padReleased = {GamepadButtonCode::RightFaceDown, GamepadButtonCode::RightFaceUp};
+        m_backend.keysReleased = {KeyCode::G, KeyCode::H, KeyCode::J, KeyCode::K, KeyCode::L};
+        m_backend.padReleased = {GamepadButtonCode::RightFaceDown, GamepadButtonCode::RightFaceUp,
+                                 GamepadButtonCode::LeftFaceDown};
         m_backend.mouseReleased = {MouseButtonCode::Right};
         Tick();
         InputManager::Initialize(nullptr);
@@ -219,4 +221,63 @@ TEST(InputDeviceFlags, CombineAndTest) {
     InputDevice accumulated = InputDevice::None;
     accumulated |= InputDevice::Mouse;
     EXPECT_EQ(accumulated, InputDevice::Mouse);
+}
+
+// -----------------------------------------------------------------------------
+// ClaimKey: a layer over the application takes a key away from its actions.
+// -----------------------------------------------------------------------------
+
+TEST_F(InputManagerDevices, AClaimedKeyIsHiddenFromEveryActionAndNotFromTheLayerThatClaimedIt) {
+    // L is pressed. A layer claims it: the action bound to L reads as neither
+    // pressed nor down, and no device is holding it -- while the raw key query,
+    // which is how the layer reads it, still says pressed and down.
+    // MUTATIONS: not asking IsKeyClaimed in IsActionPressed -- red on the first
+    // expectation; not asking it in ActionDownDevices -- red on the second and
+    // third; claiming the raw query too -- red on the last two.
+    InputManager::BindAction(Action::Claimable, KeyCode::L);
+    m_backend.keysPressed = {KeyCode::L};
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    InputManager::ClaimKey(KeyCode::L);
+
+    EXPECT_FALSE(InputManager::IsActionPressed(Action::Claimable));
+    EXPECT_FALSE(InputManager::IsActionDown(Action::Claimable));
+    EXPECT_EQ(InputManager::ActionDownDevices(Action::Claimable), InputDevice::None);
+    EXPECT_TRUE(InputManager::IsKeyPressed(KeyCode::L));
+    EXPECT_TRUE(InputManager::IsKeyDown(KeyCode::L));
+    m_backend.Clear();
+}
+
+TEST_F(InputManagerDevices, AClaimIsTheKeysAloneAndTheSameActionOnAnotherDeviceStillWorks) {
+    // The action is on L and on a pad button; L is claimed and the pad button is
+    // pressed. The pad still presses the action and the pad is the only device
+    // holding it. Only the key was claimed.
+    // MUTATION: a claim that hid the whole action would read not-pressed; red.
+    InputManager::BindAction(Action::Claimable, GamepadButtonCode::LeftFaceDown);
+    m_backend.keysPressed = {KeyCode::L};
+    m_backend.padPressed = {GamepadButtonCode::LeftFaceDown};
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    InputManager::ClaimKey(KeyCode::L);
+
+    EXPECT_TRUE(InputManager::IsActionPressed(Action::Claimable));
+    EXPECT_EQ(InputManager::ActionDownDevices(Action::Claimable), InputDevice::Gamepad);
+    m_backend.Clear();
+}
+
+TEST_F(InputManagerDevices, AClaimLastsUntilTheNextFixedTick) {
+    // Claimed on one tick, L is still held on the next; nobody claims it again,
+    // and the action is down once more.
+    // MUTATION: not clearing the claims in FlushFixed leaves L claimed for ever;
+    // red.
+    InputManager::BindAction(Action::Claimable, KeyCode::L);
+    m_backend.keysPressed = {KeyCode::L};
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    InputManager::ClaimKey(KeyCode::L);
+    ASSERT_FALSE(InputManager::IsActionDown(Action::Claimable));
+
+    Tick(); // the next fixed tick; L is still down
+    EXPECT_FALSE(InputManager::IsKeyClaimed(KeyCode::L));
+    EXPECT_TRUE(InputManager::IsActionDown(Action::Claimable));
 }

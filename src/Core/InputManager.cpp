@@ -6,6 +6,7 @@ namespace BRITE {
 std::array<bool, InputManager::KeyCount> InputManager::s_keysDown{};
 std::array<bool, InputManager::KeyCount> InputManager::s_keysPressedThisTick{};
 std::array<bool, InputManager::KeyCount> InputManager::s_keysReleasedThisTick{};
+std::array<bool, InputManager::KeyCount> InputManager::s_keysClaimedThisTick{};
 
 std::unordered_map<MouseButtonCode, bool> InputManager::s_buttonsDown;
 std::unordered_map<MouseButtonCode, bool> InputManager::s_buttonsPressedThisTick;
@@ -86,6 +87,7 @@ void InputManager::PollVariable(entt::dispatcher& dispatcher) {
 void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     s_keysPressedThisTick.fill(false);
     s_keysReleasedThisTick.fill(false);
+    s_keysClaimedThisTick.fill(false); // a claim lasts one fixed tick -- see ClaimKey
     s_buttonsPressedThisTick.clear();
     s_buttonsReleasedThisTick.clear();
     s_gamepadButtonsPressedThisTick.clear();
@@ -185,6 +187,17 @@ bool InputManager::IsKeyDown(KeyCode key) {
 bool InputManager::IsKeyReleased(KeyCode key) {
     size_t idx = static_cast<size_t>(key);
     return idx < KeyCount ? s_keysReleasedThisTick[idx] : false;
+}
+
+void InputManager::ClaimKey(KeyCode key) {
+    size_t idx = static_cast<size_t>(key);
+    if (idx < KeyCount)
+        s_keysClaimedThisTick[idx] = true;
+}
+
+bool InputManager::IsKeyClaimed(KeyCode key) {
+    size_t idx = static_cast<size_t>(key);
+    return idx < KeyCount ? s_keysClaimedThisTick[idx] : false;
 }
 bool InputManager::IsMouseButtonPressed(MouseButtonCode button) {
     return s_buttonsPressedThisTick[button];
