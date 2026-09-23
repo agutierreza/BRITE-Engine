@@ -32,6 +32,13 @@ class IInputBackend {
     // Sticks over [-1, 1] resting at 0; triggers over [-1, 1] resting at -1.
     // With no gamepad attached, report GamepadAxisRestValue(axis), never 0.0.
     virtual float GetGamepadAxis(GamepadAxisCode axis) = 0;
+    // Whether a gamepad is attached and being read. An axis cannot say so: an
+    // absent pad reports rest, and so does an attached one nobody is touching.
+    // Not pure, so a backend without gamepad support need not answer; one that
+    // does not override it reports no gamepad, which is what it has.
+    virtual bool IsGamepadAvailable() {
+        return false;
+    }
 };
 
 } // namespace Backends

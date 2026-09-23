@@ -205,4 +205,10 @@ struct GamepadAxisEvent {
     float value;
 };
 
+// Whether a gamepad was available when the frame was polled. Queued every frame,
+// as the axes are, so the state a fixed tick reads is the last frame's before it.
+struct GamepadAvailabilityEvent {
+    bool available;
+};
+
 } // namespace BRITE

@@ -386,6 +386,10 @@ float RaylibInputBackend::GetGamepadAxis(GamepadAxisCode axis) {
     return ::GetGamepadAxisMovement(0, MapGamepadAxis(axis));
 }
 
+bool RaylibInputBackend::IsGamepadAvailable() {
+    return ::IsGamepadAvailable(0);
+}
+
 } // namespace Raylib
 } // namespace Backends
 } // namespace BRITE

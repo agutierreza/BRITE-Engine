@@ -58,6 +58,12 @@ class InputManager {
     static bool IsGamepadButtonDown(GamepadButtonCode button);
     static bool IsGamepadButtonReleased(GamepadButtonCode button);
     static float GetGamepadAxis(GamepadAxisCode axis);
+    // Whether a gamepad was available at the last frame polled before this tick.
+    // False until one has been polled. Read it before trusting an axis: an absent
+    // pad's axes read rest, and a pad's first reading after it is attached need
+    // not be its rest -- so a reader that waits for rest before acting on an axis
+    // has to start waiting again whenever the pad goes away.
+    static bool IsGamepadAvailable();
 
     static float GetMouseX();
     static float GetMouseY();
@@ -154,6 +160,7 @@ class InputManager {
     static void OnGamepadButtonDown(const GamepadButtonDownEvent& event);
     static void OnGamepadButtonUp(const GamepadButtonUpEvent& event);
     static void OnGamepadAxisMove(const GamepadAxisEvent& event);
+    static void OnGamepadAvailability(const GamepadAvailabilityEvent& event);
 
     static constexpr size_t KeyCount = static_cast<size_t>(KeyCode::Count);
     static std::array<bool, KeyCount> s_keysDown;
@@ -169,6 +176,7 @@ class InputManager {
     static std::unordered_map<GamepadButtonCode, bool> s_gamepadButtonsPressedThisTick;
     static std::unordered_map<GamepadButtonCode, bool> s_gamepadButtonsReleasedThisTick;
     static std::unordered_map<GamepadAxisCode, float> s_gamepadAxes;
+    static bool s_gamepadAvailable;
 
     // Action Binding Maps
     static std::unordered_map<uint32_t, std::vector<KeyCode>> s_actionKeyBindings;

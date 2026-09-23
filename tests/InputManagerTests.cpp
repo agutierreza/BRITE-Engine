@@ -90,6 +90,10 @@ class FakeInputBackend : public BRITE::Backends::IInputBackend {
     float GetGamepadAxis(BRITE::GamepadAxisCode axis) override {
         return BRITE::GamepadAxisRestValue(axis);
     }
+    bool padAvailable = false;
+    bool IsGamepadAvailable() override {
+        return padAvailable;
+    }
 
     void Clear() {
         keysPressed.clear();
@@ -115,6 +119,7 @@ class InputManagerDevices : public ::testing::Test {
         m_backend.padReleased = {GamepadButtonCode::RightFaceDown, GamepadButtonCode::RightFaceUp,
                                  GamepadButtonCode::LeftFaceDown};
         m_backend.mouseReleased = {MouseButtonCode::Right};
+        m_backend.padAvailable = false;
         Tick();
         InputManager::Initialize(nullptr);
     }
@@ -280,4 +285,94 @@ TEST_F(InputManagerDevices, AClaimLastsUntilTheNextFixedTick) {
     Tick(); // the next fixed tick; L is still down
     EXPECT_FALSE(InputManager::IsKeyClaimed(KeyCode::L));
     EXPECT_TRUE(InputManager::IsActionDown(Action::Claimable));
+}
+
+// Whether a gamepad is available. An axis cannot answer it: an absent pad reads
+// rest, and so does an attached one nobody is touching.
+
+TEST_F(InputManagerDevices, AGamepadIsAvailableFromTheTickAfterTheBackendSaysSoUntilItSaysOtherwise) {
+    // The backend reports a pad, then stops reporting it. InputManager says what
+    // the last frame polled before the tick said -- as it does for an axis -- and
+    // no more: before anything is polled, and after the pad goes, false.
+    // MUTATIONS: not applying the event in FlushFixed -- it stays false; red. Not
+    // queueing it in PollVariable -- the same; red. Latching true once seen -- the
+    // pad never goes away; red.
+    EXPECT_FALSE(InputManager::IsGamepadAvailable()) << "nothing has been polled";
+    m_backend.padAvailable = true;
+    InputManager::PollVariable(m_dispatcher);
+    EXPECT_FALSE(InputManager::IsGamepadAvailable()) << "a frame's poll takes effect at the tick, not before";
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_TRUE(InputManager::IsGamepadAvailable());
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_TRUE(InputManager::IsGamepadAvailable()) << "a tick with no frame polled keeps what the last one said";
+
+    m_backend.padAvailable = false;
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FALSE(InputManager::IsGamepadAvailable());
+}
+
+TEST_F(InputManagerDevices, TheLastFramePolledBeforeATickDecidesWhetherAGamepadIsAvailable) {
+    // Two frames drawn in one tick: the pad was there for the first and gone by
+    // the second. The tick reads the second.
+    // MUTATION: applying the first queued event and dropping the rest -- true; red.
+    m_backend.padAvailable = true;
+    InputManager::PollVariable(m_dispatcher);
+    m_backend.padAvailable = false;
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FALSE(InputManager::IsGamepadAvailable());
+}
+
+TEST(GamepadAvailability, ABackendThatDoesNotSayReportsNoGamepad) {
+    // IsGamepadAvailable is not pure, so a backend written before it -- or one
+    // with no gamepad support -- still builds, and reports what it has: none.
+    // MUTATION: a default of true -- red.
+    class Silent : public BRITE::Backends::IInputBackend {
+      public:
+        void PollEvents() override {}
+        bool IsKeyDown(KeyCode) override {
+            return false;
+        }
+        bool IsKeyPressed(KeyCode) override {
+            return false;
+        }
+        bool IsKeyReleased(KeyCode) override {
+            return false;
+        }
+        bool IsMouseButtonDown(MouseButtonCode) override {
+            return false;
+        }
+        bool IsMouseButtonPressed(MouseButtonCode) override {
+            return false;
+        }
+        bool IsMouseButtonReleased(MouseButtonCode) override {
+            return false;
+        }
+        float GetMouseX() override {
+            return 0.0f;
+        }
+        float GetMouseY() override {
+            return 0.0f;
+        }
+        float GetMouseDeltaX() override {
+            return 0.0f;
+        }
+        float GetMouseDeltaY() override {
+            return 0.0f;
+        }
+        bool IsGamepadButtonDown(GamepadButtonCode) override {
+            return false;
+        }
+        bool IsGamepadButtonPressed(GamepadButtonCode) override {
+            return false;
+        }
+        bool IsGamepadButtonReleased(GamepadButtonCode) override {
+            return false;
+        }
+        float GetGamepadAxis(BRITE::GamepadAxisCode axis) override {
+            return BRITE::GamepadAxisRestValue(axis);
+        }
+    } silent;
+    EXPECT_FALSE(silent.IsGamepadAvailable());
 }

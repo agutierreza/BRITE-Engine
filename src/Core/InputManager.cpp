@@ -16,6 +16,7 @@ std::unordered_map<GamepadButtonCode, bool> InputManager::s_gamepadButtonsDown;
 std::unordered_map<GamepadButtonCode, bool> InputManager::s_gamepadButtonsPressedThisTick;
 std::unordered_map<GamepadButtonCode, bool> InputManager::s_gamepadButtonsReleasedThisTick;
 std::unordered_map<GamepadAxisCode, float> InputManager::s_gamepadAxes;
+bool InputManager::s_gamepadAvailable = false;
 
 std::unordered_map<uint32_t, std::vector<KeyCode>> InputManager::s_actionKeyBindings;
 std::unordered_map<uint32_t, std::vector<GamepadButtonCode>> InputManager::s_actionGamepadBindings;
@@ -82,6 +83,7 @@ void InputManager::PollVariable(entt::dispatcher& dispatcher) {
         float value = s_backend->GetGamepadAxis(axis);
         dispatcher.enqueue<GamepadAxisEvent>(GamepadAxisEvent{axis, value});
     }
+    dispatcher.enqueue<GamepadAvailabilityEvent>(GamepadAvailabilityEvent{s_backend->IsGamepadAvailable()});
 }
 
 void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
@@ -103,6 +105,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     dispatcher.sink<GamepadButtonDownEvent>().connect<&InputManager::OnGamepadButtonDown>();
     dispatcher.sink<GamepadButtonUpEvent>().connect<&InputManager::OnGamepadButtonUp>();
     dispatcher.sink<GamepadAxisEvent>().connect<&InputManager::OnGamepadAxisMove>();
+    dispatcher.sink<GamepadAvailabilityEvent>().connect<&InputManager::OnGamepadAvailability>();
 
     dispatcher.update<KeyDownEvent>();
     dispatcher.update<KeyUpEvent>();
@@ -112,6 +115,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     dispatcher.update<GamepadButtonDownEvent>();
     dispatcher.update<GamepadButtonUpEvent>();
     dispatcher.update<GamepadAxisEvent>();
+    dispatcher.update<GamepadAvailabilityEvent>();
 
     dispatcher.sink<KeyDownEvent>().disconnect<&InputManager::OnKeyDown>();
     dispatcher.sink<KeyUpEvent>().disconnect<&InputManager::OnKeyUp>();
@@ -121,6 +125,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     dispatcher.sink<GamepadButtonDownEvent>().disconnect<&InputManager::OnGamepadButtonDown>();
     dispatcher.sink<GamepadButtonUpEvent>().disconnect<&InputManager::OnGamepadButtonUp>();
     dispatcher.sink<GamepadAxisEvent>().disconnect<&InputManager::OnGamepadAxisMove>();
+    dispatcher.sink<GamepadAvailabilityEvent>().disconnect<&InputManager::OnGamepadAvailability>();
 }
 
 void InputManager::OnKeyDown(const KeyDownEvent& event) {
@@ -176,6 +181,10 @@ void InputManager::OnGamepadAxisMove(const GamepadAxisEvent& event) {
     s_gamepadAxes[event.axis] = event.value;
 }
 
+void InputManager::OnGamepadAvailability(const GamepadAvailabilityEvent& event) {
+    s_gamepadAvailable = event.available;
+}
+
 bool InputManager::IsKeyPressed(KeyCode key) {
     size_t idx = static_cast<size_t>(key);
     return idx < KeyCount ? s_keysPressedThisTick[idx] : false;
@@ -224,6 +233,10 @@ float InputManager::GetGamepadAxis(GamepadAxisCode axis) {
     // hand a trigger reader a half-pull on the first tick.
     const auto it = s_gamepadAxes.find(axis);
     return it == s_gamepadAxes.end() ? GamepadAxisRestValue(axis) : it->second;
+}
+
+bool InputManager::IsGamepadAvailable() {
+    return s_gamepadAvailable;
 }
 
 float InputManager::GetMouseX() {

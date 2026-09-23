@@ -26,6 +26,7 @@ class RaylibInputBackend : public IInputBackend {
     bool IsGamepadButtonPressed(GamepadButtonCode button) override;
     bool IsGamepadButtonReleased(GamepadButtonCode button) override;
     float GetGamepadAxis(GamepadAxisCode axis) override;
+    bool IsGamepadAvailable() override;
 };
 
 } // namespace Raylib
