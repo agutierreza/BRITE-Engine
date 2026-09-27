@@ -35,6 +35,34 @@ class IRenderBackend {
     virtual BRITE::ModelHandle LoadModelFromMesh(const BRITE::MeshData& mesh) = 0;
     virtual void UnloadModel(BRITE::ModelHandle model) = 0;
 
+    // A model's geometry read back to the CPU, one MeshData per mesh in the
+    // order the model draws them: for baking many copies of a model into a few
+    // meshes, or deriving bounds or collision from it. Each mesh is in the
+    // model's own space -- where a ModelDrawCommand at the origin, unrotated and
+    // at unit scale, puts it -- with any node transforms of the file it came
+    // from already applied. Loaded back through LoadModelFromMesh and drawn
+    // with no tint, the meshes look as the model does under the same draw:
+    //
+    //   Normals  unit length; empty when the mesh has none, which CheckMeshData
+    //            refuses until the caller supplies them.
+    //   Colors   always one per vertex: the vertex colour (white where the mesh
+    //            has none) times its material's base colour. A material's
+    //            textures are not carried; a textured mesh reads back as its
+    //            base colour alone.
+    //   Indices  always three per triangle; a mesh drawn without an index list
+    //            reads back as 0, 1, 2, ...
+    //
+    // A mesh may hold more vertices than LoadModelFromMesh accepts, if its file
+    // drew it without indices; CheckMeshData says so, and the caller splits it.
+    // Returns false, with meshes empty, when the handle names no model -- or
+    // when the backend cannot read geometry back, which is what this default
+    // does, so that an implementation written before it existed still builds.
+    virtual bool ReadModelMeshes(BRITE::ModelHandle model, std::vector<BRITE::MeshData>& meshes) {
+        (void)model;
+        meshes.clear();
+        return false;
+    }
+
     virtual BRITE::ShaderHandle LoadShader(const char* vsFileName, const char* fsFileName) = 0;
     virtual BRITE::ShaderHandle LoadShaderFromMemory(const char* vsCode, const char* fsCode) = 0;
     virtual void UnloadShader(BRITE::ShaderHandle shader) = 0;

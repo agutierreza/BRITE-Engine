@@ -607,6 +607,70 @@ void RaylibRenderBackend::UnloadModel(BRITE::ModelHandle model) {
     }
 }
 
+unsigned char RaylibRenderBackend::ModulateChannel(unsigned char a, unsigned char b) {
+    return static_cast<unsigned char>((static_cast<int>(a) * static_cast<int>(b) + 127) / 255);
+}
+
+bool RaylibRenderBackend::ReadModelMeshes(BRITE::ModelHandle model, std::vector<BRITE::MeshData>& meshes) {
+    meshes.clear();
+    auto it = m_models.find(model);
+    if (it == m_models.end())
+        return false;
+    const ::Model* rlModel = static_cast<const ::Model*>(it->second);
+
+    // raylib keeps each mesh's arrays on the CPU after uploading them, and its
+    // file loaders have already applied every node's transform to them. Both
+    // LoadModel and LoadModelFromMesh set the model's own transform to the
+    // identity, and nothing in this backend changes it, so the arrays are in
+    // the model's space as they stand.
+    meshes.resize(static_cast<std::size_t>(rlModel->meshCount));
+    for (int m = 0; m < rlModel->meshCount; ++m) {
+        const ::Mesh& mesh = rlModel->meshes[m];
+        BRITE::MeshData& out = meshes[static_cast<std::size_t>(m)];
+        if (mesh.vertices == nullptr || mesh.vertexCount <= 0)
+            continue; // a mesh whose file held no positions raylib could read
+        const std::size_t vertexCount = static_cast<std::size_t>(mesh.vertexCount);
+
+        out.Positions.resize(vertexCount);
+        for (std::size_t i = 0; i < vertexCount; ++i)
+            out.Positions[i] = {mesh.vertices[i * 3 + 0], mesh.vertices[i * 3 + 1], mesh.vertices[i * 3 + 2]};
+
+        // A node's scale reaches the normals through the inverse-transpose,
+        // which raylib does not renormalise afterwards; the shader does, so
+        // the model draws right, but a caller is promised unit normals.
+        if (mesh.normals != nullptr) {
+            out.Normals.resize(vertexCount);
+            for (std::size_t i = 0; i < vertexCount; ++i) {
+                const BRITE::Vector3 n = {mesh.normals[i * 3 + 0], mesh.normals[i * 3 + 1], mesh.normals[i * 3 + 2]};
+                const float length = BRITE::Math::Length(n);
+                out.Normals[i] = length > 0.0f ? BRITE::Vector3{n.x / length, n.y / length, n.z / length} : n;
+            }
+        }
+
+        // The draw multiplies the material's colour by the vertex colour; the
+        // read-back folds that product into the vertex colour, so a plain white
+        // material draws it the same.
+        const ::Color base = rlModel->materials[rlModel->meshMaterial[m]].maps[MATERIAL_MAP_DIFFUSE].color;
+        out.Colors.resize(vertexCount);
+        for (std::size_t i = 0; i < vertexCount; ++i) {
+            const unsigned char* vertex = mesh.colors != nullptr ? &mesh.colors[i * 4] : nullptr;
+            auto channel = [&](int c, unsigned char own) {
+                return ModulateChannel(vertex != nullptr ? vertex[c] : 255, own);
+            };
+            out.Colors[i] = {channel(0, base.r), channel(1, base.g), channel(2, base.b), channel(3, base.a)};
+        }
+
+        // Without an index list raylib draws the vertices in order, three to a
+        // triangle; a trailing one or two make no triangle and are not drawn.
+        const std::size_t indexCount =
+            mesh.indices != nullptr ? static_cast<std::size_t>(mesh.triangleCount) * 3 : vertexCount / 3 * 3;
+        out.Indices.resize(indexCount);
+        for (std::size_t i = 0; i < indexCount; ++i)
+            out.Indices[i] = mesh.indices != nullptr ? mesh.indices[i] : static_cast<std::uint32_t>(i);
+    }
+    return true;
+}
+
 BRITE::ShaderHandle RaylibRenderBackend::LoadShader(const char* vsFileName, const char* fsFileName) {
     ::Shader* shader = new ::Shader(::LoadShader(vsFileName, fsFileName));
     BRITE::ShaderHandle handle = m_nextShaderId++;

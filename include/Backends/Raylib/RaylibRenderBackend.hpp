@@ -36,6 +36,13 @@ class RaylibRenderBackend : public IRenderBackend {
     BRITE::ModelHandle LoadModel(const char* fileName) override;
     BRITE::ModelHandle LoadModelFromMesh(const BRITE::MeshData& mesh) override;
     void UnloadModel(BRITE::ModelHandle model) override;
+    bool ReadModelMeshes(BRITE::ModelHandle model, std::vector<BRITE::MeshData>& meshes) override;
+
+    // One 8-bit colour channel times another, as the lit shader multiplies a
+    // material's colour by a vertex colour, stored back in 8 bits: a * b / 255,
+    // rounded to the nearest. (a * b / 255 is never exactly half-way, since 255
+    // is odd, so "nearest" needs no tie rule.)
+    static unsigned char ModulateChannel(unsigned char a, unsigned char b);
 
     BRITE::ShaderHandle LoadShader(const char* vsFileName, const char* fsFileName) override;
     BRITE::ShaderHandle LoadShaderFromMemory(const char* vsCode, const char* fsCode) override;
