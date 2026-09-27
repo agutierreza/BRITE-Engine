@@ -268,6 +268,12 @@ struct PBRMaterial {
     // unless the caller asks for metal.
     float Metallic = 0.0f;
     float Roughness = 1.0f;
+    // Draw the albedo as authored -- tint times vertex colour times albedo
+    // texture -- with no lights, no ambient, no tone mapping and no fog: for a
+    // sky, a painted backdrop or a light-emitting sign. The scalars and every
+    // map but the albedo are ignored. A model draw only; sprites and primitives
+    // are unlit already.
+    bool Unlit = false;
 };
 
 struct EnvironmentMap {

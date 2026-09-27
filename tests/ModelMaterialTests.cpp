@@ -43,6 +43,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -198,6 +199,17 @@ void WriteHalvesPng(const fs::path& path, ::Color left, ::Color right) {
     ::UnloadImage(image);
 }
 
+// A quad built in code, spanning x0..x1 and y -1..1 at depth z, facing +z,
+// every vertex one colour.
+BRITE::MeshData QuadMesh(float x0, float x1, BRITE::Color colour, float z = 0.0f) {
+    BRITE::MeshData mesh;
+    mesh.Positions = {{x0, -1.0f, z}, {x1, -1.0f, z}, {x1, 1.0f, z}, {x0, 1.0f, z}};
+    mesh.Normals = {{0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}};
+    mesh.Colors = {colour, colour, colour, colour};
+    mesh.Indices = {0, 1, 2, 0, 2, 3};
+    return mesh;
+}
+
 // ---------------------------------------------------------------------------
 
 class ModelMaterialTest : public ::testing::Test {
@@ -220,22 +232,31 @@ class ModelMaterialTest : public ::testing::Test {
 
     // Draws the model under the one light and returns the picture, top row first.
     std::vector<BRITE::Color> Draw(BRITE::ModelHandle model, const BRITE::PBRMaterial& material = {}) {
+        BRITE::RenderPass pass;
+        pass.AmbientColor = {255, 255, 255, 255};
+        pass.AmbientIntensity = 1.0f;
+        return DrawPass(pass, {{model, material}});
+    }
+
+    // Draws each model, at the origin, in one pass lit as `pass` says, and
+    // returns the picture. The camera, target and clear colour are the file's.
+    std::vector<BRITE::Color> DrawPass(BRITE::RenderPass pass,
+                                       const std::vector<std::pair<BRITE::ModelHandle, BRITE::PBRMaterial>>& models) {
         BRITE::Camera3D camera{
             {0.0f, 0.0f, 5.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, 4.0f, BRITE::CameraProjection::Orthographic};
-        BRITE::RenderPass pass;
         pass.TargetFramebuffer = m_target;
         pass.ClearColor = {0, 0, 0, 255};
         pass.Camera3DPtr = &camera;
-        pass.AmbientColor = {255, 255, 255, 255};
-        pass.AmbientIntensity = 1.0f;
 
-        BRITE::ModelDrawCommand draw;
-        draw.Model = model;
-        draw.Material = material;
-        draw.Position = {0.0f, 0.0f, 0.0f};
-        draw.Rotation = {0.0f, 0.0f, 0.0f, 1.0f};
-        draw.Scale = {1.0f, 1.0f, 1.0f};
-        pass.ModelCommands.push_back(draw);
+        for (const auto& [model, material] : models) {
+            BRITE::ModelDrawCommand draw;
+            draw.Model = model;
+            draw.Material = material;
+            draw.Position = {0.0f, 0.0f, 0.0f};
+            draw.Rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+            draw.Scale = {1.0f, 1.0f, 1.0f};
+            pass.ModelCommands.push_back(draw);
+        }
         m_backend.SubmitRenderPass(pass);
 
         int width = 0, height = 0;
@@ -403,6 +424,113 @@ TEST_F(ModelMaterialTest, UnloadingAModelFreesTheTextureItsFileBrought) {
 #else
     GTEST_SKIP() << "counts texture names through opengl32's glIsTexture";
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// Unlit materials. An unlit surface writes its albedo -- tint times vertex
+// colour times albedo texture -- exactly as authored, so its expected pixels are
+// the authored bytes themselves, with no light to work through.
+// ---------------------------------------------------------------------------
+
+// Under no light and no ambient a lit white quad is black -- the ambient term is
+// 0 * albedo and there are no lights, so the colour is 0 before and after the
+// tone map -- while an unlit one is white, 255.
+//
+// Mutations: the unlit uniform never set -> 0, not 255; the shader's unlit
+// branch removed -> 0.
+TEST_F(ModelMaterialTest, AnUnlitModelDrawsItsColourUnderNoLight) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::RenderPass dark; // no lights; AmbientIntensity 0 by default
+
+    const auto lit = DrawPass(dark, {{model, {}}});
+    ExpectColour(At(lit, LEFT_HALF), 0, 0, 0, "lit, in the dark");
+
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    const auto pixels = DrawPass(dark, {{model, unlit}});
+    ExpectColour(At(pixels, LEFT_HALF), 255, 255, 255, "unlit, in the dark");
+    ExpectColour(At(pixels, RIGHT_HALF), 255, 255, 255, "unlit, in the dark");
+    m_backend.UnloadModel(model);
+}
+
+// An unlit surface is its tint times its vertex colour, whatever the light.
+// Vertices (200, 200, 255) under a tint of (255, 128, 51):
+//   red    1.0      * 200/255 = 0.78431 -> 200
+//   green  128/255  * 200/255 = 0.50196 * 0.78431 = 0.39369 -> 100.39 -> 100
+//   blue   51/255   * 1.0     = 0.2     -> 51
+// in the dark, and again under a white ambient of 1 and a white sun of
+// intensity 5 shining straight onto the quad. (Lit, the second would saturate
+// toward 255 in every channel.)
+//
+// Mutations: the unlit colour tone mapped (albedo / (albedo + 1)) -> red 112;
+// the ambient multiplied in -> black in the dark; the vertex colour left out ->
+// (255, 128, 51); the tint left out -> (200, 200, 255).
+TEST_F(ModelMaterialTest, AnUnlitModelsColourDoesNotChangeWithTheLightsOrTheAmbient) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {200, 200, 255, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    unlit.AlbedoTint = {255, 128, 51, 255};
+
+    BRITE::RenderPass dark;
+    ExpectColour(At(DrawPass(dark, {{model, unlit}}), LEFT_HALF), 200, 100, 51, "unlit, in the dark");
+
+    BRITE::RenderPass bright;
+    bright.AmbientColor = {255, 255, 255, 255};
+    bright.AmbientIntensity = 1.0f;
+    BRITE::Light sun;
+    sun.Direction = {0.0f, 0.0f, -1.0f};
+    sun.Intensity = 5.0f;
+    bright.Lights.push_back(sun);
+    ExpectColour(At(DrawPass(bright, {{model, unlit}}), LEFT_HALF), 200, 100, 51, "unlit, in full light");
+    m_backend.UnloadModel(model);
+}
+
+// A loaded model's own texture is drawn unlit exactly as its texels are: the
+// red|green texture reads (255, 0, 0) and (0, 255, 0), against 186 lit.
+//
+// Mutation: the texture left out of the unlit branch -> white on both.
+TEST_F(ModelMaterialTest, AnUnlitModelsTextureIsDrawnAsAuthored) {
+    WriteHalvesPng(m_dir.Path() / "texture.png", {255, 0, 0, 255}, {0, 255, 0, 255});
+    Scene scene;
+    GltfMaterial textured;
+    textured.textured = true;
+    scene.Materials = {textured};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    const auto pixels = Draw(model, unlit);
+    ExpectColour(At(pixels, RED_TEXELS), 255, 0, 0, "the texture's red half, unlit");
+    ExpectColour(At(pixels, GREEN_TEXELS), 0, 255, 0, "the texture's green half, unlit");
+    m_backend.UnloadModel(model);
+}
+
+// Unlit is per draw: an unlit quad on the left, drawn first, and a lit one on
+// the right in the same pass, under the one light. The left reads 255 and the
+// right 186 -- the lit one is not left unlit by the one before it.
+//
+// Mutation: the unlit uniform set only when a material is unlit -> the right
+// reads 255.
+TEST_F(ModelMaterialTest, AnUnlitMeshLeavesTheNextMeshLit) {
+    const BRITE::ModelHandle left = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 0.0f, {255, 255, 255, 255}));
+    const BRITE::ModelHandle right = m_backend.LoadModelFromMesh(QuadMesh(0.0f, 1.0f, {255, 255, 255, 255}));
+    ASSERT_NE(left, BRITE::NullModelHandle);
+    ASSERT_NE(right, BRITE::NullModelHandle);
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    BRITE::RenderPass pass;
+    pass.AmbientColor = {255, 255, 255, 255};
+    pass.AmbientIntensity = 1.0f;
+
+    const auto pixels = DrawPass(pass, {{left, unlit}, {right, {}}});
+    ExpectColour(At(pixels, LEFT_HALF), 255, 255, 255, "unlit, drawn first");
+    ExpectColour(At(pixels, RIGHT_HALF), LIT_FULL, LIT_FULL, LIT_FULL, "lit, drawn after it");
+    m_backend.UnloadModel(left);
+    m_backend.UnloadModel(right);
 }
 
 // Which of a model's bound texture ids are its own, worked by hand: 0 is no

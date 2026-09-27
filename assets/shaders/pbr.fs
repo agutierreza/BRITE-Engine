@@ -69,6 +69,9 @@ uniform vec3 viewPos;
 uniform vec3 ambientColor;
 uniform float ambient;
 
+// 1: the material is unlit, and main() writes its albedo as authored.
+uniform int unlit;
+
 vec2 SampleSphericalMap(vec3 v)
 {
     vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
@@ -234,6 +237,17 @@ vec3 ComputePBR()
 
 void main()
 {
+    // Unlit: the albedo in the sRGB it was authored in, straight to the target.
+    // No linearising, because nothing is lit; no tone mapping, because nothing
+    // went above 1; no gamma, because nothing was linearised.
+    if (unlit == 1)
+    {
+        vec3 albedo = colDiffuse.rgb*fragColor.rgb;
+        if (useTexAlbedo == 1) albedo *= texture(albedoMap, fragTexCoord*tiling + offset).rgb;
+        finalColor = vec4(albedo, colDiffuse.a*fragColor.a);
+        return;
+    }
+
     vec3 color = ComputePBR();
     color = color / (color + vec3(1.0)); // Reinhard tonemapping
     color = pow(color, vec3(1.0/2.2));   // Gamma correction

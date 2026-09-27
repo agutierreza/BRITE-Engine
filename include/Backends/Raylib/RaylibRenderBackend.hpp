@@ -87,6 +87,7 @@ class RaylibRenderBackend : public IRenderBackend {
         int metallicValue = -1;
         int roughnessValue = -1;
         int aoValue = -1;
+        int unlit = -1;
         struct LightLocations {
             int enabled = -1;
             int type = -1;

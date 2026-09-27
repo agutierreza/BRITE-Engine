@@ -332,6 +332,7 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.metallicValue = loc("metallicValue");
     m_pbrLocs.roughnessValue = loc("roughnessValue");
     m_pbrLocs.aoValue = loc("aoValue");
+    m_pbrLocs.unlit = loc("unlit");
     for (std::size_t i = 0; i < BRITE::MaxLightsPerPass; ++i) {
         const std::string prefix = "lights[" + std::to_string(i) + "].";
         auto& l = m_pbrLocs.lights[i];
@@ -423,6 +424,11 @@ void RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool
     // and multiplied the whole ambient term away.
     const float ao = 1.0f;
     ::SetShaderValue(*shader, m_pbrLocs.aoValue, &ao, SHADER_UNIFORM_FLOAT);
+
+    // Set on every mesh, lit or not: a uniform keeps its value between draws,
+    // so an unlit mesh would otherwise leave every mesh after it unlit.
+    const int unlit = material.Unlit ? 1 : 0;
+    ::SetShaderValue(*shader, m_pbrLocs.unlit, &unlit, SHADER_UNIFORM_INT);
 }
 
 // ---------------------------------------------------------------------------
