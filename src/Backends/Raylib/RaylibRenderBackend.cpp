@@ -333,6 +333,10 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.roughnessValue = loc("roughnessValue");
     m_pbrLocs.aoValue = loc("aoValue");
     m_pbrLocs.unlit = loc("unlit");
+    m_pbrLocs.fogEnabled = loc("fogEnabled");
+    m_pbrLocs.fogColor = loc("fogColor");
+    m_pbrLocs.fogStart = loc("fogStart");
+    m_pbrLocs.fogEnd = loc("fogEnd");
     for (std::size_t i = 0; i < BRITE::MaxLightsPerPass; ++i) {
         const std::string prefix = "lights[" + std::to_string(i) + "].";
         auto& l = m_pbrLocs.lights[i];
@@ -389,6 +393,15 @@ void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass) {
                                    pass.AmbientColor.b / 255.0f};
     ::SetShaderValue(*shader, m_pbrLocs.ambientColor, ambientColor, SHADER_UNIFORM_VEC3);
     ::SetShaderValue(*shader, m_pbrLocs.ambient, &pass.AmbientIntensity, SHADER_UNIFORM_FLOAT);
+
+    // Every pass sets the fog, off included: a uniform keeps its value, so a
+    // fogged pass would otherwise fog every pass after it.
+    const int fogEnabled = pass.Fog.Enabled ? 1 : 0;
+    ::SetShaderValue(*shader, m_pbrLocs.fogEnabled, &fogEnabled, SHADER_UNIFORM_INT);
+    const float fogColor[3] = {pass.Fog.Tint.r / 255.0f, pass.Fog.Tint.g / 255.0f, pass.Fog.Tint.b / 255.0f};
+    ::SetShaderValue(*shader, m_pbrLocs.fogColor, fogColor, SHADER_UNIFORM_VEC3);
+    ::SetShaderValue(*shader, m_pbrLocs.fogStart, &pass.Fog.Start, SHADER_UNIFORM_FLOAT);
+    ::SetShaderValue(*shader, m_pbrLocs.fogEnd, &pass.Fog.End, SHADER_UNIFORM_FLOAT);
 
     const int useIBL = pass.Environment.IrradianceMap != BRITE::NullTextureHandle ? 1 : 0;
     ::SetShaderValue(*shader, m_pbrLocs.useIBL, &useIBL, SHADER_UNIFORM_INT);

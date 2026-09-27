@@ -88,6 +88,10 @@ class RaylibRenderBackend : public IRenderBackend {
         int roughnessValue = -1;
         int aoValue = -1;
         int unlit = -1;
+        int fogEnabled = -1;
+        int fogColor = -1;
+        int fogStart = -1;
+        int fogEnd = -1;
         struct LightLocations {
             int enabled = -1;
             int type = -1;

@@ -74,6 +74,22 @@ struct Light {
 // The most lights a backend honours per pass; entries beyond it are ignored.
 inline constexpr std::size_t MaxLightsPerPass = 4;
 
+// Distance fog on the lit path. A lit model's surface fades linearly toward Tint
+// as its distance from the camera goes from Start to End, in world units: as
+// drawn nearer than Start, exactly Tint beyond End. The fade is applied to the
+// finished colour, after tone mapping, so Tint is the colour a distant surface
+// shows. An End at or before Start fogs everything beyond Start completely.
+//
+// Only lit models are fogged. Unlit materials carry their colour as authored,
+// and primitives, sprites and lines never pass through the lit shader, so none
+// of them is fogged. Off unless Enabled.
+struct FogSettings {
+    bool Enabled = false;
+    Color Tint = White;
+    float Start = 0.0f;
+    float End = 1.0f;
+};
+
 struct RenderPass {
     TextureHandle TargetFramebuffer = NullTextureHandle; // NullTextureHandle means default screen
     ShaderHandle Shader = NullShaderHandle;              // NullShaderHandle means no post-processing shader
@@ -92,6 +108,8 @@ struct RenderPass {
     std::vector<Light> Lights;
     Color AmbientColor = White;
     float AmbientIntensity = 0.0f;
+
+    FogSettings Fog;
 
     std::vector<ModelDrawCommand> ModelCommands;
     std::vector<SpriteDrawCommand> SpriteCommands;

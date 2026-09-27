@@ -533,6 +533,123 @@ TEST_F(ModelMaterialTest, AnUnlitMeshLeavesTheNextMeshLit) {
     m_backend.UnloadModel(right);
 }
 
+// ---------------------------------------------------------------------------
+// Distance fog. Every case draws a white quad at z = 0, lit by the one light,
+// and reads the centre pixel (32, 32). Its centre is x = 32.5/16 - 2 = 0.03125,
+// y = 2 - 32.5/16 = -0.03125, so its distance from the camera at (0, 0, 5) is
+//
+//     sqrt(0.03125^2 + 0.03125^2 + 5^2) = sqrt(25.001953) = 5.000195
+//
+// -- 5 m, to well inside a GPU's rounding. Unfogged the pixel is the file's
+// lit white, 0.729740 in every channel (186). The fog colour is (100, 200, 50),
+// which is (0.392157, 0.784314, 0.196078), and the fade is applied to the
+// finished colour, so a fully fogged pixel is exactly that colour.
+// ---------------------------------------------------------------------------
+
+constexpr int CENTRE = 32;
+
+BRITE::RenderPass FoggedPass(float start, float end) {
+    BRITE::RenderPass pass;
+    pass.AmbientColor = {255, 255, 255, 255};
+    pass.AmbientIntensity = 1.0f;
+    pass.Fog.Enabled = true;
+    pass.Fog.Tint = {100, 200, 50, 255};
+    pass.Fog.Start = start;
+    pass.Fog.End = end;
+    return pass;
+}
+
+// Nearer than Start the surface is as drawn: start 6 m, end 10 m, and the quad
+// at 5 m reads the lit white, 186.
+//
+// Mutation: the clamp's lower bound dropped -> the fade is (5 - 6) / 4 = -0.25
+// and mix() runs backwards: 0.729740 + 0.25 * (0.729740 - 0.392157) = 0.814136,
+// red 208.
+TEST_F(ModelMaterialTest, FogLeavesASurfaceNearerThanItsStartAsDrawn) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(FoggedPass(6.0f, 10.0f), {{model, {}}}), CENTRE), LIT_FULL, LIT_FULL, LIT_FULL,
+                 "5 m, fog from 6 m");
+    m_backend.UnloadModel(model);
+}
+
+// Beyond End the surface is the fog colour: start 1 m, end 4 m, and the quad at
+// 5 m reads (100, 200, 50).
+//
+// Mutation: the clamp's upper bound dropped -> the fade is (5 - 1) / 3 = 1.333
+// and runs past the fog colour: red 0.729740 + 1.333 * (0.392157 - 0.729740) =
+// 0.279629, 71.
+TEST_F(ModelMaterialTest, FogTurnsASurfaceBeyondItsEndToTheFogColour) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(FoggedPass(1.0f, 4.0f), {{model, {}}}), CENTRE), 100, 200, 50, "5 m, fog to 4 m");
+    m_backend.UnloadModel(model);
+}
+
+// Halfway between Start and End the surface is halfway to the fog colour. Start
+// 3 m, end 7 m: the fade is (5.000195 - 3) / 4 = 0.500049, and each channel is
+// lit + 0.500049 * (fog - lit):
+//   red    0.729740 + 0.500049 * (0.392157 - 0.729740) = 0.560932 -> 143.04 -> 143
+//   green  0.729740 + 0.500049 * (0.784314 - 0.729740) = 0.757030 -> 193.04 -> 193
+//   blue   0.729740 + 0.500049 * (0.196078 - 0.729740) = 0.462883 -> 118.04 -> 118
+//
+// Mutations: the distance measured from the origin instead of the camera ->
+// about 0 m, unfogged, 186; the two mixed in linear light instead of on the
+// finished colour -> red 0.5 (the lit white, linear) and 0.392157^2.2 = 0.127530
+// mix to 0.313765, which encodes as 0.313765^(1/2.2) = 0.590430, 151.
+TEST_F(ModelMaterialTest, FogHalfwayBetweenItsStartAndEndIsHalfwayToTheFogColour) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(FoggedPass(3.0f, 7.0f), {{model, {}}}), CENTRE), 143, 193, 118, "5 m, fog 3 m to 7 m");
+    m_backend.UnloadModel(model);
+}
+
+// An End at or before Start is a hard edge at Start. Start 3 m, end 1 m: the
+// quad at 5 m is beyond the start, fully fogged. Start 6 m, end 4 m: the quad is
+// nearer than the start, as drawn -- though it lies between the two numbers.
+//
+// Mutation: the floor on the span dropped -> (5 - 3) / (1 - 3) = -1, clamped to
+// 0, unfogged; and (5 - 6) / (4 - 6) = 0.5, half fogged.
+TEST_F(ModelMaterialTest, FogWithItsEndBeforeItsStartIsAHardEdgeAtTheStart) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(FoggedPass(3.0f, 1.0f), {{model, {}}}), CENTRE), 100, 200, 50, "5 m, fog from 3 m");
+    ExpectColour(At(DrawPass(FoggedPass(6.0f, 4.0f), {{model, {}}}), CENTRE), LIT_FULL, LIT_FULL, LIT_FULL,
+                 "5 m, fog from 6 m");
+    m_backend.UnloadModel(model);
+}
+
+// Unlit materials are not fogged: an unlit white quad beyond the fog's end
+// still reads 255.
+//
+// Mutation: the fog applied to the unlit branch as well -> (100, 200, 50).
+TEST_F(ModelMaterialTest, FogLeavesAnUnlitSurfaceAsAuthored) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    ExpectColour(At(DrawPass(FoggedPass(1.0f, 4.0f), {{model, unlit}}), CENTRE), 255, 255, 255, "unlit, 5 m");
+    m_backend.UnloadModel(model);
+}
+
+// Fog is off unless a pass asks for it -- and a pass that does leaves the next
+// one clear. A pass with the fully fogging settings but Enabled false reads 186;
+// so does a default pass drawn straight after a fogged one.
+//
+// Mutations: the shader ignoring fogEnabled -> the first reads the fog colour;
+// the fog uniforms set only when a pass enables them -> the last reads it.
+TEST_F(ModelMaterialTest, FogIsOffUnlessAPassAsksAndDoesNotOutliveThatPass) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::RenderPass disabled = FoggedPass(1.0f, 4.0f);
+    disabled.Fog.Enabled = false;
+    ExpectColour(At(DrawPass(disabled, {{model, {}}}), CENTRE), LIT_FULL, LIT_FULL, LIT_FULL, "fog not enabled");
+
+    ExpectColour(At(DrawPass(FoggedPass(1.0f, 4.0f), {{model, {}}}), CENTRE), 100, 200, 50, "a fogged pass");
+    ExpectColour(At(Draw(model), CENTRE), LIT_FULL, LIT_FULL, LIT_FULL, "the default pass after it");
+    m_backend.UnloadModel(model);
+}
+
 // Which of a model's bound texture ids are its own, worked by hand: 0 is no
 // texture and 1 is the placeholder, so of {0, 1, 7, 7, 9, 0, 1} the model owns
 // 7 and 9, each once.

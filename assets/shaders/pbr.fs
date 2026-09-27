@@ -72,6 +72,13 @@ uniform float ambient;
 // 1: the material is unlit, and main() writes its albedo as authored.
 uniform int unlit;
 
+// Distance fog, the pass's: fogColor is sRGB, as a Color is authored, and the
+// distances are world units from viewPos.
+uniform int fogEnabled;
+uniform vec3 fogColor;
+uniform float fogStart;
+uniform float fogEnd;
+
 vec2 SampleSphericalMap(vec3 v)
 {
     vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
@@ -251,5 +258,16 @@ void main()
     vec3 color = ComputePBR();
     color = color / (color + vec3(1.0)); // Reinhard tonemapping
     color = pow(color, vec3(1.0/2.2));   // Gamma correction
+
+    // Fog on the finished colour, so fogColor is exactly what a surface beyond
+    // fogEnd shows. The floor on the span makes an end at or before the start a
+    // hard edge at the start, rather than a division by zero or a fade that
+    // runs backwards.
+    if (fogEnabled == 1)
+    {
+        float fromCamera = length(viewPos - fragPosition);
+        float fade = clamp((fromCamera - fogStart)/max(fogEnd - fogStart, 0.0001), 0.0, 1.0);
+        color = mix(color, fogColor, fade);
+    }
     finalColor = vec4(color, colDiffuse.a*fragColor.a);
 }
