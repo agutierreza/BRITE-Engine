@@ -1,6 +1,7 @@
 ﻿#include "Backends/Raylib/RaylibRenderBackend.hpp"
 #include "Backends/Raylib/PbrShaderSource.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -249,6 +250,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             // The loader's placeholder is a 1x1 white texture, which is no texture.
             const unsigned int ownAlbedo = maps[MATERIAL_MAP_ALBEDO].texture.id;
             const bool modelHasAlbedo = ownAlbedo != 0 && ownAlbedo != ::rlGetTextureIdDefault();
+            const unsigned int ownEmission = maps[MATERIAL_MAP_EMISSION].texture.id;
+            const bool modelHasEmission = ownEmission != 0 && ownEmission != ::rlGetTextureIdDefault();
 
             for (const auto& [handle, mapIndex] : overrides) {
                 if (const ::Texture2D* texture = commandTexture(handle))
@@ -258,8 +261,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             maps[MATERIAL_MAP_IRRADIANCE].texture = irradiance ? *irradiance : ::Texture2D{0};
             maps[MATERIAL_MAP_PREFILTER].texture = prefilter ? *prefilter : ::Texture2D{0};
 
-            const bool bothSides =
-                ApplyMaterial(cmd.Material, modelHasAlbedo, FileMaterial(cmd.Model, rlModel->meshMaterial[m]));
+            const bool bothSides = ApplyMaterial(cmd.Material, modelHasAlbedo, modelHasEmission,
+                                                 FileMaterial(cmd.Model, rlModel->meshMaterial[m]));
 
             // The draw tint times the material's own colour, as DrawModelEx does.
             const ::Color ownColour = maps[MATERIAL_MAP_DIFFUSE].color;
@@ -421,6 +424,7 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.alphaMask = loc("alphaMask");
     m_pbrLocs.alphaCutoff = loc("alphaCutoff");
     m_pbrLocs.doubleSided = loc("doubleSided");
+    m_pbrLocs.emissiveLight = loc("emissiveLight");
     m_pbrLocs.fogEnabled = loc("fogEnabled");
     m_pbrLocs.fogColor = loc("fogColor");
     m_pbrLocs.fogStart = loc("fogStart");
@@ -501,7 +505,7 @@ void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass) {
     }
 }
 
-bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo,
+bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo, bool modelHasEmission,
                                         const BRITE::GltfMaterialInfo* fileMaterial) {
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
 
@@ -514,11 +518,9 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool
     const int useNormal = material.NormalMap != BRITE::NullTextureHandle ? 1 : 0;
     const int useMRA =
         (material.MetallicMap != BRITE::NullTextureHandle || material.RoughnessMap != BRITE::NullTextureHandle) ? 1 : 0;
-    const int useEmissive = material.EmissionMap != BRITE::NullTextureHandle ? 1 : 0;
     ::SetShaderValue(*shader, m_pbrLocs.useTexAlbedo, &useAlbedo, SHADER_UNIFORM_INT);
     ::SetShaderValue(*shader, m_pbrLocs.useTexNormal, &useNormal, SHADER_UNIFORM_INT);
     ::SetShaderValue(*shader, m_pbrLocs.useTexMRA, &useMRA, SHADER_UNIFORM_INT);
-    ::SetShaderValue(*shader, m_pbrLocs.useTexEmissive, &useEmissive, SHADER_UNIFORM_INT);
 
     ::SetShaderValue(*shader, m_pbrLocs.metallicValue, &material.Metallic, SHADER_UNIFORM_FLOAT);
     ::SetShaderValue(*shader, m_pbrLocs.roughnessValue, &material.Roughness, SHADER_UNIFORM_FLOAT);
@@ -544,6 +546,27 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool
     const bool bothSides = material.DoubleSided || (fileMaterial != nullptr && fileMaterial->DoubleSided);
     const int doubleSided = bothSides ? 1 : 0;
     ::SetShaderValue(*shader, m_pbrLocs.doubleSided, &doubleSided, SHADER_UNIFORM_INT);
+
+    // Emission: the draw's if it names any, else the file's, else none; set on
+    // every mesh, so one mesh's glow is never left on the next. The draw's
+    // colour is sRGB, as the tint is, and is linearised; a file's factor is
+    // linear already, as glTF defines it. The strength multiplies either.
+    float emissive[3] = {0.0f, 0.0f, 0.0f};
+    int useEmissive = 0;
+    const bool drawEmits = material.Emission.r != 0 || material.Emission.g != 0 || material.Emission.b != 0 ||
+                           material.EmissionMap != BRITE::NullTextureHandle;
+    if (drawEmits) {
+        const unsigned char channels[3] = {material.Emission.r, material.Emission.g, material.Emission.b};
+        for (int c = 0; c < 3; ++c)
+            emissive[c] = std::pow(channels[c] / 255.0f, 2.2f) * material.EmissionStrength;
+        useEmissive = material.EmissionMap != BRITE::NullTextureHandle ? 1 : 0;
+    } else if (fileMaterial != nullptr) {
+        for (int c = 0; c < 3; ++c)
+            emissive[c] = fileMaterial->EmissiveFactor[c] * fileMaterial->EmissiveStrength;
+        useEmissive = modelHasEmission ? 1 : 0;
+    }
+    ::SetShaderValue(*shader, m_pbrLocs.emissiveLight, emissive, SHADER_UNIFORM_VEC3);
+    ::SetShaderValue(*shader, m_pbrLocs.useTexEmissive, &useEmissive, SHADER_UNIFORM_INT);
     return bothSides;
 }
 

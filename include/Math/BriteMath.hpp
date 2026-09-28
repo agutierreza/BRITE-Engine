@@ -286,6 +286,14 @@ struct PBRMaterial {
     // behind. A loaded model's own double-sided materials are drawn so whatever
     // this says; set here, it applies to every mesh of the draw.
     bool DoubleSided = false;
+    // Light the surface gives off, added to whatever light falls on it: a sign,
+    // a display, a lamp. An sRGB colour, as the tint is, times EmissionMap when
+    // there is one, times EmissionStrength -- so an emission map shows as it is
+    // under a white Emission, and a strength above 1 glows brighter than any
+    // colour can say. Black is none. A lit surface only: unlit ones are drawn
+    // as authored. Set, it replaces a loaded model's own emission for this draw.
+    Color Emission = Black;
+    float EmissionStrength = 1.0f;
 };
 
 struct EnvironmentMap {

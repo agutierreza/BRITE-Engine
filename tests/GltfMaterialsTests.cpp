@@ -128,3 +128,33 @@ TEST(GltfMaterials, AFileWithoutMaterialsReadsEmpty) {
     EXPECT_TRUE(ReadGltfMaterials(Bytes(R"({"asset": {"version": "2.0"}})"), materials));
     EXPECT_TRUE(materials.empty());
 }
+
+// Emission: a material that says nothing gives none -- a black factor and a
+// strength of 1; one with an emissiveFactor gives that, linear, as written; one
+// with KHR_materials_emissive_strength gives that strength too.
+//
+// Mutations: emissiveFactor not read -> material 1 reads black; its channels
+// read out of order -> (0.5, 0.25, 1) not (1, 0.5, 0.25); the extension not read
+// -> material 2's strength 1; a default strength of 0 -> material 0 reads 0.
+TEST(GltfMaterials, EmissionReadsAsWritten) {
+    const std::string file = R"({
+      "asset": {"version": "2.0"},
+      "materials": [
+        {},
+        {"emissiveFactor": [1, 0.5, 0.25]},
+        {"emissiveFactor": [1, 1, 1],
+         "extensions": {"KHR_materials_emissive_strength": {"emissiveStrength": 4}}}
+      ]
+    })";
+    std::vector<GltfMaterialInfo> materials;
+    ASSERT_TRUE(ReadGltfMaterials(Bytes(file), materials));
+    ASSERT_EQ(materials.size(), 3u);
+    for (int c = 0; c < 3; ++c)
+        EXPECT_FLOAT_EQ(materials[0].EmissiveFactor[c], 0.0f) << "channel " << c;
+    EXPECT_FLOAT_EQ(materials[0].EmissiveStrength, 1.0f);
+    EXPECT_FLOAT_EQ(materials[1].EmissiveFactor[0], 1.0f);
+    EXPECT_FLOAT_EQ(materials[1].EmissiveFactor[1], 0.5f);
+    EXPECT_FLOAT_EQ(materials[1].EmissiveFactor[2], 0.25f);
+    EXPECT_FLOAT_EQ(materials[1].EmissiveStrength, 1.0f);
+    EXPECT_FLOAT_EQ(materials[2].EmissiveStrength, 4.0f);
+}

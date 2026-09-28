@@ -75,6 +75,21 @@ bool ReadGltfMaterials(const std::vector<unsigned char>& bytes, std::vector<Gltf
                 info.AlphaCutoff = cutoff->get<float>();
             if (const auto sided = entry.find("doubleSided"); sided != entry.end() && sided->is_boolean())
                 info.DoubleSided = sided->get<bool>();
+            if (const auto emissive = entry.find("emissiveFactor");
+                emissive != entry.end() && emissive->is_array() && emissive->size() == 3) {
+                for (std::size_t c = 0; c < 3; ++c)
+                    if ((*emissive)[c].is_number())
+                        info.EmissiveFactor[c] = (*emissive)[c].get<float>();
+            }
+            if (const auto extensions = entry.find("extensions");
+                extensions != entry.end() && extensions->is_object()) {
+                const auto strength = extensions->find("KHR_materials_emissive_strength");
+                if (strength != extensions->end() && strength->is_object()) {
+                    const auto value = strength->find("emissiveStrength");
+                    if (value != strength->end() && value->is_number())
+                        info.EmissiveStrength = value->get<float>();
+                }
+            }
         }
         materials.push_back(info);
     }

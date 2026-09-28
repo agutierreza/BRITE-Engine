@@ -57,11 +57,9 @@ uniform int useTexEmissive;
 // raylib's per-draw diffuse colour: the material colour times the draw tint.
 // This is how ModelDrawCommand's Material.AlbedoTint reaches the shader.
 uniform vec4  colDiffuse;
-uniform vec4  emissiveColor;
 uniform float metallicValue;
 uniform float roughnessValue;
 uniform float aoValue;
-uniform float emissivePower;
 
 uniform Light lights[MAX_LIGHTS];
 uniform vec3 viewPos;
@@ -76,6 +74,9 @@ uniform int unlit;
 // and vertex colour say, and the texture's alpha is ignored (glTF's OPAQUE).
 uniform int alphaMask;
 uniform float alphaCutoff;
+
+// The light a surface gives off, linear RGB, strength included; black is none.
+uniform vec3 emissiveLight;
 
 // 1: the back face is drawn too, and lit with its normal turned to face the
 // viewer (glTF's doubleSided).
@@ -170,8 +171,11 @@ vec3 ComputePBR()
     vec3 V = normalize(viewPos - fragPosition);
     vec3 R = reflect(-V, N);
 
-    vec3 emissive = vec3(0);
-    if (useTexEmissive == 1) emissive = (texture(emissiveMap, fragTexCoord*tiling + offset).rgb).g*emissiveColor.rgb*emissivePower;
+    // The light the surface gives off, added to what falls on it. emissiveLight
+    // is linear and already carries the strength; the map, like the albedo, is
+    // authored in sRGB and is linearised.
+    vec3 emissive = emissiveLight;
+    if (useTexEmissive == 1) emissive *= pow(texture(emissiveMap, fragTexCoord*tiling + offset).rgb, vec3(2.2));
 
     vec3 F0 = vec3(0.04);
     F0 = mix(F0, albedo, metallic);

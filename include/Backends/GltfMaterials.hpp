@@ -18,6 +18,12 @@ struct GltfMaterialInfo {
     GltfAlphaMode AlphaMode = GltfAlphaMode::Opaque;
     float AlphaCutoff = 0.5f; // read for Mask; glTF's default
     bool DoubleSided = false;
+    // The light the surface gives off, linear RGB, times the emissive texture
+    // when there is one: black, none, unless the file says otherwise.
+    float EmissiveFactor[3] = {0.0f, 0.0f, 0.0f};
+    // KHR_materials_emissive_strength: a multiplier on EmissiveFactor, so a
+    // factor capped at 1 can still glow brighter. 1 when the file has none.
+    float EmissiveStrength = 1.0f;
 };
 
 // Reads the materials of a glTF file, in the order the file lists them, from

@@ -77,10 +77,11 @@ class RaylibRenderBackend : public IRenderBackend {
     // Once per pass, before the model commands.
     void ApplyPassLighting(const BRITE::RenderPass& pass);
     // The per-mesh material scalars and which texture maps are bound.
-    // modelHasAlbedo: the mesh's own material brought an albedo texture.
+    // modelHasAlbedo, modelHasEmission: the mesh's own material brought an
+    // albedo texture, an emissive texture.
     // fileMaterial: what the mesh's file said of its material, or null.
     // Returns whether the mesh is drawn double-sided.
-    bool ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo,
+    bool ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo, bool modelHasEmission,
                        const BRITE::GltfMaterialInfo* fileMaterial);
     // What a loaded model's file said of the material in raylib slot `slot`,
     // or null: a model built in code, a file that is not glTF, slot 0 (raylib's
@@ -112,6 +113,7 @@ class RaylibRenderBackend : public IRenderBackend {
         int alphaMask = -1;
         int alphaCutoff = -1;
         int doubleSided = -1;
+        int emissiveLight = -1;
         int fogEnabled = -1;
         int fogColor = -1;
         int fogStart = -1;

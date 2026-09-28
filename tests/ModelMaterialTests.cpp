@@ -92,6 +92,9 @@ struct GltfMaterial {
     const char* alphaMode = nullptr; // written only when set
     float alphaCutoff = -1.0f;       // written only when 0 or more
     bool doubleSided = false;        // written only when true
+    const float* emissive = nullptr; // an emissiveFactor, written only when set
+    float emissiveStrength = -1.0f;  // KHR_materials_emissive_strength, written only when 0 or more
+    bool emissiveTextured = false;   // the emissive texture samples texture.png
 };
 
 struct Scene {
@@ -201,8 +204,21 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
         }
         if (m.doubleSided)
             materials += ",\"doubleSided\":true";
+        if (m.emissive) {
+            std::snprintf(buf, sizeof(buf), ",\"emissiveFactor\":[%g,%g,%g]", m.emissive[0], m.emissive[1],
+                          m.emissive[2]);
+            materials += buf;
+        }
+        if (m.emissiveTextured)
+            materials += ",\"emissiveTexture\":{\"index\":0}";
+        if (m.emissiveStrength >= 0.0f) {
+            std::snprintf(buf, sizeof(buf),
+                          ",\"extensions\":{\"KHR_materials_emissive_strength\":{\"emissiveStrength\":%g}}",
+                          m.emissiveStrength);
+            materials += buf;
+        }
         materials += "}";
-        anyTexture = anyTexture || m.textured;
+        anyTexture = anyTexture || m.textured || m.emissiveTextured;
     }
 
     std::string json = "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
@@ -1196,6 +1212,150 @@ TEST_F(ModelMaterialTest, ADrawMakesAMeshBuiltInCodeDoubleSided) {
     both.DoubleSided = true;
     ExpectColour(At(Draw(model, both), LEFT_HALF), LIT_FULL, LIT_FULL, LIT_FULL, "the draw's double-sided");
     m_backend.UnloadModel(model);
+}
+
+// ---------------------------------------------------------------------------
+// Emission: light a surface gives off, added to the light that falls on it,
+// then tone mapped and gamma encoded with it. In the dark -- no lights, no
+// ambient -- only the emission is left, so an emission of 1.0 in a channel goes
+// the way the one light's saturated channel does: 1/(1+1) = 0.5, 0.5^(1/2.2) =
+// 0.729740, 186. The base colours below are black, so nothing else could glow.
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr float EMIT_RED[3] = {1.0f, 0.0f, 0.0f};
+constexpr float EMIT_WHITE[3] = {1.0f, 1.0f, 1.0f};
+
+Scene GlowingQuad(const float* emissive, float strength, bool textured) {
+    Scene scene;
+    GltfMaterial material;
+    material.rgba[0] = material.rgba[1] = material.rgba[2] = 0.0f; // black: it lights nothing
+    material.emissive = emissive;
+    material.emissiveStrength = strength;
+    material.emissiveTextured = textured;
+    scene.Materials = {material};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+    return scene;
+}
+
+// 128 in sRGB, linearised and glowing on its own:
+//   (128/255)^2.2 = 0.501961^2.2 = e^(2.2 * -0.689233) = 0.219521
+//   0.219521 / 1.219521 = 0.180007;  0.180007^(1/2.2) = e^(-1.714760/2.2) = 0.458666
+//   0.458666 * 255 = 116.96 -> 117
+// Taken as linear instead: 0.501961 / 1.501961 = 0.334206, 0.334206^(1/2.2) =
+// 0.607636, 155.
+constexpr int HALF_SRGB_GLOW = 117;
+} // namespace
+
+// A file's own emissiveFactor glows in the dark: (1, 0, 0) reads (186, 0, 0).
+// Emission has never worked here before: the shader multiplied it by two
+// uniforms nothing set, so every emissive surface drew black.
+//
+// Mutations: the emission not added to the lit colour -> black; the file's
+// factor not handed to the shader -> black; its channels reversed -> blue.
+TEST_F(ModelMaterialTest, AFilesEmissiveFactorGlowsInTheDark) {
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), GlowingQuad(EMIT_RED, -1.0f, false)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{model, {}}}), LEFT_HALF), LIT_FULL, 0, 0, "emissive red");
+    m_backend.UnloadModel(model);
+}
+
+// KHR_materials_emissive_strength glows brighter than a factor of 1 can: white
+// at strength 3 is 3 in each channel, 3/(3+1) = 0.75, 0.75^(1/2.2) =
+// e^(-0.287682/2.2) = 0.877428, 223.7 -> 224.
+//
+// Mutation: the strength not applied -> 186.
+TEST_F(ModelMaterialTest, AnEmissiveStrengthGlowsBrighterThanAFactorCan) {
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), GlowingQuad(EMIT_WHITE, 3.0f, false)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{model, {}}}), LEFT_HALF), 224, 224, 224, "white at strength 3");
+    m_backend.UnloadModel(model);
+}
+
+// An emissive texture glows as its texels, under a white factor, linearised as
+// the albedo is: the (128, 0, 0) half reads (117, 0, 0), the (0, 255, 0) half
+// (0, 186, 0).
+//
+// Mutations: the emissive texture not sampled -> white, 186, on both halves;
+// the texture not linearised -> the red half reads 155; only its green channel
+// read, as the shader used to -> the red half is black.
+TEST_F(ModelMaterialTest, AnEmissiveTextureGlowsAsItsTexels) {
+    WriteHalvesPng(m_dir.Path() / "texture.png", {128, 0, 0, 255}, {0, 255, 0, 255});
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), GlowingQuad(EMIT_WHITE, -1.0f, true)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const auto pixels = DrawPass(BRITE::RenderPass{}, {{model, {}}});
+    ExpectColour(At(pixels, RED_TEXELS), HALF_SRGB_GLOW, 0, 0, "the texture's 128 red, glowing");
+    ExpectColour(At(pixels, GREEN_TEXELS), 0, LIT_FULL, 0, "the texture's green, glowing");
+    m_backend.UnloadModel(model);
+}
+
+// Emission adds to the light that falls: a white surface under the one light
+// is 1.0, and a white emission of 1.0 on top makes 2.0; 2/(2+1) = 0.666667,
+// 0.666667^(1/2.2) = e^(-0.405465/2.2) = 0.831683, 212.1 -> 212.
+//
+// Mutation: the emission replacing the lit colour rather than adding to it ->
+// 186.
+TEST_F(ModelMaterialTest, EmissionAddsToTheLightThatFalls) {
+    Scene scene = GlowingQuad(EMIT_WHITE, -1.0f, false);
+    scene.Materials[0].rgba[0] = scene.Materials[0].rgba[1] = scene.Materials[0].rgba[2] = 1.0f;
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    ExpectColour(At(Draw(model), LEFT_HALF), 212, 212, 212, "lit white plus emitted white");
+    m_backend.UnloadModel(model);
+}
+
+// A draw gives a mesh built in code its emission, an sRGB colour as the tint
+// is: (128, 0, 0) in the dark reads (117, 0, 0). The next draw names none, and
+// is dark: one draw's glow is not left on for the next.
+//
+// Mutations: the draw's colour taken as linear -> 155; the draw's emission
+// ignored -> black; the emission set only when a draw has one -> the second
+// draw still glows, 117.
+TEST_F(ModelMaterialTest, ADrawGivesAMeshBuiltInCodeItsEmissionForThatDrawOnly) {
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {0, 0, 0, 255}));
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::PBRMaterial glowing;
+    glowing.Emission = {128, 0, 0, 255};
+    ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{model, glowing}}), LEFT_HALF), HALF_SRGB_GLOW, 0, 0,
+                 "the draw's (128, 0, 0)");
+    ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{model, {}}}), LEFT_HALF), 0, 0, 0, "the next draw, dark");
+    m_backend.UnloadModel(model);
+}
+
+// A draw's emission map glows as its texels under a white Emission, on a mesh
+// built in code -- and a draw's emission replaces a loaded model's own for that
+// draw: a file glowing red, drawn with a green Emission, glows green.
+//
+// Mutations: the draw's map not sampled -> white on both halves; the file's
+// emission winning over the draw's -> red.
+TEST_F(ModelMaterialTest, ADrawsEmissionMapGlowsAndADrawsEmissionReplacesTheFiles) {
+    WriteHalvesPng(m_dir.Path() / "halves.png", {128, 0, 0, 255}, {0, 255, 0, 255});
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {0, 0, 0, 255});
+    for (const BRITE::Vector3& p : mesh.Positions)
+        mesh.TexCoords.push_back({(p.x + 1.0f) * 0.5f, (1.0f - p.y) * 0.5f});
+    const BRITE::ModelHandle built = m_backend.LoadModelFromMesh(mesh);
+    ASSERT_NE(built, BRITE::NullModelHandle);
+    const BRITE::TextureHandle halves = m_backend.LoadTexture((m_dir.Path() / "halves.png").string().c_str());
+    BRITE::PBRMaterial mapped;
+    mapped.EmissionMap = halves;
+    mapped.Emission = {255, 255, 255, 255};
+    const auto pixels = DrawPass(BRITE::RenderPass{}, {{built, mapped}});
+    ExpectColour(At(pixels, RED_TEXELS), HALF_SRGB_GLOW, 0, 0, "the draw's map, 128 red");
+    ExpectColour(At(pixels, GREEN_TEXELS), 0, LIT_FULL, 0, "the draw's map, green");
+    m_backend.UnloadTexture(halves);
+    m_backend.UnloadModel(built);
+
+    const BRITE::ModelHandle file =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), GlowingQuad(EMIT_RED, -1.0f, false)).string().c_str());
+    ASSERT_NE(file, BRITE::NullModelHandle);
+    BRITE::PBRMaterial green;
+    green.Emission = {0, 255, 0, 255};
+    ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{file, green}}), LEFT_HALF), 0, LIT_FULL, 0,
+                 "the draw's green over the file's red");
+    m_backend.UnloadModel(file);
 }
 
 // Which of a model's bound texture ids are its own, worked by hand: 0 is no
