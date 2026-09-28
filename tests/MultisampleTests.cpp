@@ -449,6 +449,30 @@ TEST_F(MultisampleGpuTest, UnloadingAMultisampledRenderTextureFreesWhatItMade) {
     EXPECT_EQ(liveRenderbuffers(), before) << "and nothing left of them";
 }
 
+// Asked for no samples, the raylib window has none: OpenGL reports 0.
+//
+// raylib keeps the multisample hint for the rest of the process once any window
+// has asked for it -- CloseWindow leaves it set, and nothing raylib offers
+// clears it -- so after a multisampled window every later one is multisampled
+// too, whatever it asks. So this case comes BEFORE the one that asks, for a run
+// of the whole suite in one process to reach it; and should anything earlier in
+// the process have asked, it says so and skips, rather than blaming the
+// backend for raylib's memory.
+//
+// Mutation: Init setting the multisample hint whatever it is asked -> 4.
+TEST(MultisampleWindow, TheRaylibWindowIsPlainUnlessAsked) {
+    if (::IsWindowState(FLAG_MSAA_4X_HINT))
+        GTEST_SKIP() << "an earlier window in this process asked for multisampling, and raylib keeps the hint";
+    ::SetTraceLogLevel(LOG_WARNING);
+    ::SetConfigFlags(FLAG_WINDOW_HIDDEN);
+    BRITE::Backends::Raylib::RaylibApplicationBackend window;
+    window.Init("BRITE multisample window", SIZE, SIZE, BRITE::Backends::WindowOptions{});
+    int samples = -1;
+    glad_glGetIntegerv(GL_SAMPLES_, &samples);
+    window.Shutdown();
+    EXPECT_EQ(samples, 0);
+}
+
 // The raylib window asked for samples has a multisampled back buffer: OpenGL
 // reports 4 samples a pixel -- raylib's one offer. The window is hidden, like
 // every window these tests open, and a hidden window still has its back buffer.
@@ -465,18 +489,4 @@ TEST(MultisampleWindow, TheRaylibWindowIsMultisampledWhenAsked) {
     glad_glGetIntegerv(GL_SAMPLES_, &samples);
     window.Shutdown();
     EXPECT_EQ(samples, 4);
-}
-
-// And asked for none, it has none: OpenGL reports 0 samples.
-//
-// Mutation: Init setting the multisample hint whatever it is asked -> 4.
-TEST(MultisampleWindow, TheRaylibWindowIsPlainUnlessAsked) {
-    ::SetTraceLogLevel(LOG_WARNING);
-    ::SetConfigFlags(FLAG_WINDOW_HIDDEN);
-    BRITE::Backends::Raylib::RaylibApplicationBackend window;
-    window.Init("BRITE multisample window", SIZE, SIZE, BRITE::Backends::WindowOptions{});
-    int samples = -1;
-    glad_glGetIntegerv(GL_SAMPLES_, &samples);
-    window.Shutdown();
-    EXPECT_EQ(samples, 0);
 }

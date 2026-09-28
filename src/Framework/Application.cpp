@@ -131,7 +131,13 @@ void Application::ShutdownSubsystems() {
         m_appBackend->Shutdown();
     }
     PHYSFS_deinit();
-    spdlog::shutdown();
+    // Flushed, never shut down. The logger belongs to the process, not to one
+    // application: spdlog::shutdown() dropped the default logger for good, and
+    // the next Application in the same process logged through nothing as it
+    // started. Flushing keeps what shutting down was for -- nothing written
+    // is lost -- and leaves the logger for whoever comes next.
+    if (auto logger = spdlog::default_logger())
+        logger->flush();
 }
 
 void Application::SetTargetFPS(int fps) {
