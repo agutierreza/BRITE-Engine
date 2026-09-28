@@ -35,6 +35,8 @@ struct GltfMaterialInfo {
     // KHR_materials_unlit: the material is drawn as its base colour, with no
     // lighting -- a sky, a backdrop, a painted card.
     bool Unlit = false;
+    // occlusionTexture.strength: how much of the occlusion map applies, 0 to 1.
+    float OcclusionStrength = 1.0f;
 };
 
 // Reads the materials of a glTF file, in the order the file lists them, from

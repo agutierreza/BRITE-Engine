@@ -86,6 +86,12 @@ bool ReadGltfMaterials(const std::vector<unsigned char>& bytes, std::vector<Gltf
                     info.HasRoughnessFactor = true;
                 }
             }
+            if (const auto occlusion = entry.find("occlusionTexture");
+                occlusion != entry.end() && occlusion->is_object()) {
+                const auto strength = occlusion->find("strength");
+                if (strength != occlusion->end() && strength->is_number())
+                    info.OcclusionStrength = strength->get<float>();
+            }
             if (const auto emissive = entry.find("emissiveFactor");
                 emissive != entry.end() && emissive->is_array() && emissive->size() == 3) {
                 for (std::size_t c = 0; c < 3; ++c)

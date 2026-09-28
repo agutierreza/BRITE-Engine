@@ -98,6 +98,9 @@ struct GltfMaterial {
     float metallic = -1.0f;          // metallicFactor, written only when 0 or more
     float roughness = -1.0f;         // roughnessFactor, written only when 0 or more
     bool unlit = false;              // KHR_materials_unlit, written only when true
+    bool mrTextured = false;         // metallicRoughnessTexture samples the image
+    bool occlusionTextured = false;  // occlusionTexture samples the image
+    float occlusionStrength = -1.0f; // occlusionTexture.strength, written only when 0 or more
 };
 
 struct Scene {
@@ -209,7 +212,17 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
             std::snprintf(buf, sizeof(buf), ",\"roughnessFactor\":%g", m.roughness);
             materials += buf;
         }
+        if (m.mrTextured)
+            materials += ",\"metallicRoughnessTexture\":{\"index\":0}";
         materials += "}"; // pbrMetallicRoughness
+        if (m.occlusionTextured) {
+            materials += ",\"occlusionTexture\":{\"index\":0";
+            if (m.occlusionStrength >= 0.0f) {
+                std::snprintf(buf, sizeof(buf), ",\"strength\":%g", m.occlusionStrength);
+                materials += buf;
+            }
+            materials += "}";
+        }
         if (m.alphaMode)
             materials += std::string(",\"alphaMode\":\"") + m.alphaMode + "\"";
         if (m.alphaCutoff >= 0.0f) {
@@ -236,7 +249,7 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
         if (!extensions.empty())
             materials += ",\"extensions\":{" + extensions + "}";
         materials += "}";
-        anyTexture = anyTexture || m.textured || m.emissiveTextured;
+        anyTexture = anyTexture || m.textured || m.emissiveTextured || m.mrTextured || m.occlusionTextured;
     }
 
     std::string json = "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
@@ -1583,6 +1596,189 @@ TEST_F(ModelMaterialTest, AModelsJpegTextureDraws) {
     BRITE::PBRMaterial unlit;
     unlit.Unlit = true;
     ExpectJpegColour(At(Draw(model, unlit), LEFT_HALF), "the file's JPEG, unlit");
+    m_backend.UnloadModel(model);
+}
+
+// ---------------------------------------------------------------------------
+// Metalness, roughness and occlusion maps. The sun cases use the sun behind the
+// camera of the metallic-and-roughness block above, and its three values (185,
+// 123, 215). One more, for metal at roughness 0.3: F0 = 1 and kD = 0, so all of
+// it is specular, D/4 * pi = 39.2975/4 * pi = 30.8642; 30.8642/31.8642 =
+// 0.968617; ^(1/2.2) = e^(-0.031886/2.2) = 0.985611 -> 251.3 -> 251.
+//
+// The ambient cases use the one light, where a white surface is 1.0 times its
+// occlusion: 1.0 is 186, and
+//   occlusion 64/255 = 0.250980:  /1.250980 = 0.200627; ^(1/2.2) = e^(-1.606302/2.2) = 0.481844 -> 123
+//   at strength 0.5, 1 + 0.5(0.250980 - 1) = 0.625490:
+//                                  /1.625490 = 0.384801; ^(1/2.2) = e^(-0.955028/2.2) = 0.647856 -> 165
+//   occlusion 0.5:                 0.5/1.5 = 0.333333;   ^(1/2.2) = e^(-1.098612/2.2) = 0.606941 -> 155
+//
+// Occlusion is read from red, roughness from green, metalness from blue; the
+// maps below put a different value in each channel, so a map read from the
+// wrong channel reads the wrong number.
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr int GLOSSY_METAL = 251;
+constexpr int OCCLUDED_64 = 123;
+constexpr int OCCLUDED_64_HALF_STRENGTH = 165;
+
+BRITE::MeshData TexturedQuad() {
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255});
+    for (const BRITE::Vector3& p : mesh.Positions)
+        mesh.TexCoords.push_back({(p.x + 1.0f) * 0.5f, (1.0f - p.y) * 0.5f});
+    return mesh;
+}
+void WriteFlatPng(const fs::path& path, ::Color colour) {
+    WriteHalvesPng(path, colour, colour);
+}
+} // namespace
+
+// THE DEFECT THIS FIXES, 1: a draw's RoughnessMap was never read. It was bound
+// to a slot no shader sampler read, and the packed-map path it switched on
+// sampled the empty metalness slot instead. Now a roughness map of green 77 --
+// 77/255 = 0.301961, times a factor of 1 under a map -- makes the surface glossy:
+// a = 0.301961^4 = 0.0083136, D = 1/(pi a) = 38.2878, Lo = 0.96 + 38.2878 *
+// 0.04/4 * pi = 2.162848, /3.162848 = 0.683829, ^(1/2.2) = 0.841334 -> 214.5,
+// within the tolerance of 215. Red and blue are 255, so a map read from them
+// would read rough, or metal.
+//
+// Mutations: the roughness map not bound to a sampler -> not 215; roughness read
+// from the red channel -> 1.0, 185.
+TEST_F(ModelMaterialTest, ADrawsRoughnessMapIsRead) {
+    WriteFlatPng(m_dir.Path() / "rough.png", {255, 77, 255, 255});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(TexturedQuad());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle rough = m_backend.LoadTexture((m_dir.Path() / "rough.png").string().c_str());
+    BRITE::PBRMaterial glossy;
+    glossy.RoughnessMap = rough;
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, glossy}})), GLOSSY_DIELECTRIC, TOLERANCE);
+    m_backend.UnloadTexture(rough);
+    m_backend.UnloadModel(model);
+}
+
+// THE DEFECT THIS FIXES, 2: a draw's MetallicMap averaged its blue channel into
+// the occlusion -- ao = (map.b + 1) / 2 -- so a black metallic map, meaning "not
+// metal", halved the ambient light: 0.5, 155. Now it is only metalness, and a
+// white surface under the one light stays 1.0, 186.
+//
+// Mutation: the occlusion taken from the metallic map's blue again -> black, 0.
+TEST_F(ModelMaterialTest, ABlackMetallicMapNoLongerDarkensTheAmbient) {
+    WriteFlatPng(m_dir.Path() / "black.png", {0, 0, 0, 255});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(TexturedQuad());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle black = m_backend.LoadTexture((m_dir.Path() / "black.png").string().c_str());
+    BRITE::PBRMaterial notMetal;
+    notMetal.MetallicMap = black;
+    ExpectColour(At(Draw(model, notMetal), LEFT_HALF), LIT_FULL, LIT_FULL, LIT_FULL, "a black metallic map");
+    m_backend.UnloadTexture(black);
+    m_backend.UnloadModel(model);
+}
+
+// A file's metal-roughness texture multiplies its factors, as glTF says. Two
+// files, each with one flat texture, each read at the middle pixel, where the
+// derivation above holds. (It holds ONLY there: at roughness 0.3 the highlight
+// is narrow, and 0.28 m off-centre, where a half-texture sample would sit, the
+// half vector tilts about 0.028 rad and D falls by about a sixth -- this case
+// first read 212 there, against the 215 worked for the middle.)
+// The first texture is (0, 153, 255): green 153/255 = 0.6, blue 1.0, metal; the
+// second (0, 153, 0), not metal. roughnessFactor 0.5 is written, so roughness
+// is 0.5 * 0.6 = 0.3; metallicFactor is not, and under a map that is glTF's 1,
+// "as the map says". Glossy metal, 251; glossy dielectric, 215.
+//
+// Which channel metalness is read from cannot show here: raylib splits a file's
+// metal-roughness texture into greyscale images before the engine sees them,
+// so every channel of the one it hands over holds the metalness. A draw's map
+// arrives as the caller made it, and the case after this one reads that.
+//
+// Mutations: the factor ADDED to the map, as the old path did -> 0.5 + 0.6,
+// clamped to rough: 123 and 185; an unwritten factor under a map falling back
+// to the draw's 0 -> not metal, 215.
+TEST_F(ModelMaterialTest, AFilesMetalRoughnessTextureMultipliesItsFactors) {
+    Scene scene;
+    GltfMaterial material;
+    material.roughness = 0.5f;
+    material.mrTextured = true;
+    scene.Materials = {material};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+
+    WriteFlatPng(m_dir.Path() / "texture.png", {0, 153, 255, 255});
+    const BRITE::ModelHandle metal = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(metal, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{metal, {}}})), GLOSSY_METAL, TOLERANCE)
+        << "metal, roughness 0.5 x 0.6";
+    m_backend.UnloadModel(metal);
+
+    WriteFlatPng(m_dir.Path() / "texture.png", {0, 153, 0, 255});
+    const BRITE::ModelHandle dielectric = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(dielectric, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{dielectric, {}}})), GLOSSY_DIELECTRIC, TOLERANCE)
+        << "dielectric, roughness 0.5 x 0.6";
+    m_backend.UnloadModel(dielectric);
+}
+
+// A draw's metallic map is read from its blue channel, where glTF packs metal:
+// a map of pure blue, (0, 0, 255), is metal, and under the sun behind the camera
+// at roughness 1 that is the rough metal's 123. Red and green are 0, so a map
+// read from either would be no metal at all, 185.
+//
+// Mutation: metalness read from the red channel -> 185.
+TEST_F(ModelMaterialTest, ADrawsMetallicMapIsReadFromBlue) {
+    WriteFlatPng(m_dir.Path() / "blue.png", {0, 0, 255, 255});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(TexturedQuad());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle blue = m_backend.LoadTexture((m_dir.Path() / "blue.png").string().c_str());
+    BRITE::PBRMaterial metal;
+    metal.MetallicMap = blue;
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, metal}})), ROUGH_METAL, TOLERANCE);
+    m_backend.UnloadTexture(blue);
+    m_backend.UnloadModel(model);
+}
+
+// A file's occlusion texture darkens the ambient by its red channel, at its
+// strength: red 64 in full is 123, at strength 0.5 is 165. Green and blue are
+// 255, so an occlusion read from them would not darken at all.
+//
+// Mutations: the occlusion map not sampled -> 186; its strength ignored -> the
+// half-strength model reads 123; read from the green channel -> 186.
+TEST_F(ModelMaterialTest, AFilesOcclusionTextureDarkensTheAmbientAtItsStrength) {
+    WriteFlatPng(m_dir.Path() / "texture.png", {64, 255, 255, 255});
+    Scene scene;
+    GltfMaterial material;
+    material.occlusionTextured = true;
+    scene.Materials = {material};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+    const BRITE::ModelHandle full = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(full, BRITE::NullModelHandle);
+    EXPECT_NEAR(At(Draw(full), LEFT_HALF).r, OCCLUDED_64, TOLERANCE) << "occlusion 64, in full";
+    m_backend.UnloadModel(full);
+
+    scene.Materials[0].occlusionStrength = 0.5f;
+    const BRITE::ModelHandle half = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(half, BRITE::NullModelHandle);
+    EXPECT_NEAR(At(Draw(half), LEFT_HALF).r, OCCLUDED_64_HALF_STRENGTH, TOLERANCE) << "occlusion 64, at 0.5";
+    m_backend.UnloadModel(half);
+}
+
+// THE DEFECT THIS FIXES, 3: a draw's AOMap was never read. Now it darkens the
+// ambient -- red 64 under the one light, 123 -- and only the ambient: under the
+// sun behind the camera, with no ambient, the same surface is the rough
+// dielectric's 185, not the sun's light times 0.25 (0.97 * 0.250980 = 0.243451,
+// /1.243451 = 0.195786, ^(1/2.2) = 0.476521 -> 122).
+//
+// Mutations: the AO map not bound to a sampler -> not 123; the occlusion applied
+// to the lights as well -> 122 under the sun.
+TEST_F(ModelMaterialTest, ADrawsAOMapDarkensTheAmbientAndNotTheLights) {
+    WriteFlatPng(m_dir.Path() / "ao.png", {64, 255, 255, 255});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(TexturedQuad());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle ao = m_backend.LoadTexture((m_dir.Path() / "ao.png").string().c_str());
+    BRITE::PBRMaterial occluded;
+    occluded.AOMap = ao;
+    EXPECT_NEAR(At(Draw(model, occluded), LEFT_HALF).r, OCCLUDED_64, TOLERANCE) << "the ambient, occluded";
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, occluded}})), ROUGH_DIELECTRIC, TOLERANCE)
+        << "the sun, not occluded";
+    m_backend.UnloadTexture(ao);
     m_backend.UnloadModel(model);
 }
 

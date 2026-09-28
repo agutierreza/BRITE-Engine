@@ -256,6 +256,13 @@ constexpr ModelHandle NullModelHandle = 0;
 struct PBRMaterial {
     TextureHandle AlbedoMap = NullTextureHandle;
     TextureHandle NormalMap = NullTextureHandle;
+    // Metalness, roughness and occlusion, each read from the channel glTF packs
+    // it in -- roughness green, metalness blue, occlusion red -- so one glTF
+    // metal-roughness texture serves as both RoughnessMap and MetallicMap, and a
+    // greyscale map serves as any. A map multiplies its factor (Metallic,
+    // Roughness), and a factor under a map is 1 unless a loaded model's file
+    // says otherwise. Occlusion darkens only the ambient light. Each replaces the
+    // model's own map for this draw.
     TextureHandle RoughnessMap = NullTextureHandle;
     TextureHandle MetallicMap = NullTextureHandle;
     TextureHandle EmissionMap = NullTextureHandle;

@@ -77,11 +77,19 @@ class RaylibRenderBackend : public IRenderBackend {
     // Once per pass, before the model commands.
     void ApplyPassLighting(const BRITE::RenderPass& pass);
     // The per-mesh material scalars and which texture maps are bound.
-    // modelHasAlbedo, modelHasEmission: the mesh's own material brought an
-    // albedo texture, an emissive texture.
+    // Which textures a mesh's own material brought with it, each a real
+    // texture and not the loader's placeholder.
+    struct OwnMaps {
+        bool albedo = false;
+        bool emission = false;
+        bool metalness = false;
+        bool roughness = false;
+        bool occlusion = false;
+    };
+    // ownMaps: what the mesh's own material brought.
     // fileMaterial: what the mesh's file said of its material, or null.
     // Returns whether the mesh is drawn double-sided.
-    bool ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo, bool modelHasEmission,
+    bool ApplyMaterial(const BRITE::PBRMaterial& material, const OwnMaps& ownMaps,
                        const BRITE::GltfMaterialInfo* fileMaterial);
     // What a loaded model's file said of the material in raylib slot `slot`,
     // or null: a model built in code, a file that is not glTF, slot 0 (raylib's
@@ -104,11 +112,13 @@ class RaylibRenderBackend : public IRenderBackend {
         int ambient = -1;
         int useTexAlbedo = -1;
         int useTexNormal = -1;
-        int useTexMRA = -1;
+        int useTexMetallic = -1;
+        int useTexRoughness = -1;
+        int useTexOcclusion = -1;
         int useTexEmissive = -1;
         int metallicValue = -1;
         int roughnessValue = -1;
-        int aoValue = -1;
+        int occlusionStrength = -1;
         int unlit = -1;
         int alphaMask = -1;
         int alphaCutoff = -1;

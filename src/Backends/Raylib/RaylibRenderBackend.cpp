@@ -248,10 +248,16 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             material.shader = pbrShader;
 
             // The loader's placeholder is a 1x1 white texture, which is no texture.
-            const unsigned int ownAlbedo = maps[MATERIAL_MAP_ALBEDO].texture.id;
-            const bool modelHasAlbedo = ownAlbedo != 0 && ownAlbedo != ::rlGetTextureIdDefault();
-            const unsigned int ownEmission = maps[MATERIAL_MAP_EMISSION].texture.id;
-            const bool modelHasEmission = ownEmission != 0 && ownEmission != ::rlGetTextureIdDefault();
+            auto owns = [&](int map) {
+                const unsigned int id = maps[map].texture.id;
+                return id != 0 && id != ::rlGetTextureIdDefault();
+            };
+            OwnMaps ownMaps;
+            ownMaps.albedo = owns(MATERIAL_MAP_ALBEDO);
+            ownMaps.emission = owns(MATERIAL_MAP_EMISSION);
+            ownMaps.metalness = owns(MATERIAL_MAP_METALNESS);
+            ownMaps.roughness = owns(MATERIAL_MAP_ROUGHNESS);
+            ownMaps.occlusion = owns(MATERIAL_MAP_OCCLUSION);
 
             for (const auto& [handle, mapIndex] : overrides) {
                 if (const ::Texture2D* texture = commandTexture(handle))
@@ -261,8 +267,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             maps[MATERIAL_MAP_IRRADIANCE].texture = irradiance ? *irradiance : ::Texture2D{0};
             maps[MATERIAL_MAP_PREFILTER].texture = prefilter ? *prefilter : ::Texture2D{0};
 
-            const bool bothSides = ApplyMaterial(cmd.Material, modelHasAlbedo, modelHasEmission,
-                                                 FileMaterial(cmd.Model, rlModel->meshMaterial[m]));
+            const bool bothSides =
+                ApplyMaterial(cmd.Material, ownMaps, FileMaterial(cmd.Model, rlModel->meshMaterial[m]));
 
             // The draw tint times the material's own colour, as DrawModelEx does.
             const ::Color ownColour = maps[MATERIAL_MAP_DIFFUSE].color;
@@ -401,7 +407,9 @@ void RaylibRenderBackend::EnsurePbrShader() {
     }
 
     shader->locs[SHADER_LOC_MAP_ALBEDO] = ::GetShaderLocation(*shader, "albedoMap");
-    shader->locs[SHADER_LOC_MAP_METALNESS] = ::GetShaderLocation(*shader, "mraMap");
+    shader->locs[SHADER_LOC_MAP_METALNESS] = ::GetShaderLocation(*shader, "metallicMap");
+    shader->locs[SHADER_LOC_MAP_ROUGHNESS] = ::GetShaderLocation(*shader, "roughnessMap");
+    shader->locs[SHADER_LOC_MAP_OCCLUSION] = ::GetShaderLocation(*shader, "occlusionMap");
     shader->locs[SHADER_LOC_MAP_NORMAL] = ::GetShaderLocation(*shader, "normalMap");
     shader->locs[SHADER_LOC_MAP_EMISSION] = ::GetShaderLocation(*shader, "emissiveMap");
     shader->locs[SHADER_LOC_MAP_IRRADIANCE] = ::GetShaderLocation(*shader, "irradianceMap");
@@ -415,11 +423,13 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.ambient = loc("ambient");
     m_pbrLocs.useTexAlbedo = loc("useTexAlbedo");
     m_pbrLocs.useTexNormal = loc("useTexNormal");
-    m_pbrLocs.useTexMRA = loc("useTexMRA");
+    m_pbrLocs.useTexMetallic = loc("useTexMetallic");
+    m_pbrLocs.useTexRoughness = loc("useTexRoughness");
+    m_pbrLocs.useTexOcclusion = loc("useTexOcclusion");
     m_pbrLocs.useTexEmissive = loc("useTexEmissive");
     m_pbrLocs.metallicValue = loc("metallicValue");
     m_pbrLocs.roughnessValue = loc("roughnessValue");
-    m_pbrLocs.aoValue = loc("aoValue");
+    m_pbrLocs.occlusionStrength = loc("occlusionStrength");
     m_pbrLocs.unlit = loc("unlit");
     m_pbrLocs.alphaMask = loc("alphaMask");
     m_pbrLocs.alphaCutoff = loc("alphaCutoff");
@@ -505,38 +515,50 @@ void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass) {
     }
 }
 
-bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo, bool modelHasEmission,
+bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, const OwnMaps& ownMaps,
                                         const BRITE::GltfMaterialInfo* fileMaterial) {
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
 
     // Which maps are bound. The shader used to assume all of them, so a model
     // with no albedo texture sampled whatever was on texture unit 0 -- black on
     // the first draw -- instead of its colour. An albedo texture is the draw
-    // command's or, failing that, the one the model's own material brought; the
-    // other maps come from the draw command alone.
-    const int useAlbedo = (material.AlbedoMap != BRITE::NullTextureHandle || modelHasAlbedo) ? 1 : 0;
+    // command's or, failing that, the one the model's own material brought. So
+    // is each of the metalness, roughness and occlusion maps; the normal map
+    // comes from the draw command alone.
+    const bool metalMap = material.MetallicMap != BRITE::NullTextureHandle || ownMaps.metalness;
+    const bool roughMap = material.RoughnessMap != BRITE::NullTextureHandle || ownMaps.roughness;
+    const bool occlusionMap = material.AOMap != BRITE::NullTextureHandle || ownMaps.occlusion;
+    const int useAlbedo = (material.AlbedoMap != BRITE::NullTextureHandle || ownMaps.albedo) ? 1 : 0;
     const int useNormal = material.NormalMap != BRITE::NullTextureHandle ? 1 : 0;
-    const int useMRA =
-        (material.MetallicMap != BRITE::NullTextureHandle || material.RoughnessMap != BRITE::NullTextureHandle) ? 1 : 0;
+    const int useMetallic = metalMap ? 1 : 0;
+    const int useRoughness = roughMap ? 1 : 0;
+    const int useOcclusion = occlusionMap ? 1 : 0;
     ::SetShaderValue(*shader, m_pbrLocs.useTexAlbedo, &useAlbedo, SHADER_UNIFORM_INT);
     ::SetShaderValue(*shader, m_pbrLocs.useTexNormal, &useNormal, SHADER_UNIFORM_INT);
-    ::SetShaderValue(*shader, m_pbrLocs.useTexMRA, &useMRA, SHADER_UNIFORM_INT);
+    ::SetShaderValue(*shader, m_pbrLocs.useTexMetallic, &useMetallic, SHADER_UNIFORM_INT);
+    ::SetShaderValue(*shader, m_pbrLocs.useTexRoughness, &useRoughness, SHADER_UNIFORM_INT);
+    ::SetShaderValue(*shader, m_pbrLocs.useTexOcclusion, &useOcclusion, SHADER_UNIFORM_INT);
 
-    // A file's own metallic and roughness where it wrote them; the draw's where
-    // it did not, and for a mesh with no file. glTF's unwritten default -- fully
-    // metallic -- is never used, because a metal has no diffuse light and would
-    // draw dark under anything but an environment map.
-    const float metallic =
-        (fileMaterial != nullptr && fileMaterial->HasMetallicFactor) ? fileMaterial->MetallicFactor : material.Metallic;
-    const float roughness = (fileMaterial != nullptr && fileMaterial->HasRoughnessFactor)
-                                ? fileMaterial->RoughnessFactor
-                                : material.Roughness;
+    // The factor each map multiplies, as glTF defines them. A file's own where
+    // it wrote one. Where it did not: 1 under a map -- glTF's own default,
+    // which means "as the map says" -- and the draw's scalar where there is no
+    // map, never glTF's unwritten 1 alone, which is fully metallic and draws
+    // dark under anything but an environment map. The draw's scalars are the
+    // no-map case and nothing else, as PBRMaterial says.
+    auto factor = [](bool written, float fileValue, bool mapped, float drawValue) {
+        return written ? fileValue : mapped ? 1.0f : drawValue;
+    };
+    const bool hasFile = fileMaterial != nullptr;
+    const float metallic = factor(hasFile && fileMaterial->HasMetallicFactor,
+                                  hasFile ? fileMaterial->MetallicFactor : 0.0f, metalMap, material.Metallic);
+    const float roughness = factor(hasFile && fileMaterial->HasRoughnessFactor,
+                                   hasFile ? fileMaterial->RoughnessFactor : 0.0f, roughMap, material.Roughness);
     ::SetShaderValue(*shader, m_pbrLocs.metallicValue, &metallic, SHADER_UNIFORM_FLOAT);
     ::SetShaderValue(*shader, m_pbrLocs.roughnessValue, &roughness, SHADER_UNIFORM_FLOAT);
-    // No occlusion map means nothing is occluded. Left unset this read as zero
-    // and multiplied the whole ambient term away.
-    const float ao = 1.0f;
-    ::SetShaderValue(*shader, m_pbrLocs.aoValue, &ao, SHADER_UNIFORM_FLOAT);
+    // The file's occlusion strength for its own map; the whole map for a draw's.
+    const float occlusionStrength =
+        (material.AOMap == BRITE::NullTextureHandle && hasFile) ? fileMaterial->OcclusionStrength : 1.0f;
+    ::SetShaderValue(*shader, m_pbrLocs.occlusionStrength, &occlusionStrength, SHADER_UNIFORM_FLOAT);
 
     // Set on every mesh, lit or not: a uniform keeps its value between draws,
     // so an unlit mesh would otherwise leave every mesh after it unlit.
@@ -573,7 +595,7 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool
     } else if (fileMaterial != nullptr) {
         for (int c = 0; c < 3; ++c)
             emissive[c] = fileMaterial->EmissiveFactor[c] * fileMaterial->EmissiveStrength;
-        useEmissive = modelHasEmission ? 1 : 0;
+        useEmissive = ownMaps.emission ? 1 : 0;
     }
     ::SetShaderValue(*shader, m_pbrLocs.emissiveLight, emissive, SHADER_UNIFORM_VEC3);
     ::SetShaderValue(*shader, m_pbrLocs.useTexEmissive, &useEmissive, SHADER_UNIFORM_INT);

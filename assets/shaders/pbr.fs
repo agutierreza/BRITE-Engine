@@ -37,7 +37,13 @@ out vec4 finalColor;
 
 uniform int numOfLights;
 uniform sampler2D albedoMap;
-uniform sampler2D mraMap;
+// Metalness, roughness and occlusion, each its own map and each read from the
+// channel glTF packs it in: metal in blue, roughness in green, occlusion in red.
+// A greyscale map -- raylib's split of a file's metal-roughness texture, or a
+// caller's own -- has the value in every channel, so it reads the same.
+uniform sampler2D metallicMap;
+uniform sampler2D roughnessMap;
+uniform sampler2D occlusionMap;
 uniform sampler2D normalMap;
 uniform sampler2D emissiveMap;
 
@@ -51,7 +57,9 @@ uniform vec2 offset;
 
 uniform int useTexAlbedo;
 uniform int useTexNormal;
-uniform int useTexMRA;
+uniform int useTexMetallic;
+uniform int useTexRoughness;
+uniform int useTexOcclusion;
 uniform int useTexEmissive;
 
 // raylib's per-draw diffuse colour: the material colour times the draw tint.
@@ -59,7 +67,9 @@ uniform int useTexEmissive;
 uniform vec4  colDiffuse;
 uniform float metallicValue;
 uniform float roughnessValue;
-uniform float aoValue;
+// glTF's occlusionTexture.strength: 0 leaves the ambient untouched, 1 is the map
+// in full.
+uniform float occlusionStrength;
 
 uniform Light lights[MAX_LIGHTS];
 uniform vec3 viewPos;
@@ -145,17 +155,18 @@ vec3 ComputePBR()
     vec3 albedo = pow(colDiffuse.rgb*fragColor.rgb, vec3(2.2));
     if (useTexAlbedo == 1) albedo *= pow(texture(albedoMap, fragTexCoord*tiling + offset).rgb, vec3(2.2));
 
-    float metallic = clamp(metallicValue, 0.0, 1.0);
-    float roughness = clamp(roughnessValue, 0.04, 1.0);
-    float ao = clamp(aoValue, 0.0, 1.0);
-
-    if (useTexMRA == 1)
-    {
-        vec4 mra = texture(mraMap, fragTexCoord*tiling + offset);
-        metallic = clamp(mra.r + metallicValue, 0.04, 1.0);
-        roughness = clamp(mra.g + roughnessValue, 0.04, 1.0);
-        ao = (mra.b + aoValue)*0.5;
-    }
+    // Factor times map, as glTF defines them: the factor alone where there is
+    // no map. Occlusion darkens only the ambient light below -- the light no
+    // single source casts -- and never the lights'.
+    float metallic = metallicValue;
+    float roughness = roughnessValue;
+    float ao = 1.0;
+    if (useTexMetallic == 1) metallic *= texture(metallicMap, fragTexCoord*tiling + offset).b;
+    if (useTexRoughness == 1) roughness *= texture(roughnessMap, fragTexCoord*tiling + offset).g;
+    if (useTexOcclusion == 1) ao = 1.0 + occlusionStrength*(texture(occlusionMap, fragTexCoord*tiling + offset).r - 1.0);
+    metallic = clamp(metallic, 0.0, 1.0);
+    roughness = clamp(roughness, 0.04, 1.0);
+    ao = clamp(ao, 0.0, 1.0);
 
     vec3 N = normalize(fragNormal);
     // A back face seen from behind is lit as the surface facing the viewer is,

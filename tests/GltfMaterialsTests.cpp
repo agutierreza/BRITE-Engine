@@ -211,3 +211,23 @@ TEST(GltfMaterials, UnlitReadsFromItsExtension) {
     EXPECT_TRUE(materials[1].Unlit);
     EXPECT_FALSE(materials[2].Unlit);
 }
+
+// occlusionTexture.strength: 1 when the file does not say, and as written when
+// it does.
+//
+// Mutations: strength not read -> material 1 reads 1; a default of 0 ->
+// material 0 reads 0.
+TEST(GltfMaterials, OcclusionStrengthReadsAsWritten) {
+    const std::string file = R"({
+      "asset": {"version": "2.0"},
+      "materials": [
+        {"occlusionTexture": {"index": 0}},
+        {"occlusionTexture": {"index": 0, "strength": 0.5}}
+      ]
+    })";
+    std::vector<GltfMaterialInfo> materials;
+    ASSERT_TRUE(ReadGltfMaterials(Bytes(file), materials));
+    ASSERT_EQ(materials.size(), 2u);
+    EXPECT_FLOAT_EQ(materials[0].OcclusionStrength, 1.0f);
+    EXPECT_FLOAT_EQ(materials[1].OcclusionStrength, 0.5f);
+}
