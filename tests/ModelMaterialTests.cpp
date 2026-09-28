@@ -1546,9 +1546,9 @@ TEST_F(ModelMaterialTest, TheDrawsMetallicFillsOnlyWhatTheFileLeavesUnwritten) {
 // ---------------------------------------------------------------------------
 
 // A file whose material carries KHR_materials_unlit is drawn as its base colour
-// with no light: baseColorFactor (1, 0.5, 0) is stored by raylib as (255, 127,
-// 0) -- 0.5 * 255 = 127.5, truncated -- and drawn so in the dark, where lit it
-// would be black.
+// with no light: baseColorFactor (1, 0.5, 0) is linear, and means the draw
+// colour (255, 186, 0) -- 0.5^(1/2.2) = 0.729740, 186.08 -> 186 -- drawn so in
+// the dark, where lit it would be black.
 //
 // Mutations: the extension not read by the parser -> black; the file's flag not
 // used by the backend -> black.
@@ -1562,7 +1562,7 @@ TEST_F(ModelMaterialTest, AFileMarkedUnlitDrawsAsAuthored) {
     scene.Quads = {{-1.0f, 1.0f, 0}};
     const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
     ASSERT_NE(model, BRITE::NullModelHandle);
-    ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{model, {}}}), LEFT_HALF), 255, 127, 0, "unlit, in the dark");
+    ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{model, {}}}), LEFT_HALF), 255, 186, 0, "unlit, in the dark");
     m_backend.UnloadModel(model);
 }
 
@@ -1986,6 +1986,40 @@ TEST_F(ModelMaterialTest, ADoubleSidedBackFaceTurnsItsMappedNormal) {
     const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
     ASSERT_NE(model, BRITE::NullModelHandle);
     EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, {}}})), ROUGH_DIELECTRIC, TOLERANCE);
+    m_backend.UnloadModel(model);
+}
+
+// ---------------------------------------------------------------------------
+// A glTF base colour is linear. A file whose baseColorFactor is 0.5 grey means a
+// surface that reflects half the light -- 0.5 in the lit shader's linear terms.
+// It is drawn from the sRGB byte that means that, 186 (0.5^(1/2.2) = 0.729740,
+// 186.08), which the shader decodes back to (186/255)^2.2 = 0.729412^2.2 =
+// e^(2.2 * -0.315524) = 0.499497. Under the one light (a white ambient of 1):
+//   0.499497 / 1.499497 = 0.333110;  ^(1/2.2) = e^(-1.099282/2.2) = 0.606756 -> 154.7 -> 155
+// Read as sRGB, as it used to be, the factor became the byte 127 (0.5 * 255,
+// truncated), decoded to 0.498039^2.2 = 0.215805:
+//   0.215805 / 1.215805 = 0.177496;  ^(1/2.2) = e^(-1.728736/2.2) = 0.455759 -> 116.2 -> 116
+// ---------------------------------------------------------------------------
+
+// Mutations: the linear factor taken as sRGB again -> 116, and the read-back
+// byte 127; the factor encoded with the standard sRGB curve instead of the
+// shader's 2.2 -> the byte 188, which decodes to 0.511.
+TEST_F(ModelMaterialTest, AFilesLinearBaseColourIsDrawnAsTheLinearValueItIs) {
+    Scene scene;
+    GltfMaterial grey;
+    grey.rgba[0] = grey.rgba[1] = grey.rgba[2] = 0.5f;
+    scene.Materials = {grey};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    ExpectColour(At(Draw(model), LEFT_HALF), 155, 155, 155, "linear 0.5 under the one light");
+
+    std::vector<BRITE::MeshData> meshes;
+    ASSERT_TRUE(m_backend.ReadModelMeshes(model, meshes));
+    ASSERT_EQ(meshes.size(), 1u);
+    ASSERT_FALSE(meshes[0].Colors.empty());
+    EXPECT_EQ(meshes[0].Colors[0].r, 186) << "the read-back carries the sRGB byte linear 0.5 means";
     m_backend.UnloadModel(model);
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Math/BriteMath.hpp"
 #include <vector>
 
 namespace BRITE {
@@ -39,7 +40,20 @@ struct GltfMaterialInfo {
     float OcclusionStrength = 1.0f;
     // normalTexture.scale: how far the normal map tilts the surface, 1 as authored.
     float NormalScale = 1.0f;
+    // pbrMetallicRoughness.baseColorFactor, as glTF defines it: LINEAR RGB, and
+    // alpha. White when the file says nothing.
+    float BaseColorFactor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 };
+
+// The draw colour a glTF base colour factor means. glTF's factor is linear; the
+// engine's draw colours -- a tint, the vertex colours of a mesh built in code --
+// are sRGB bytes, which the lit shader decodes with a 2.2 power. So each colour
+// channel is encoded with that same 2.2: the one curve under which the shader
+// gets back the linear value the file gave, to a byte's rounding. (The standard
+// sRGB curve would not: its byte for 0.5, 188, decodes to 0.511 here, and a dark
+// green comes back some 13% darker than the file said.) Alpha is coverage, not
+// colour, and is only scaled. Each channel rounds to the nearest byte.
+Color DrawColorFromLinear(const float rgba[4]);
 
 // Reads the materials of a glTF file, in the order the file lists them, from
 // the whole file's bytes: a .gltf (JSON) or a .glb (the binary container, whose

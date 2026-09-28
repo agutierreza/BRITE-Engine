@@ -7,14 +7,17 @@
 //   material 0  baseColorFactor (1, 0.5, 0, 1)
 //   material 1  baseColorFactor (0.5, 1, 1, 0.5)
 //
-//   raylib stores a factor f as the byte (unsigned char)(f * 255), truncated:
-//   1 -> 255, 0.5 -> 127.5 -> 127, 0 -> 0. So material 0 is (255, 127, 0, 255)
-//   and material 1 is (127, 255, 255, 127).
+//   A factor is LINEAR, and the engine draws it as the sRGB byte it means (see
+//   DrawColorFromLinear): colour channels are encoded with the shader's own 2.2
+//   and rounded -- 1 -> 255, 0 -> 0, and 0.5^(1/2.2) = e^(-0.693147/2.2) =
+//   0.729740, * 255 = 186.08 -> 186 -- and alpha is scaled and rounded, 0.5 * 255
+//   = 127.5 -> 128. So material 0 is (255, 186, 0, 255) and material 1 is
+//   (186, 255, 255, 128).
 //
 //   mesh 0  a unit quad, (-0.5,-0.5) (0.5,-0.5) (0.5,0.5) (-0.5,0.5) at z = 0,
 //           normals +z, no vertex colours, indices 0 1 2 0 2 3, material 0
 //   mesh 1  a 2 x 1 quad, (0,0) (2,0) (2,1) (0,1) at z = 0, normals +z,
-//           vertex colours (128,255,255,255) on vertex 0 and white on the rest,
+//           vertex colours (64,255,255,255) on vertex 0 and white on the rest,
 //           texture coordinates (0,0) (0.25,0) (0.25,0.5) (0,0.5),
 //           indices 0 1 2 0 2 3, material 1
 //
@@ -256,7 +259,7 @@ GltfFile TwoNodeModel() {
     GltfMesh longQuad;
     longQuad.Positions = {{0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
     longQuad.Normals = FACING_Z;
-    longQuad.Colors = {{128, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}};
+    longQuad.Colors = {{64, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}};
     longQuad.TexCoords = {{0.0f, 0.0f}, {0.25f, 0.0f}, {0.25f, 0.5f}, {0.0f, 0.5f}};
     longQuad.Indices = QUAD;
     longQuad.Material = 1;
@@ -319,10 +322,10 @@ class ModelReadbackTest : public ::testing::Test {
 //
 // Mutations: the normals copied without renormalising -> mesh 1's read (0, 0, 2);
 // the material's colour not folded in -> mesh 0 reads white and mesh 1's vertex 0
-// (128, 255, 255, 255); the vertex colour ignored -> mesh 1's vertex 0 reads
-// (127, 255, 255, 127); the meshes read in reverse order -> every position fails;
-// texture coordinates not read back -> mesh 1 has none; invented for a mesh with
-// none -> mesh 0 has four; u and v swapped -> mesh 1's vertex 1 reads (0, 0.25).
+// (64, 255, 255, 255); the vertex colour ignored -> mesh 1's vertex 0 reads
+// (186, 255, 255, 128); the linear factor taken as sRGB again -> 127 for 186; the meshes read in reverse order -> every
+// position fails; texture coordinates not read back -> mesh 1 has none; invented for a mesh with none -> mesh 0 has
+// four; u and v swapped -> mesh 1's vertex 1 reads (0, 0.25).
 TEST_F(ModelReadbackTest, ATwoNodeModelReadsBackWithItsNodeTransformsAndMaterialColours) {
     const BRITE::ModelHandle model = Load(TwoNodeModel());
     ASSERT_NE(model, BRITE::NullModelHandle);
@@ -344,8 +347,8 @@ TEST_F(ModelReadbackTest, ATwoNodeModelReadsBackWithItsNodeTransformsAndMaterial
     ExpectVector(left.Positions[3], -2.0f, 0.5f, 0.0f, "mesh 0, vertex 3");
     for (std::size_t i = 0; i < 4; ++i) {
         ExpectVector(left.Normals[i], 0.0f, 0.0f, 1.0f, "mesh 0, normal " + std::to_string(i));
-        // No vertex colours, so white times material 0: (255, 127, 0, 255).
-        ExpectColour(left.Colors[i], 255, 127, 0, 255, "mesh 0, colour " + std::to_string(i));
+        // No vertex colours, so white times material 0: (255, 186, 0, 255).
+        ExpectColour(left.Colors[i], 255, 186, 0, 255, "mesh 0, colour " + std::to_string(i));
     }
 
     const BRITE::MeshData& right = meshes[1];
@@ -368,14 +371,14 @@ TEST_F(ModelReadbackTest, ATwoNodeModelReadsBackWithItsNodeTransformsAndMaterial
     // (0, 0, 2) as raylib leaves it, (0, 0, 1) once renormalised.
     for (std::size_t i = 0; i < 4; ++i)
         ExpectVector(right.Normals[i], 0.0f, 0.0f, 1.0f, "mesh 1, normal " + std::to_string(i));
-    // Vertex 0 is (128, 255, 255, 255) times material 1's (127, 255, 255, 127):
-    //   red    128 * 127 / 255 = 16256 / 255 = 63.75 -> 64
+    // Vertex 0 is (64, 255, 255, 255) times material 1's (186, 255, 255, 128):
+    //   red    64 * 186 / 255 = 11904 / 255 = 46.68 -> 47   (truncated: 46)
     //   green  255 * 255 / 255 = 255;  blue the same
-    //   alpha  255 * 127 / 255 = 127
+    //   alpha  255 * 128 / 255 = 128
     // The other vertices are white, so they read material 1 itself.
-    ExpectColour(right.Colors[0], 64, 255, 255, 127, "mesh 1, vertex 0's colour times material 1");
+    ExpectColour(right.Colors[0], 47, 255, 255, 128, "mesh 1, vertex 0's colour times material 1");
     for (std::size_t i = 1; i < 4; ++i)
-        ExpectColour(right.Colors[i], 127, 255, 255, 127, "mesh 1, colour " + std::to_string(i));
+        ExpectColour(right.Colors[i], 186, 255, 255, 128, "mesh 1, colour " + std::to_string(i));
 
     m_backend.UnloadModel(model);
 }

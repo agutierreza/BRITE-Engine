@@ -851,6 +851,15 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
                          fileName, materials.size(), model->materialCount - 1);
         } else {
             materials.insert(materials.begin(), BRITE::GltfMaterialInfo{});
+            // raylib stored each base colour factor as factor x 255, as if the
+            // linear factor were an sRGB byte, and the shader would linearise it
+            // a second time. Replace it with the draw colour the factor means,
+            // once, here -- so a drawn model and its read-back meshes agree.
+            for (int slot = 1; slot < model->materialCount; ++slot) {
+                const BRITE::Color colour =
+                    BRITE::DrawColorFromLinear(materials[static_cast<std::size_t>(slot)].BaseColorFactor);
+                model->materials[slot].maps[MATERIAL_MAP_ALBEDO].color = {colour.r, colour.g, colour.b, colour.a};
+            }
             m_fileMaterials[handle] = std::move(materials);
         }
     }

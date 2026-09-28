@@ -251,3 +251,51 @@ TEST(GltfMaterials, NormalScaleReadsAsWritten) {
     EXPECT_FLOAT_EQ(materials[0].NormalScale, 1.0f);
     EXPECT_FLOAT_EQ(materials[1].NormalScale, 0.0f);
 }
+
+// baseColorFactor reads as written, linear; white when the file says nothing.
+//
+// Mutations: the factor not read -> material 1 reads white; its channels out of
+// order -> 0.25 where 0.5 was written.
+TEST(GltfMaterials, BaseColorFactorReadsAsWritten) {
+    const std::string file = R"({
+      "asset": {"version": "2.0"},
+      "materials": [
+        {},
+        {"pbrMetallicRoughness": {"baseColorFactor": [0.5, 0.25, 0, 0.75]}}
+      ]
+    })";
+    std::vector<GltfMaterialInfo> materials;
+    ASSERT_TRUE(ReadGltfMaterials(Bytes(file), materials));
+    ASSERT_EQ(materials.size(), 2u);
+    for (int c = 0; c < 4; ++c)
+        EXPECT_FLOAT_EQ(materials[0].BaseColorFactor[c], 1.0f) << "channel " << c;
+    EXPECT_FLOAT_EQ(materials[1].BaseColorFactor[0], 0.5f);
+    EXPECT_FLOAT_EQ(materials[1].BaseColorFactor[1], 0.25f);
+    EXPECT_FLOAT_EQ(materials[1].BaseColorFactor[2], 0.0f);
+    EXPECT_FLOAT_EQ(materials[1].BaseColorFactor[3], 0.75f);
+}
+
+// DrawColorFromLinear: colour channels encoded with the shader's 2.2, alpha only
+// scaled, each rounded to the nearest byte. Worked by hand:
+//   0.5         ^(1/2.2) = e^(-0.693147/2.2) = 0.729740 -> 186.08 -> 186
+//               (the standard sRGB curve gives 0.735357 -> 187.5 -> 188)
+//   0.18116424  ^(1/2.2) = e^(-1.708360/2.2) = 0.460000 -> 117.30 -> 117
+//               (a foliage green's green channel, as a web modelling tool wrote it)
+//   0 -> 0;  1 -> 255
+//   alpha 0.5   * 255 = 127.5 -> 128   (truncated: 127)
+//
+// Mutations: no encoding (the factor as a byte) -> 128 and 46 for 186 and 117;
+// the power 2.2 instead of 1/2.2 -> 55; alpha encoded too -> 186 for 128;
+// truncating instead of rounding -> alpha 127.
+TEST(GltfMaterials, ALinearFactorBecomesTheDrawColourItMeans) {
+    const float grey[4] = {0.5f, 0.18116424f, 0.0f, 0.5f};
+    const BRITE::Color c = BRITE::DrawColorFromLinear(grey);
+    EXPECT_EQ(c.r, 186);
+    EXPECT_EQ(c.g, 117);
+    EXPECT_EQ(c.b, 0);
+    EXPECT_EQ(c.a, 128);
+    const float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const BRITE::Color w = BRITE::DrawColorFromLinear(white);
+    EXPECT_EQ(w.r, 255);
+    EXPECT_EQ(w.a, 255);
+}

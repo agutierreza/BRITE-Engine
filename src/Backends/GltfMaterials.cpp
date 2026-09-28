@@ -1,5 +1,7 @@
 #include "Backends/GltfMaterials.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <nlohmann/json.hpp>
@@ -49,6 +51,14 @@ GltfAlphaMode AlphaModeFrom(const std::string& name) {
 
 } // namespace
 
+Color DrawColorFromLinear(const float rgba[4]) {
+    auto byte = [](float value) {
+        return static_cast<unsigned char>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
+    };
+    auto encode = [&](float linear) { return byte(std::pow(std::clamp(linear, 0.0f, 1.0f), 1.0f / 2.2f)); };
+    return {encode(rgba[0]), encode(rgba[1]), encode(rgba[2]), byte(rgba[3])};
+}
+
 bool ReadGltfMaterials(const std::vector<unsigned char>& bytes, std::vector<GltfMaterialInfo>& materials) {
     materials.clear();
     std::string text;
@@ -76,6 +86,12 @@ bool ReadGltfMaterials(const std::vector<unsigned char>& bytes, std::vector<Gltf
             if (const auto sided = entry.find("doubleSided"); sided != entry.end() && sided->is_boolean())
                 info.DoubleSided = sided->get<bool>();
             if (const auto pbr = entry.find("pbrMetallicRoughness"); pbr != entry.end() && pbr->is_object()) {
+                if (const auto base = pbr->find("baseColorFactor");
+                    base != pbr->end() && base->is_array() && base->size() == 4) {
+                    for (std::size_t c = 0; c < 4; ++c)
+                        if ((*base)[c].is_number())
+                            info.BaseColorFactor[c] = (*base)[c].get<float>();
+                }
                 if (const auto metallic = pbr->find("metallicFactor");
                     metallic != pbr->end() && metallic->is_number()) {
                     info.MetallicFactor = metallic->get<float>();
