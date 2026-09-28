@@ -97,11 +97,13 @@ struct GltfMaterial {
     bool emissiveTextured = false;   // the emissive texture samples texture.png
     float metallic = -1.0f;          // metallicFactor, written only when 0 or more
     float roughness = -1.0f;         // roughnessFactor, written only when 0 or more
+    bool unlit = false;              // KHR_materials_unlit, written only when true
 };
 
 struct Scene {
     std::vector<Quad> Quads;
     std::vector<GltfMaterial> Materials;
+    std::string Image = "texture.png"; // the one image every textured material samples
 };
 
 class TempDir {
@@ -129,7 +131,8 @@ template <typename T> void Append(std::vector<unsigned char>& bin, const T& valu
 }
 
 // Writes dir/model.gltf and dir/model.bin, and returns the .gltf's path. A
-// textured material samples dir/texture.png, which the caller writes.
+// textured material samples dir/<scene.Image>, texture.png unless set, which the
+// caller writes.
 fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
     std::vector<unsigned char> bin;
     std::string views, accessors, primitives;
@@ -222,12 +225,16 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
         }
         if (m.emissiveTextured)
             materials += ",\"emissiveTexture\":{\"index\":0}";
+        std::string extensions;
         if (m.emissiveStrength >= 0.0f) {
-            std::snprintf(buf, sizeof(buf),
-                          ",\"extensions\":{\"KHR_materials_emissive_strength\":{\"emissiveStrength\":%g}}",
+            std::snprintf(buf, sizeof(buf), "\"KHR_materials_emissive_strength\":{\"emissiveStrength\":%g}",
                           m.emissiveStrength);
-            materials += buf;
+            extensions += buf;
         }
+        if (m.unlit)
+            extensions += std::string(extensions.empty() ? "" : ",") + "\"KHR_materials_unlit\":{}";
+        if (!extensions.empty())
+            materials += ",\"extensions\":{" + extensions + "}";
         materials += "}";
         anyTexture = anyTexture || m.textured || m.emissiveTextured;
     }
@@ -239,7 +246,7 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
     if (!materials.empty())
         json += ",\"materials\":[" + materials + "]";
     if (anyTexture)
-        json += ",\"images\":[{\"uri\":\"texture.png\"}],\"textures\":[{\"source\":0}]";
+        json += ",\"images\":[{\"uri\":\"" + scene.Image + "\"}],\"textures\":[{\"source\":0}]";
     json += "}";
 
     std::ofstream(dir / "model.bin", std::ios::binary).write(reinterpret_cast<const char*>(bin.data()), bin.size());
@@ -1485,6 +1492,98 @@ TEST_F(ModelMaterialTest, TheDrawsMetallicFillsOnlyWhatTheFileLeavesUnwritten) {
     EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{dielectric, metal}})), ROUGH_DIELECTRIC, TOLERANCE)
         << "the file's written 0 over the draw's 1";
     m_backend.UnloadModel(dielectric);
+}
+
+// ---------------------------------------------------------------------------
+// A file marked unlit, and JPEG textures. Both are drawn in the dark, so a lit
+// surface would be black and only an unlit one shows its colour.
+// ---------------------------------------------------------------------------
+
+// A file whose material carries KHR_materials_unlit is drawn as its base colour
+// with no light: baseColorFactor (1, 0.5, 0) is stored by raylib as (255, 127,
+// 0) -- 0.5 * 255 = 127.5, truncated -- and drawn so in the dark, where lit it
+// would be black.
+//
+// Mutations: the extension not read by the parser -> black; the file's flag not
+// used by the backend -> black.
+TEST_F(ModelMaterialTest, AFileMarkedUnlitDrawsAsAuthored) {
+    Scene scene;
+    GltfMaterial material;
+    material.rgba[1] = 0.5f;
+    material.rgba[2] = 0.0f;
+    material.unlit = true;
+    scene.Materials = {material};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{model, {}}}), LEFT_HALF), 255, 127, 0, "unlit, in the dark");
+    m_backend.UnloadModel(model);
+}
+
+namespace {
+// One flat colour, written as JPEG. JPEG keeps a flat 8 x 8 block as its average
+// alone, so decoding gives the colour back but for the rounding of its
+// conversion to YCbCr and back -- a level or two in a channel. JPEG_SLACK allows
+// for that and nothing more.
+constexpr ::Color JPEG_COLOUR = {200, 100, 50, 255};
+constexpr int JPEG_SLACK = 4;
+
+void WriteFlatJpeg(const fs::path& path) {
+    ::Image image = ::GenImageColor(8, 8, JPEG_COLOUR);
+    ::ExportImage(image, path.string().c_str());
+    ::UnloadImage(image);
+}
+
+void ExpectJpegColour(BRITE::Color actual, const char* what) {
+    EXPECT_NEAR(actual.r, JPEG_COLOUR.r, JPEG_SLACK) << what;
+    EXPECT_NEAR(actual.g, JPEG_COLOUR.g, JPEG_SLACK) << what;
+    EXPECT_NEAR(actual.b, JPEG_COLOUR.b, JPEG_SLACK) << what;
+}
+} // namespace
+
+// A JPEG loads as a texture: a mesh built in code, drawn unlit with it as its
+// albedo, shows its colour, (200, 100, 50).
+//
+// Mutation: JPEG left compiled out of raylib (SUPPORT_FILEFORMAT_JPG off) -> the
+// file cannot be written or read, the texture is nothing, and the colour is not
+// there.
+TEST_F(ModelMaterialTest, AJpegLoadsAsATexture) {
+    WriteFlatJpeg(m_dir.Path() / "flat.jpg");
+    const BRITE::TextureHandle jpeg = m_backend.LoadTexture((m_dir.Path() / "flat.jpg").string().c_str());
+    ASSERT_NE(m_backend.NativeTextureId(jpeg), 0u) << "a texture was made from the JPEG";
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255});
+    for (const BRITE::Vector3& p : mesh.Positions)
+        mesh.TexCoords.push_back({(p.x + 1.0f) * 0.5f, (1.0f - p.y) * 0.5f});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    unlit.AlbedoMap = jpeg;
+    ExpectJpegColour(At(Draw(model, unlit), LEFT_HALF), "a JPEG albedo, unlit");
+    m_backend.UnloadTexture(jpeg);
+    m_backend.UnloadModel(model);
+}
+
+// A model whose file carries a JPEG texture draws with it, the way the look
+// research found such models did not: unlit, the file's JPEG base-colour
+// texture shows (200, 100, 50).
+//
+// Mutation: JPEG left compiled out of raylib -> the model's texture is nothing,
+// and it draws white.
+TEST_F(ModelMaterialTest, AModelsJpegTextureDraws) {
+    WriteFlatJpeg(m_dir.Path() / "texture.jpg");
+    Scene scene;
+    GltfMaterial textured;
+    textured.textured = true;
+    scene.Materials = {textured};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+    scene.Image = "texture.jpg";
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    ExpectJpegColour(At(Draw(model, unlit), LEFT_HALF), "the file's JPEG, unlit");
+    m_backend.UnloadModel(model);
 }
 
 // Which of a model's bound texture ids are its own, worked by hand: 0 is no

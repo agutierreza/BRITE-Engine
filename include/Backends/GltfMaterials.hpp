@@ -32,6 +32,9 @@ struct GltfMaterialInfo {
     float RoughnessFactor = 1.0f;
     bool HasMetallicFactor = false;
     bool HasRoughnessFactor = false;
+    // KHR_materials_unlit: the material is drawn as its base colour, with no
+    // lighting -- a sky, a backdrop, a painted card.
+    bool Unlit = false;
 };
 
 // Reads the materials of a glTF file, in the order the file lists them, from

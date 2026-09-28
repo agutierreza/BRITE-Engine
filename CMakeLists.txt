@@ -31,6 +31,12 @@ set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
 # Disable Raylib's internal audio module to prevent dr_wav symbol collisions with SoLoud
 set(CUSTOMIZE_BUILD ON CACHE BOOL "Allow customizing raylib" FORCE)
 set(SUPPORT_MODULE_RAUDIO OFF CACHE BOOL "Disable raylib audio" FORCE)
+# JPEG textures on. raylib leaves JPEG out by default -- its config.h says so,
+# and with CUSTOMIZE_BUILD the options above start from those same defaults --
+# so a model whose file carried a JPEG texture drew without it, with only a
+# raylib log line to say why. PNG is raylib's default and stays on. HDR stays
+# off: nothing here needs it yet.
+set(SUPPORT_FILEFORMAT_JPG ON CACHE BOOL "Load JPEG images and textures" FORCE)
 
 FetchContent_MakeAvailable(raylib)
 

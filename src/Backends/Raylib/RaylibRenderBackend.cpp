@@ -540,7 +540,8 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool
 
     // Set on every mesh, lit or not: a uniform keeps its value between draws,
     // so an unlit mesh would otherwise leave every mesh after it unlit.
-    const int unlit = material.Unlit ? 1 : 0;
+    // The draw's Unlit, or the file's KHR_materials_unlit.
+    const int unlit = (material.Unlit || (fileMaterial != nullptr && fileMaterial->Unlit)) ? 1 : 0;
     ::SetShaderValue(*shader, m_pbrLocs.unlit, &unlit, SHADER_UNIFORM_INT);
 
     // The cut-out: the draw's own if it asks for one, else the file's MASK.

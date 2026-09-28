@@ -189,3 +189,25 @@ TEST(GltfMaterials, MetallicAndRoughnessReadWithWhetherTheyWereWritten) {
     EXPECT_FLOAT_EQ(materials[2].MetallicFactor, 1.0f);
     EXPECT_FALSE(materials[2].HasRoughnessFactor);
 }
+
+// KHR_materials_unlit is a flag by presence: an empty object under extensions.
+// A material without it, or with only another extension, is lit.
+//
+// Mutations: the extension not read -> material 1 reads lit; read as present
+// whenever there are extensions -> material 2 reads unlit.
+TEST(GltfMaterials, UnlitReadsFromItsExtension) {
+    const std::string file = R"({
+      "asset": {"version": "2.0"},
+      "materials": [
+        {},
+        {"extensions": {"KHR_materials_unlit": {}}},
+        {"extensions": {"KHR_materials_emissive_strength": {"emissiveStrength": 2}}}
+      ]
+    })";
+    std::vector<GltfMaterialInfo> materials;
+    ASSERT_TRUE(ReadGltfMaterials(Bytes(file), materials));
+    ASSERT_EQ(materials.size(), 3u);
+    EXPECT_FALSE(materials[0].Unlit);
+    EXPECT_TRUE(materials[1].Unlit);
+    EXPECT_FALSE(materials[2].Unlit);
+}

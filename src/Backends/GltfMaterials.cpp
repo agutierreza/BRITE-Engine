@@ -94,6 +94,8 @@ bool ReadGltfMaterials(const std::vector<unsigned char>& bytes, std::vector<Gltf
             }
             if (const auto extensions = entry.find("extensions");
                 extensions != entry.end() && extensions->is_object()) {
+                // KHR_materials_unlit carries no properties: its presence is the flag.
+                info.Unlit = extensions->contains("KHR_materials_unlit");
                 const auto strength = extensions->find("KHR_materials_emissive_strength");
                 if (strength != extensions->end() && strength->is_object()) {
                     const auto value = strength->find("emissiveStrength");
