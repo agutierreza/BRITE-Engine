@@ -88,6 +88,10 @@ uniform float alphaCutoff;
 // The light a surface gives off, linear RGB, strength included; black is none.
 uniform vec3 emissiveLight;
 
+// glTF's normalTexture.scale: how far the map's x and y tilt the surface. 0 is
+// flat, 1 the map as authored.
+uniform float normalScale;
+
 // 1: the back face is drawn too, and lit with its normal turned to face the
 // viewer (glTF's doubleSided).
 uniform int doubleSided;
@@ -168,16 +172,20 @@ vec3 ComputePBR()
     roughness = clamp(roughness, 0.04, 1.0);
     ao = clamp(ao, 0.0, 1.0);
 
+    // The normal map, in the tangent frame: x along the texture's u, y toward
+    // the top of the texture, z out of the surface, each stored as 0..1. Its x
+    // and y are scaled by normalScale, as glTF defines.
     vec3 N = normalize(fragNormal);
-    // A back face seen from behind is lit as the surface facing the viewer is,
-    // which is the face whose normal points the other way.
-    if (doubleSided == 1 && !gl_FrontFacing) N = -N;
     if (useTexNormal == 1)
     {
-        N = texture(normalMap, fragTexCoord*tiling + offset).rgb;
-        N = normalize(N*2.0 - 1.0);
-        N = normalize(N*TBN);
+        vec3 tilt = texture(normalMap, fragTexCoord*tiling + offset).rgb*2.0 - 1.0;
+        tilt.xy *= normalScale;
+        N = normalize(normalize(tilt)*TBN);
     }
+    // A back face seen from behind is lit as the surface facing the viewer is,
+    // which is the face whose normal points the other way -- after the normal
+    // map, which is authored for the front.
+    if (doubleSided == 1 && !gl_FrontFacing) N = -N;
 
     vec3 V = normalize(viewPos - fragPosition);
     vec3 R = reflect(-V, N);

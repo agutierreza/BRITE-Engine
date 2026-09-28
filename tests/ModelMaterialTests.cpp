@@ -84,6 +84,8 @@ struct Quad {
     int material = -1;       // index into Materials, or -1 for none
     float uvScale = 1.0f;    // how many times a texture spans the whole picture's quad range
     bool facingAway = false; // wound and normalled to face -z: the camera sees its back
+    float tangentW = 0.0f;   // 0: no TANGENT attribute; +1 or -1: tangents (1, 0, 0, w)
+    bool uvTurned = false;   // u along +y and v along +x, instead of u along +x and v along -y
 };
 
 struct GltfMaterial {
@@ -101,6 +103,8 @@ struct GltfMaterial {
     bool mrTextured = false;         // metallicRoughnessTexture samples the image
     bool occlusionTextured = false;  // occlusionTexture samples the image
     float occlusionStrength = -1.0f; // occlusionTexture.strength, written only when 0 or more
+    bool normalTextured = false;     // normalTexture samples the image
+    float normalScale = -1.0f;       // normalTexture.scale, written only when 0 or more
 };
 
 struct Scene {
@@ -172,10 +176,26 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
         // times the quad's uvScale.
         start = bin.size();
         for (int i = 0; i < 4; ++i) {
-            Append(bin, (xs[i] + 1.0f) * 0.5f * q.uvScale);
-            Append(bin, (1.0f - ys[i]) * 0.5f * q.uvScale);
+            if (q.uvTurned) {
+                Append(bin, (ys[i] + 1.0f) * 0.5f * q.uvScale);
+                Append(bin, (xs[i] + 1.0f) * 0.5f * q.uvScale);
+            } else {
+                Append(bin, (xs[i] + 1.0f) * 0.5f * q.uvScale);
+                Append(bin, (1.0f - ys[i]) * 0.5f * q.uvScale);
+            }
         }
         const int texcoord = addView(start, bin.size() - start, 4, 5126, "VEC2");
+        int tangent = -1;
+        if (q.tangentW != 0.0f) {
+            start = bin.size();
+            for (int i = 0; i < 4; ++i) {
+                Append(bin, 1.0f);
+                Append(bin, 0.0f);
+                Append(bin, 0.0f);
+                Append(bin, q.tangentW);
+            }
+            tangent = addView(start, bin.size() - start, 4, 5126, "VEC4");
+        }
         start = bin.size();
         // Counter-clockwise seen from +z, or, facing away, from -z.
         const std::vector<unsigned short> order = q.facingAway ? std::vector<unsigned short>{0, 2, 1, 0, 3, 2}
@@ -191,6 +211,10 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
                       "%s{\"attributes\":{\"POSITION\":%d,\"NORMAL\":%d,\"TEXCOORD_0\":%d},\"indices\":%d",
                       primitives.empty() ? "" : ",", position, normal, texcoord, indices);
         primitives += buf;
+        if (tangent >= 0) {
+            // Into the attributes object, just before its closing brace.
+            primitives.insert(primitives.rfind("},\"indices\""), ",\"TANGENT\":" + std::to_string(tangent));
+        }
         if (q.material >= 0)
             primitives += ",\"material\":" + std::to_string(q.material);
         primitives += "}";
@@ -215,6 +239,14 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
         if (m.mrTextured)
             materials += ",\"metallicRoughnessTexture\":{\"index\":0}";
         materials += "}"; // pbrMetallicRoughness
+        if (m.normalTextured) {
+            materials += ",\"normalTexture\":{\"index\":0";
+            if (m.normalScale >= 0.0f) {
+                std::snprintf(buf, sizeof(buf), ",\"scale\":%g", m.normalScale);
+                materials += buf;
+            }
+            materials += "}";
+        }
         if (m.occlusionTextured) {
             materials += ",\"occlusionTexture\":{\"index\":0";
             if (m.occlusionStrength >= 0.0f) {
@@ -249,7 +281,8 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
         if (!extensions.empty())
             materials += ",\"extensions\":{" + extensions + "}";
         materials += "}";
-        anyTexture = anyTexture || m.textured || m.emissiveTextured || m.mrTextured || m.occlusionTextured;
+        anyTexture =
+            anyTexture || m.textured || m.emissiveTextured || m.mrTextured || m.occlusionTextured || m.normalTextured;
     }
 
     std::string json = "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
@@ -1779,6 +1812,180 @@ TEST_F(ModelMaterialTest, ADrawsAOMapDarkensTheAmbientAndNotTheLights) {
     EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, occluded}})), ROUGH_DIELECTRIC, TOLERANCE)
         << "the sun, not occluded";
     m_backend.UnloadTexture(ao);
+    m_backend.UnloadModel(model);
+}
+
+// ---------------------------------------------------------------------------
+// Normal maps. A white quad facing +z, read at the middle pixel, lit by a sun
+// travelling (0, -1, -1)/sqrt(2) -- from above and in front -- at intensity pi,
+// no ambient. So L = (0, 0.707107, 0.707107) and V = +z. With roughness 1,
+// a = 1 and D = 1/pi at any angle; k = 0.5; H = normalize(V + L) =
+// (0, 0.382683, 0.923880), so H.V = 0.923880 and F = 0.04 + 0.96(1 -
+// 0.923880)^5 = 0.0400025, kD = 0.9599975.
+//
+// FLAT (N = +z): N.V = 1, N.L = 0.707107; G = 1 * 0.707107/(0.353553 + 0.5) =
+//   0.828427; the specular is (1/pi)(0.828427)(0.0400025)/(4 * 1 * 0.707107) =
+//   0.0117165/pi. Lo = (0.9599975 + 0.0117165) * 0.707107 = 0.687106;
+//   /1.687106 = 0.407269; ^(1/2.2) = e^(-0.898303/2.2) = 0.664780 -> 169.5 -> 170.
+// TILTED UP 45 degrees (N = L): N.L = 1, N.V = 0.707107; G is the same 0.828427
+//   with the two roles swapped, and the specular the same 0.0117165/pi.
+//   Lo = 0.971714; /1.971714 = 0.492830; ^(1/2.2) = e^(-0.707494/2.2) = 0.725033
+//   -> 184.9 -> 185.
+// TILTED DOWN 45 degrees (N = (0, -0.707107, 0.707107)): N.L = 0, and nothing.
+// TILTED SIDEWAYS 45 degrees, toward -x (N = (-0.707107, 0, 0.707107)): N.L = 0.5,
+//   N.V = 0.707107; G = 0.828427 * 0.5/(0.25 + 0.5) = 0.552285; the specular is
+//   (1/pi)(0.552285)(0.0400025)/(4 * 0.707107 * 0.5) = 0.0156220/pi.
+//   Lo = (0.9599975 + 0.0156220) * 0.5 = 0.487810; /1.487810 = 0.327871;
+//   ^(1/2.2) = e^(-1.115137/2.2) = 0.602394 -> 153.6 -> 154.
+//
+// WHY THE TURNED TEXTURE. A mesh with no tangents is drawn by raylib with a
+// default tangent attribute of (1, 0, 0, 1): +x, handedness +1. On a quad whose
+// u runs along +x that default IS the right frame, so it cannot show whether
+// tangents were generated at all. With the texture turned a quarter -- u along
+// +y, v along +x, so the top of the texture (v = 0) is toward -x -- the right
+// frame tilts the tilt-up map toward -x, 154, and raylib's default toward +y,
+// 185.
+//
+// The maps: (128, 218, 218) is x = 128/255 * 2 - 1 = 0.004, y = z = 218/255 * 2 -
+// 1 = 0.709804 -- 45 degrees toward the top of the texture, which on these quads
+// is +y (v = 0 is y = +1). (128, 128, 255) is flat.
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr int FLAT_UNDER_HIGH_SUN = 170;
+constexpr int TILTED_TO_THE_SUN = 185;
+constexpr int TILTED_SIDEWAYS = 154;
+constexpr ::Color TILT_UP = {128, 218, 218, 255};
+constexpr ::Color FLAT_NORMAL = {128, 128, 255, 255};
+
+BRITE::RenderPass SunAboveAndInFront() {
+    BRITE::RenderPass pass;
+    BRITE::Light sun;
+    sun.Direction = {0.0f, -0.70710678f, -0.70710678f};
+    sun.Intensity = 3.14159265f;
+    pass.Lights.push_back(sun);
+    return pass;
+}
+
+Scene NormalMappedQuad(float tangentW, float scale) {
+    Scene scene;
+    GltfMaterial material;
+    material.normalTextured = true;
+    material.normalScale = scale;
+    scene.Materials = {material};
+    Quad quad{-1.0f, 1.0f, 0};
+    quad.tangentW = tangentW;
+    scene.Quads = {quad};
+    return scene;
+}
+} // namespace
+
+// A file's normal texture tilts the surface: the tilt-up map reads 185, where a
+// flat map reads 170. The file gives no tangents, so they are generated at load
+// -- with the map's green pointing up the texture, as glTF means it.
+//
+// Mutations: the file's own normal texture not used -> 170 for the tilt-up map;
+// generated tangents' handedness left as raylib computes it -> the map tilts
+// down, away from the sun, and reads near black.
+TEST_F(ModelMaterialTest, AFilesNormalTextureTiltsTheSurface) {
+    WriteFlatPng(m_dir.Path() / "texture.png", TILT_UP);
+    const BRITE::ModelHandle tilted =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), NormalMappedQuad(0.0f, -1.0f)).string().c_str());
+    ASSERT_NE(tilted, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunAboveAndInFront(), {{tilted, {}}})), TILTED_TO_THE_SUN, TOLERANCE)
+        << "tilted up, toward the sun";
+    m_backend.UnloadModel(tilted);
+
+    WriteFlatPng(m_dir.Path() / "texture.png", FLAT_NORMAL);
+    const BRITE::ModelHandle flat =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), NormalMappedQuad(0.0f, -1.0f)).string().c_str());
+    ASSERT_NE(flat, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunAboveAndInFront(), {{flat, {}}})), FLAT_UNDER_HIGH_SUN, TOLERANCE) << "flat";
+    m_backend.UnloadModel(flat);
+}
+
+// A file's own tangents are used as given, handedness and all: tangents (1, 0,
+// 0, -1) make the bitangent cross(+z, +x) * -1 = -y, so the same tilt-up map
+// tilts the surface DOWN, away from the sun: N.L = 0, near black.
+//
+// Mutations: tangents generated over the file's own -> 185; the handedness
+// ignored by the vertex shader -> the bitangent is +y whatever w says, 185. (A
+// generated tangent's handedness is +1 once flipped, so only a file's own -1
+// can show whether w is read.)
+TEST_F(ModelMaterialTest, AFilesOwnTangentsAreUsedAsGiven) {
+    WriteFlatPng(m_dir.Path() / "texture.png", TILT_UP);
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), NormalMappedQuad(-1.0f, -1.0f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunAboveAndInFront(), {{model, {}}})), 0, TOLERANCE)
+        << "the file's handedness: tilted away from the sun";
+    m_backend.UnloadModel(model);
+}
+
+// normalTexture.scale 0 flattens the map: the tilt-up map at scale 0 reads flat,
+// 170.
+//
+// Mutation: the scale ignored -> 185.
+TEST_F(ModelMaterialTest, ANormalScaleOfZeroFlattensTheMap) {
+    WriteFlatPng(m_dir.Path() / "texture.png", TILT_UP);
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), NormalMappedQuad(0.0f, 0.0f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunAboveAndInFront(), {{model, {}}})), FLAT_UNDER_HIGH_SUN, TOLERANCE);
+    m_backend.UnloadModel(model);
+}
+
+// A draw's normal map on a mesh built in code: its tangents are generated when
+// it is loaded, from its texture coordinates. The texture is turned a quarter
+// (see WHY THE TURNED TEXTURE), so the tilt-up map leans the surface toward -x,
+// 154.
+//
+// Mutation: no tangents generated for a mesh built in code -> raylib's default
+// tangent leans it toward +y instead, 185.
+TEST_F(ModelMaterialTest, ADrawsNormalMapFollowsTheTextureOnAMeshBuiltInCode) {
+    WriteFlatPng(m_dir.Path() / "up.png", TILT_UP);
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255});
+    for (const BRITE::Vector3& p : mesh.Positions)
+        mesh.TexCoords.push_back({(p.y + 1.0f) * 0.5f, (p.x + 1.0f) * 0.5f});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle up = m_backend.LoadTexture((m_dir.Path() / "up.png").string().c_str());
+    BRITE::PBRMaterial mapped;
+    mapped.NormalMap = up;
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunAboveAndInFront(), {{model, mapped}})), TILTED_SIDEWAYS, TOLERANCE);
+    m_backend.UnloadTexture(up);
+    m_backend.UnloadModel(model);
+}
+
+// The same for a file with no tangents of its own: they are generated at load,
+// so its normal map follows its texture, turned a quarter, toward -x, 154.
+//
+// Mutation: no tangents generated for a loaded model -> raylib's default, 185.
+TEST_F(ModelMaterialTest, AFilesNormalTextureFollowsItsTextureNotTheWorld) {
+    WriteFlatPng(m_dir.Path() / "texture.png", TILT_UP);
+    Scene scene = NormalMappedQuad(0.0f, -1.0f);
+    scene.Quads[0].uvTurned = true;
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunAboveAndInFront(), {{model, {}}})), TILTED_SIDEWAYS, TOLERANCE);
+    m_backend.UnloadModel(model);
+}
+
+// A double-sided quad seen from behind, normal-mapped flat: the map is authored
+// for the front, and the back face turns the MAPPED normal to face the viewer.
+// Facing away, its normal is -z; the flat map leaves it -z; turned, it is +z,
+// and under the sun behind the camera that is the rough dielectric's 185.
+//
+// Mutation: the back face turned BEFORE the map, as it was -> the map puts back
+// -z, and the face is black.
+TEST_F(ModelMaterialTest, ADoubleSidedBackFaceTurnsItsMappedNormal) {
+    WriteFlatPng(m_dir.Path() / "texture.png", FLAT_NORMAL);
+    Scene scene = NormalMappedQuad(0.0f, -1.0f);
+    scene.Materials[0].doubleSided = true;
+    scene.Quads[0].facingAway = true;
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, {}}})), ROUGH_DIELECTRIC, TOLERANCE);
     m_backend.UnloadModel(model);
 }
 

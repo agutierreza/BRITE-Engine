@@ -37,6 +37,8 @@ struct GltfMaterialInfo {
     bool Unlit = false;
     // occlusionTexture.strength: how much of the occlusion map applies, 0 to 1.
     float OcclusionStrength = 1.0f;
+    // normalTexture.scale: how far the normal map tilts the surface, 1 as authored.
+    float NormalScale = 1.0f;
 };
 
 // Reads the materials of a glTF file, in the order the file lists them, from

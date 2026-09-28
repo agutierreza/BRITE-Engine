@@ -86,6 +86,11 @@ bool ReadGltfMaterials(const std::vector<unsigned char>& bytes, std::vector<Gltf
                     info.HasRoughnessFactor = true;
                 }
             }
+            if (const auto normal = entry.find("normalTexture"); normal != entry.end() && normal->is_object()) {
+                const auto scale = normal->find("scale");
+                if (scale != normal->end() && scale->is_number())
+                    info.NormalScale = scale->get<float>();
+            }
             if (const auto occlusion = entry.find("occlusionTexture");
                 occlusion != entry.end() && occlusion->is_object()) {
                 const auto strength = occlusion->find("strength");

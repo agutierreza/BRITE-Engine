@@ -231,3 +231,23 @@ TEST(GltfMaterials, OcclusionStrengthReadsAsWritten) {
     EXPECT_FLOAT_EQ(materials[0].OcclusionStrength, 1.0f);
     EXPECT_FLOAT_EQ(materials[1].OcclusionStrength, 0.5f);
 }
+
+// normalTexture.scale: 1 when the file does not say, and as written when it
+// does -- 0 included, which flattens the map.
+//
+// Mutations: scale not read -> material 1 reads 1; a default of 0 -> material 0
+// reads 0.
+TEST(GltfMaterials, NormalScaleReadsAsWritten) {
+    const std::string file = R"({
+      "asset": {"version": "2.0"},
+      "materials": [
+        {"normalTexture": {"index": 0}},
+        {"normalTexture": {"index": 0, "scale": 0}}
+      ]
+    })";
+    std::vector<GltfMaterialInfo> materials;
+    ASSERT_TRUE(ReadGltfMaterials(Bytes(file), materials));
+    ASSERT_EQ(materials.size(), 2u);
+    EXPECT_FLOAT_EQ(materials[0].NormalScale, 1.0f);
+    EXPECT_FLOAT_EQ(materials[1].NormalScale, 0.0f);
+}

@@ -48,6 +48,26 @@ constexpr unsigned int GL_DEPTH_COMPONENT24_ = 0x81A6;
 constexpr unsigned int GL_MAX_SAMPLES_ = 0x8D57;
 constexpr int GL_COLOR_BUFFER_BIT_ = 0x4000;
 
+// Tangents for a mesh that has texture coordinates and normals but no tangents
+// of its own, so that a normal map can be read on it. raylib's GenMeshTangents
+// takes the bitangent's direction from increasing v -- DOWN the texture, since v
+// counts rows from the top, in glTF and in MeshData alike -- while a normal
+// map's green means UP the texture. So the handedness it computes is flipped
+// here, and a map reads the right way up. A mesh whose file gave tangents keeps
+// them: their handedness is the file's to say.
+void GenerateTangents(::Mesh& mesh) {
+    if (mesh.tangents != nullptr || mesh.texcoords == nullptr || mesh.normals == nullptr || mesh.vertices == nullptr)
+        return;
+    ::GenMeshTangents(&mesh);
+    if (mesh.tangents == nullptr)
+        return;
+    for (int i = 0; i < mesh.vertexCount; ++i)
+        mesh.tangents[i * 4 + 3] = -mesh.tangents[i * 4 + 3];
+    if (mesh.vboId != nullptr && mesh.vboId[SHADER_LOC_VERTEX_TANGENT] != 0)
+        ::rlUpdateVertexBuffer(mesh.vboId[SHADER_LOC_VERTEX_TANGENT], mesh.tangents,
+                               mesh.vertexCount * 4 * static_cast<int>(sizeof(float)), 0);
+}
+
 // Sets a texture's filters, anisotropy and wrap, generating its mipmaps first
 // when the filter reads them. The filters go straight to rlgl rather than
 // through raylib's SetTextureFilter, whose "point" and "bilinear" turn into
@@ -258,6 +278,7 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             ownMaps.metalness = owns(MATERIAL_MAP_METALNESS);
             ownMaps.roughness = owns(MATERIAL_MAP_ROUGHNESS);
             ownMaps.occlusion = owns(MATERIAL_MAP_OCCLUSION);
+            ownMaps.normal = owns(MATERIAL_MAP_NORMAL);
 
             for (const auto& [handle, mapIndex] : overrides) {
                 if (const ::Texture2D* texture = commandTexture(handle))
@@ -430,6 +451,7 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.metallicValue = loc("metallicValue");
     m_pbrLocs.roughnessValue = loc("roughnessValue");
     m_pbrLocs.occlusionStrength = loc("occlusionStrength");
+    m_pbrLocs.normalScale = loc("normalScale");
     m_pbrLocs.unlit = loc("unlit");
     m_pbrLocs.alphaMask = loc("alphaMask");
     m_pbrLocs.alphaCutoff = loc("alphaCutoff");
@@ -523,13 +545,12 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, cons
     // with no albedo texture sampled whatever was on texture unit 0 -- black on
     // the first draw -- instead of its colour. An albedo texture is the draw
     // command's or, failing that, the one the model's own material brought. So
-    // is each of the metalness, roughness and occlusion maps; the normal map
-    // comes from the draw command alone.
+    // is each of the metalness, roughness, occlusion and normal maps.
     const bool metalMap = material.MetallicMap != BRITE::NullTextureHandle || ownMaps.metalness;
     const bool roughMap = material.RoughnessMap != BRITE::NullTextureHandle || ownMaps.roughness;
     const bool occlusionMap = material.AOMap != BRITE::NullTextureHandle || ownMaps.occlusion;
     const int useAlbedo = (material.AlbedoMap != BRITE::NullTextureHandle || ownMaps.albedo) ? 1 : 0;
-    const int useNormal = material.NormalMap != BRITE::NullTextureHandle ? 1 : 0;
+    const int useNormal = (material.NormalMap != BRITE::NullTextureHandle || ownMaps.normal) ? 1 : 0;
     const int useMetallic = metalMap ? 1 : 0;
     const int useRoughness = roughMap ? 1 : 0;
     const int useOcclusion = occlusionMap ? 1 : 0;
@@ -559,6 +580,10 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, cons
     const float occlusionStrength =
         (material.AOMap == BRITE::NullTextureHandle && hasFile) ? fileMaterial->OcclusionStrength : 1.0f;
     ::SetShaderValue(*shader, m_pbrLocs.occlusionStrength, &occlusionStrength, SHADER_UNIFORM_FLOAT);
+    // The file's normal scale for its own map; the map as authored for a draw's.
+    const float normalScale =
+        (material.NormalMap == BRITE::NullTextureHandle && hasFile) ? fileMaterial->NormalScale : 1.0f;
+    ::SetShaderValue(*shader, m_pbrLocs.normalScale, &normalScale, SHADER_UNIFORM_FLOAT);
 
     // Set on every mesh, lit or not: a uniform keeps its value between draws,
     // so an unlit mesh would otherwise leave every mesh after it unlit.
@@ -807,6 +832,8 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
     ::Model* model = new ::Model(::LoadModel(fileName));
     BRITE::ModelHandle handle = m_nextModelId++;
     m_models[handle] = model;
+    for (int m = 0; m < model->meshCount; ++m)
+        GenerateTangents(model->meshes[m]);
 
     // raylib's glTF loader reads a material's base colour and textures and
     // nothing else, so the rest is read from the file here: the file's material
@@ -881,6 +908,7 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModelFromMesh(const BRITE::MeshData&
 
     ::UploadMesh(&mesh, false);
     ::Model* model = new ::Model(::LoadModelFromMesh(mesh));
+    GenerateTangents(model->meshes[0]);
     BRITE::ModelHandle handle = m_nextModelId++;
     m_models[handle] = model;
     return handle;

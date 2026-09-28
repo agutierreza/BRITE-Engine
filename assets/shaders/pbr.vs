@@ -45,7 +45,10 @@ void main()
     // relied on unless useTexNormal is set.
     vec3 fragTangent = normalize(normalMatrix*vertexTangent.xyz);
     fragTangent = normalize(fragTangent - dot(fragTangent, fragNormal)*fragNormal);
-    vec3 fragBinormal = cross(fragNormal, fragTangent);
+    // The tangent's w is its handedness, +1 or -1, as glTF defines it: the
+    // bitangent is cross(normal, tangent) times w. Without it, a mirrored UV
+    // layout reads its normal map's green channel upside down.
+    vec3 fragBinormal = cross(fragNormal, fragTangent)*vertexTangent.w;
     TBN = transpose(mat3(fragTangent, fragBinormal, fragNormal));
 
     // Calculate final vertex position

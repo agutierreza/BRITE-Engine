@@ -85,6 +85,7 @@ class RaylibRenderBackend : public IRenderBackend {
         bool metalness = false;
         bool roughness = false;
         bool occlusion = false;
+        bool normal = false;
     };
     // ownMaps: what the mesh's own material brought.
     // fileMaterial: what the mesh's file said of its material, or null.
@@ -119,6 +120,7 @@ class RaylibRenderBackend : public IRenderBackend {
         int metallicValue = -1;
         int roughnessValue = -1;
         int occlusionStrength = -1;
+        int normalScale = -1;
         int unlit = -1;
         int alphaMask = -1;
         int alphaCutoff = -1;

@@ -255,6 +255,10 @@ constexpr ModelHandle NullModelHandle = 0;
 
 struct PBRMaterial {
     TextureHandle AlbedoMap = NullTextureHandle;
+    // A tangent-space normal map, as glTF defines one: red along the texture's
+    // u, green toward the TOP of the texture, blue out of the surface. A mesh
+    // needs texture coordinates to carry one; its tangents are generated at load
+    // when its file gives none. Replaces the model's own map for this draw.
     TextureHandle NormalMap = NullTextureHandle;
     // Metalness, roughness and occlusion, each read from the channel glTF packs
     // it in -- roughness green, metalness blue, occlusion red -- so one glTF
