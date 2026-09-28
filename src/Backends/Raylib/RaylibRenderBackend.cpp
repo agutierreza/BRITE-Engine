@@ -840,6 +840,30 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
     // i is raylib's slot i + 1, and slot 0 is raylib's own default. Read the
     // same way raylib reads the file, relative to the working directory.
     if (::IsFileExtension(fileName, ".gltf") || ::IsFileExtension(fileName, ".glb")) {
+        // glTF's vertex colours are linear, as its base colours are, and raylib
+        // stored each as value x 255 -- as if it were an sRGB byte, which the
+        // shader would linearise a second time. Re-encode each as the draw colour
+        // it means, as the base colours are below, and re-upload the buffer.
+        // (The buffer is indexed by raylib's attribute location for colour, 3,
+        // not by the shader-location enum's 5.)
+        for (int m = 0; m < model->meshCount; ++m) {
+            ::Mesh& mesh = model->meshes[m];
+            if (mesh.colors == nullptr)
+                continue;
+            for (int v = 0; v < mesh.vertexCount; ++v) {
+                unsigned char* c = &mesh.colors[v * 4];
+                const float linear[4] = {c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, c[3] / 255.0f};
+                const BRITE::Color drawn = BRITE::DrawColorFromLinear(linear);
+                c[0] = drawn.r;
+                c[1] = drawn.g;
+                c[2] = drawn.b;
+                c[3] = drawn.a;
+            }
+            if (mesh.vboId != nullptr && mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_COLOR] != 0)
+                ::rlUpdateVertexBuffer(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_COLOR], mesh.colors,
+                                       mesh.vertexCount * 4, 0);
+        }
+
         std::ifstream file(fileName, std::ios::binary);
         const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
                                                std::istreambuf_iterator<char>());

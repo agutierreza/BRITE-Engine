@@ -12,12 +12,14 @@
 //   and rounded -- 1 -> 255, 0 -> 0, and 0.5^(1/2.2) = e^(-0.693147/2.2) =
 //   0.729740, * 255 = 186.08 -> 186 -- and alpha is scaled and rounded, 0.5 * 255
 //   = 127.5 -> 128. So material 0 is (255, 186, 0, 255) and material 1 is
-//   (186, 255, 255, 128).
+//   (186, 255, 255, 128). Vertex colours are linear too, and are encoded the
+//   same way: 12/255 = 0.047059, ^(1/2.2) = e^(-3.056357/2.2) = 0.249295, * 255 =
+//   63.57 -> 64, so mesh 1's vertex 0 draws as (64, 255, 255, 255).
 //
 //   mesh 0  a unit quad, (-0.5,-0.5) (0.5,-0.5) (0.5,0.5) (-0.5,0.5) at z = 0,
 //           normals +z, no vertex colours, indices 0 1 2 0 2 3, material 0
 //   mesh 1  a 2 x 1 quad, (0,0) (2,0) (2,1) (0,1) at z = 0, normals +z,
-//           vertex colours (64,255,255,255) on vertex 0 and white on the rest,
+//           vertex colours (12,255,255,255) on vertex 0 and white on the rest,
 //           texture coordinates (0,0) (0.25,0) (0.25,0.5) (0,0.5),
 //           indices 0 1 2 0 2 3, material 1
 //
@@ -259,7 +261,7 @@ GltfFile TwoNodeModel() {
     GltfMesh longQuad;
     longQuad.Positions = {{0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
     longQuad.Normals = FACING_Z;
-    longQuad.Colors = {{64, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}};
+    longQuad.Colors = {{12, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}};
     longQuad.TexCoords = {{0.0f, 0.0f}, {0.25f, 0.0f}, {0.25f, 0.5f}, {0.0f, 0.5f}};
     longQuad.Indices = QUAD;
     longQuad.Material = 1;
@@ -322,7 +324,9 @@ class ModelReadbackTest : public ::testing::Test {
 //
 // Mutations: the normals copied without renormalising -> mesh 1's read (0, 0, 2);
 // the material's colour not folded in -> mesh 0 reads white and mesh 1's vertex 0
-// (64, 255, 255, 255); the vertex colour ignored -> mesh 1's vertex 0 reads
+// (64, 255, 255, 255); the linear vertex colour taken as sRGB again -> 12 for
+// 64, and vertex 0 reads (9, 255, 255, 128); the vertex colour ignored -> mesh 1's
+// vertex 0 reads
 // (186, 255, 255, 128); the linear factor taken as sRGB again -> 127 for 186; the meshes read in reverse order -> every
 // position fails; texture coordinates not read back -> mesh 1 has none; invented for a mesh with none -> mesh 0 has
 // four; u and v swapped -> mesh 1's vertex 1 reads (0, 0.25).
@@ -371,7 +375,8 @@ TEST_F(ModelReadbackTest, ATwoNodeModelReadsBackWithItsNodeTransformsAndMaterial
     // (0, 0, 2) as raylib leaves it, (0, 0, 1) once renormalised.
     for (std::size_t i = 0; i < 4; ++i)
         ExpectVector(right.Normals[i], 0.0f, 0.0f, 1.0f, "mesh 1, normal " + std::to_string(i));
-    // Vertex 0 is (64, 255, 255, 255) times material 1's (186, 255, 255, 128):
+    // Vertex 0 is (12, 255, 255, 255) in the file, drawn as (64, 255, 255, 255),
+    // times material 1's (186, 255, 255, 128):
     //   red    64 * 186 / 255 = 11904 / 255 = 46.68 -> 47   (truncated: 46)
     //   green  255 * 255 / 255 = 255;  blue the same
     //   alpha  255 * 128 / 255 = 128
@@ -567,6 +572,66 @@ TEST_F(ModelReadbackTest, AMeshWithoutNormalsReadsBackWithNone) {
     EXPECT_TRUE(meshes[0].Normals.empty());
     EXPECT_EQ(BRITE::CheckMeshData(meshes[0], RaylibRenderBackend::MaxVerticesPerMesh),
               BRITE::MeshDataProblem::NormalCountMismatch);
+    m_backend.UnloadModel(model);
+}
+
+// A glTF vertex colour is linear, as the file's base colour is. A quad whose
+// every vertex is grey 128 -- linear 128/255 = 0.501961 -- with no material of
+// its own (raylib's default, white) is drawn from the sRGB byte that means:
+// 0.501961^(1/2.2) = e^(-0.689233/2.2) = 0.731045, * 255 = 186.4 -> 186. The
+// shader decodes 186 to (186/255)^2.2 = 0.499497, and under the one light (a
+// white ambient of 1) that is 0.499497/1.499497 = 0.333110, ^(1/2.2) = 0.606756
+// -> 154.7 -> 155. Read as sRGB, as it used to be, 128 decoded to 0.219521 and
+// drew 117. The read-back carries the byte the draw uses, 186.
+//
+// Mutations: the linear vertex colour taken as sRGB again -> the read-back 128
+// and the pixel 117; the colours converted but the buffer not re-uploaded -> the
+// read-back 186, but the pixel still 117; the colour buffer found by the
+// shader-location enum (5) instead of raylib's attribute location (3) -> the
+// same: the drawn colour is not the one converted.
+TEST_F(ModelReadbackTest, AFilesLinearVertexColourIsDrawnAsTheLinearValueItIs) {
+    GltfFile file;
+    GltfMesh quad;
+    quad.Positions = {{-1.0f, -1.0f, 0.0f}, {1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {-1.0f, 1.0f, 0.0f}};
+    quad.Normals = FACING_Z;
+    quad.Colors = {{128, 128, 128, 255}, {128, 128, 128, 255}, {128, 128, 128, 255}, {128, 128, 128, 255}};
+    quad.Indices = QUAD;
+    file.Meshes = {quad};
+    GltfNode node;
+    node.Mesh = 0;
+    file.Nodes = {node};
+    const BRITE::ModelHandle model = Load(file);
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    std::vector<BRITE::MeshData> meshes;
+    ASSERT_TRUE(m_backend.ReadModelMeshes(model, meshes));
+    ASSERT_EQ(meshes.size(), 1u);
+    ASSERT_EQ(meshes[0].Colors.size(), 4u);
+    EXPECT_EQ(meshes[0].Colors[0].r, 186) << "the sRGB byte linear 0.501961 means";
+
+    const BRITE::TextureHandle target = m_backend.LoadRenderTexture(SIZE, SIZE);
+    BRITE::Camera3D camera{
+        {0.0f, 0.0f, 5.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, 4.0f, BRITE::CameraProjection::Orthographic};
+    BRITE::RenderPass pass;
+    pass.TargetFramebuffer = target;
+    pass.ClearColor = {0, 0, 0, 255};
+    pass.Camera3DPtr = &camera;
+    pass.AmbientColor = {255, 255, 255, 255};
+    pass.AmbientIntensity = 1.0f;
+    BRITE::ModelDrawCommand draw;
+    draw.Model = model;
+    draw.Position = {0.0f, 0.0f, 0.0f};
+    draw.Rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+    draw.Scale = {1.0f, 1.0f, 1.0f};
+    pass.ModelCommands.push_back(draw);
+    m_backend.SubmitRenderPass(pass);
+    int width = 0, height = 0;
+    std::vector<BRITE::Color> pixels;
+    ASSERT_TRUE(m_backend.ReadRenderTexture(target, width, height, pixels));
+    // The middle of the quad, pixel (32, 32).
+    EXPECT_NEAR(pixels[32 * SIZE + 32].r, 155, TOLERANCE) << "linear 0.501961 under the one light";
+
+    m_backend.UnloadRenderTexture(target);
     m_backend.UnloadModel(model);
 }
 
