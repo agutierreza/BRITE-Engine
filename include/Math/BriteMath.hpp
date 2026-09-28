@@ -274,6 +274,18 @@ struct PBRMaterial {
     // map but the albedo are ignored. A model draw only; sprites and primitives
     // are unlit already.
     bool Unlit = false;
+    // Alpha as a cut-out: a fragment whose alpha -- tint times vertex colour
+    // times albedo texture -- falls below AlphaCutoff is not drawn, and every
+    // other is drawn solid. For leaves, fences and a backdrop with a transparent
+    // sky. Without it the texture's alpha is ignored, as glTF's OPAQUE says. A
+    // loaded model's own MASK materials are cut out whatever this says; set here,
+    // it cuts out every mesh of the draw at this cutoff.
+    bool AlphaMask = false;
+    float AlphaCutoff = 0.5f;
+    // Both faces drawn, each lit from its own side: a single sheet seen from
+    // behind. A loaded model's own double-sided materials are drawn so whatever
+    // this says; set here, it applies to every mesh of the draw.
+    bool DoubleSided = false;
 };
 
 struct EnvironmentMap {

@@ -72,6 +72,15 @@ uniform float ambient;
 // 1: the material is unlit, and main() writes its albedo as authored.
 uniform int unlit;
 
+// 1: alpha is a cut-out at alphaCutoff (glTF's MASK); 0: it blends as the tint
+// and vertex colour say, and the texture's alpha is ignored (glTF's OPAQUE).
+uniform int alphaMask;
+uniform float alphaCutoff;
+
+// 1: the back face is drawn too, and lit with its normal turned to face the
+// viewer (glTF's doubleSided).
+uniform int doubleSided;
+
 // Distance fog, the pass's: fogColor is sRGB, as a Color is authored, and the
 // distances are world units from viewPos.
 uniform int fogEnabled;
@@ -148,6 +157,9 @@ vec3 ComputePBR()
     }
 
     vec3 N = normalize(fragNormal);
+    // A back face seen from behind is lit as the surface facing the viewer is,
+    // which is the face whose normal points the other way.
+    if (doubleSided == 1 && !gl_FrontFacing) N = -N;
     if (useTexNormal == 1)
     {
         N = texture(normalMap, fragTexCoord*tiling + offset).rgb;
@@ -244,6 +256,16 @@ vec3 ComputePBR()
 
 void main()
 {
+    // The cut-out comes first, lit or unlit: a masked fragment is not drawn at
+    // all, and one that stays is solid. The texture's alpha counts only here.
+    float alpha = colDiffuse.a*fragColor.a;
+    if (alphaMask == 1)
+    {
+        if (useTexAlbedo == 1) alpha *= texture(albedoMap, fragTexCoord*tiling + offset).a;
+        if (alpha < alphaCutoff) discard;
+        alpha = 1.0;
+    }
+
     // Unlit: the albedo in the sRGB it was authored in, straight to the target.
     // No linearising, because nothing is lit; no tone mapping, because nothing
     // went above 1; no gamma, because nothing was linearised.
@@ -251,7 +273,7 @@ void main()
     {
         vec3 albedo = colDiffuse.rgb*fragColor.rgb;
         if (useTexAlbedo == 1) albedo *= texture(albedoMap, fragTexCoord*tiling + offset).rgb;
-        finalColor = vec4(albedo, colDiffuse.a*fragColor.a);
+        finalColor = vec4(albedo, alpha);
         return;
     }
 
@@ -269,5 +291,5 @@ void main()
         float fade = clamp((fromCamera - fogStart)/max(fogEnd - fogStart, 0.0001), 0.0, 1.0);
         color = mix(color, fogColor, fade);
     }
-    finalColor = vec4(color, colDiffuse.a*fragColor.a);
+    finalColor = vec4(color, alpha);
 }

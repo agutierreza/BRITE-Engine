@@ -2,6 +2,8 @@
 #include "Backends/Raylib/PbrShaderSource.hpp"
 #include <algorithm>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <raylib.h>
 #include <raymath.h>
 #include <rlgl.h>
@@ -256,7 +258,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             maps[MATERIAL_MAP_IRRADIANCE].texture = irradiance ? *irradiance : ::Texture2D{0};
             maps[MATERIAL_MAP_PREFILTER].texture = prefilter ? *prefilter : ::Texture2D{0};
 
-            ApplyMaterial(cmd.Material, modelHasAlbedo);
+            const bool bothSides =
+                ApplyMaterial(cmd.Material, modelHasAlbedo, FileMaterial(cmd.Model, rlModel->meshMaterial[m]));
 
             // The draw tint times the material's own colour, as DrawModelEx does.
             const ::Color ownColour = maps[MATERIAL_MAP_DIFFUSE].color;
@@ -266,7 +269,12 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
                 static_cast<unsigned char>((static_cast<int>(ownColour.b) * tint.b) / 255),
                 static_cast<unsigned char>((static_cast<int>(ownColour.a) * tint.a) / 255)};
 
+            // Culling off for this mesh alone, and back on before the next.
+            if (bothSides)
+                ::rlDisableBackfaceCulling();
             ::DrawMesh(rlModel->meshes[m], material, transform);
+            if (bothSides)
+                ::rlEnableBackfaceCulling();
         }
     }
 
@@ -410,6 +418,9 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.roughnessValue = loc("roughnessValue");
     m_pbrLocs.aoValue = loc("aoValue");
     m_pbrLocs.unlit = loc("unlit");
+    m_pbrLocs.alphaMask = loc("alphaMask");
+    m_pbrLocs.alphaCutoff = loc("alphaCutoff");
+    m_pbrLocs.doubleSided = loc("doubleSided");
     m_pbrLocs.fogEnabled = loc("fogEnabled");
     m_pbrLocs.fogColor = loc("fogColor");
     m_pbrLocs.fogStart = loc("fogStart");
@@ -490,7 +501,8 @@ void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass) {
     }
 }
 
-void RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo) {
+bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo,
+                                        const BRITE::GltfMaterialInfo* fileMaterial) {
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
 
     // Which maps are bound. The shader used to assume all of them, so a model
@@ -519,6 +531,27 @@ void RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool
     // so an unlit mesh would otherwise leave every mesh after it unlit.
     const int unlit = material.Unlit ? 1 : 0;
     ::SetShaderValue(*shader, m_pbrLocs.unlit, &unlit, SHADER_UNIFORM_INT);
+
+    // The cut-out: the draw's own if it asks for one, else the file's MASK.
+    // BLEND is read but not yet honoured -- it needs translucent draws sorted,
+    // which nothing does -- so a BLEND material draws as it always has.
+    const bool fileMasks = fileMaterial != nullptr && fileMaterial->AlphaMode == BRITE::GltfAlphaMode::Mask;
+    const int alphaMask = (material.AlphaMask || fileMasks) ? 1 : 0;
+    const float alphaCutoff = material.AlphaMask ? material.AlphaCutoff : fileMasks ? fileMaterial->AlphaCutoff : 0.0f;
+    ::SetShaderValue(*shader, m_pbrLocs.alphaMask, &alphaMask, SHADER_UNIFORM_INT);
+    ::SetShaderValue(*shader, m_pbrLocs.alphaCutoff, &alphaCutoff, SHADER_UNIFORM_FLOAT);
+
+    const bool bothSides = material.DoubleSided || (fileMaterial != nullptr && fileMaterial->DoubleSided);
+    const int doubleSided = bothSides ? 1 : 0;
+    ::SetShaderValue(*shader, m_pbrLocs.doubleSided, &doubleSided, SHADER_UNIFORM_INT);
+    return bothSides;
+}
+
+const BRITE::GltfMaterialInfo* RaylibRenderBackend::FileMaterial(BRITE::ModelHandle model, int slot) const {
+    auto it = m_fileMaterials.find(model);
+    if (it == m_fileMaterials.end() || slot <= 0 || static_cast<std::size_t>(slot) >= it->second.size())
+        return nullptr;
+    return &it->second[static_cast<std::size_t>(slot)];
 }
 
 // ---------------------------------------------------------------------------
@@ -719,6 +752,26 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
     ::Model* model = new ::Model(::LoadModel(fileName));
     BRITE::ModelHandle handle = m_nextModelId++;
     m_models[handle] = model;
+
+    // raylib's glTF loader reads a material's base colour and textures and
+    // nothing else, so the rest is read from the file here: the file's material
+    // i is raylib's slot i + 1, and slot 0 is raylib's own default. Read the
+    // same way raylib reads the file, relative to the working directory.
+    if (::IsFileExtension(fileName, ".gltf") || ::IsFileExtension(fileName, ".glb")) {
+        std::ifstream file(fileName, std::ios::binary);
+        const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
+                                               std::istreambuf_iterator<char>());
+        std::vector<BRITE::GltfMaterialInfo> materials;
+        if (!BRITE::ReadGltfMaterials(bytes, materials)) {
+            spdlog::warn("BRITE: {}: its materials could not be read; drawn with their base colours alone", fileName);
+        } else if (static_cast<int>(materials.size()) + 1 != model->materialCount) {
+            spdlog::warn("BRITE: {}: {} materials in the file against {} loaded; drawn with their base colours alone",
+                         fileName, materials.size(), model->materialCount - 1);
+        } else {
+            materials.insert(materials.begin(), BRITE::GltfMaterialInfo{});
+            m_fileMaterials[handle] = std::move(materials);
+        }
+    }
     return handle;
 }
 
@@ -808,6 +861,7 @@ void RaylibRenderBackend::UnloadModel(BRITE::ModelHandle model) {
         ::UnloadModel(*rlModel);
         delete rlModel;
         m_models.erase(it);
+        m_fileMaterials.erase(model);
     }
 }
 

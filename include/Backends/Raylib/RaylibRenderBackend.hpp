@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Backends/GltfMaterials.hpp"
 #include "Backends/IRenderBackend.hpp"
 #include <cstddef>
 #include <unordered_map>
@@ -77,7 +78,14 @@ class RaylibRenderBackend : public IRenderBackend {
     void ApplyPassLighting(const BRITE::RenderPass& pass);
     // The per-mesh material scalars and which texture maps are bound.
     // modelHasAlbedo: the mesh's own material brought an albedo texture.
-    void ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo);
+    // fileMaterial: what the mesh's file said of its material, or null.
+    // Returns whether the mesh is drawn double-sided.
+    bool ApplyMaterial(const BRITE::PBRMaterial& material, bool modelHasAlbedo,
+                       const BRITE::GltfMaterialInfo* fileMaterial);
+    // What a loaded model's file said of the material in raylib slot `slot`,
+    // or null: a model built in code, a file that is not glTF, slot 0 (raylib's
+    // own default material), or a file whose materials did not read.
+    const BRITE::GltfMaterialInfo* FileMaterial(BRITE::ModelHandle model, int slot) const;
 
     uint64_t m_nextId = 1;
     uint64_t m_nextShaderId = 1;
@@ -101,6 +109,9 @@ class RaylibRenderBackend : public IRenderBackend {
         int roughnessValue = -1;
         int aoValue = -1;
         int unlit = -1;
+        int alphaMask = -1;
+        int alphaCutoff = -1;
+        int doubleSided = -1;
         int fogEnabled = -1;
         int fogColor = -1;
         int fogStart = -1;
@@ -141,6 +152,10 @@ class RaylibRenderBackend : public IRenderBackend {
     uint64_t m_nextModelId = 1;
     // Track raylib ::Model objects by ModelHandle
     std::unordered_map<BRITE::ModelHandle, void*> m_models;
+    // What a glTF model's file said of each material raylib does not read,
+    // indexed by raylib's material slot: slot 0 is raylib's own default and the
+    // file's material i is slot i + 1. Absent for any other model.
+    std::unordered_map<BRITE::ModelHandle, std::vector<BRITE::GltfMaterialInfo>> m_fileMaterials;
 };
 
 } // namespace Raylib

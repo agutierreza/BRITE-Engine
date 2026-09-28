@@ -177,6 +177,7 @@ add_library(${PROJECT_NAME} STATIC
     src/Framework/Application.cpp
     src/Framework/Scene.cpp
     src/Backends/MeshData.cpp
+    src/Backends/GltfMaterials.cpp
     src/Backends/Raylib/RaylibApplicationBackend.cpp
     src/Backends/Raylib/RaylibInputBackend.cpp
     src/Backends/Raylib/RaylibRenderBackend.cpp
@@ -257,7 +258,8 @@ endif()
 enable_testing()
 add_executable(BRITETests tests/SceneFuzzTest.cpp tests/MeshDataTests.cpp tests/InputManagerTests.cpp
                           tests/TickFractionTests.cpp tests/ModelMaterialTests.cpp tests/ModelReadbackTests.cpp
-                          tests/MultisampleTests.cpp tests/ApplicationLifetimeTests.cpp)
+                          tests/MultisampleTests.cpp tests/ApplicationLifetimeTests.cpp
+                          tests/GltfMaterialsTests.cpp)
 target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
 
 include(GoogleTest)

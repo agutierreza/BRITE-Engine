@@ -1,0 +1,84 @@
+#include "Backends/GltfMaterials.hpp"
+
+#include <cstdint>
+#include <cstring>
+#include <nlohmann/json.hpp>
+#include <string>
+
+namespace BRITE {
+
+namespace {
+
+// The .glb container (glTF 2.0, section 4.4): a 12-byte header -- magic "glTF",
+// version, total length -- then chunks, each an 8-byte header -- length, type --
+// and its data. The first chunk is the JSON.
+constexpr std::uint32_t GLB_MAGIC = 0x46546C67;      // "glTF", little-endian
+constexpr std::uint32_t GLB_JSON_CHUNK = 0x4E4F534A; // "JSON", little-endian
+constexpr std::size_t GLB_HEADER = 12;
+constexpr std::size_t GLB_CHUNK_HEADER = 8;
+
+std::uint32_t ReadU32(const std::vector<unsigned char>& bytes, std::size_t at) {
+    std::uint32_t value = 0;
+    for (int i = 3; i >= 0; --i)
+        value = (value << 8) | bytes[at + static_cast<std::size_t>(i)];
+    return value;
+}
+
+// The JSON text of a .glb, or false when its header does not add up.
+bool GlbJson(const std::vector<unsigned char>& bytes, std::string& json) {
+    if (bytes.size() < GLB_HEADER + GLB_CHUNK_HEADER)
+        return false;
+    const std::uint32_t declared = ReadU32(bytes, 8);
+    const std::uint32_t chunkLength = ReadU32(bytes, GLB_HEADER);
+    const std::uint32_t chunkType = ReadU32(bytes, GLB_HEADER + 4);
+    if (declared > bytes.size() || chunkType != GLB_JSON_CHUNK ||
+        GLB_HEADER + GLB_CHUNK_HEADER + chunkLength > bytes.size())
+        return false;
+    const auto* start = reinterpret_cast<const char*>(bytes.data() + GLB_HEADER + GLB_CHUNK_HEADER);
+    json.assign(start, chunkLength);
+    return true;
+}
+
+GltfAlphaMode AlphaModeFrom(const std::string& name) {
+    if (name == "MASK")
+        return GltfAlphaMode::Mask;
+    if (name == "BLEND")
+        return GltfAlphaMode::Blend;
+    return GltfAlphaMode::Opaque; // "OPAQUE", and anything glTF does not define
+}
+
+} // namespace
+
+bool ReadGltfMaterials(const std::vector<unsigned char>& bytes, std::vector<GltfMaterialInfo>& materials) {
+    materials.clear();
+    std::string text;
+    if (bytes.size() >= 4 && ReadU32(bytes, 0) == GLB_MAGIC) {
+        if (!GlbJson(bytes, text))
+            return false;
+    } else {
+        text.assign(bytes.begin(), bytes.end());
+    }
+
+    const nlohmann::json root = nlohmann::json::parse(text, nullptr, false);
+    if (root.is_discarded() || !root.is_object())
+        return false;
+    const auto list = root.find("materials");
+    if (list == root.end() || !list->is_array())
+        return true;
+
+    for (const nlohmann::json& entry : *list) {
+        GltfMaterialInfo info;
+        if (entry.is_object()) {
+            if (const auto mode = entry.find("alphaMode"); mode != entry.end() && mode->is_string())
+                info.AlphaMode = AlphaModeFrom(mode->get<std::string>());
+            if (const auto cutoff = entry.find("alphaCutoff"); cutoff != entry.end() && cutoff->is_number())
+                info.AlphaCutoff = cutoff->get<float>();
+            if (const auto sided = entry.find("doubleSided"); sided != entry.end() && sided->is_boolean())
+                info.DoubleSided = sided->get<bool>();
+        }
+        materials.push_back(info);
+    }
+    return true;
+}
+
+} // namespace BRITE

@@ -80,14 +80,18 @@ constexpr int TOLERANCE = 2;  // a GPU's rounding to 8 bits, and nothing more
 // ---------------------------------------------------------------------------
 
 struct Quad {
-    float x0, x1;         // the quad spans x0..x1 and y -1..1
-    int material = -1;    // index into Materials, or -1 for none
-    float uvScale = 1.0f; // how many times a texture spans the whole picture's quad range
+    float x0, x1;            // the quad spans x0..x1 and y -1..1
+    int material = -1;       // index into Materials, or -1 for none
+    float uvScale = 1.0f;    // how many times a texture spans the whole picture's quad range
+    bool facingAway = false; // wound and normalled to face -z: the camera sees its back
 };
 
 struct GltfMaterial {
     float rgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     bool textured = false;
+    const char* alphaMode = nullptr; // written only when set
+    float alphaCutoff = -1.0f;       // written only when 0 or more
+    bool doubleSided = false;        // written only when true
 };
 
 struct Scene {
@@ -150,7 +154,7 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
         for (int i = 0; i < 4; ++i) {
             Append(bin, 0.0f);
             Append(bin, 0.0f);
-            Append(bin, 1.0f);
+            Append(bin, q.facingAway ? -1.0f : 1.0f);
         }
         const int normal = addView(start, bin.size() - start, 4, 5126, "VEC3");
         // u runs with world x across the whole picture's quad range, -1..1 -> 0..1,
@@ -162,7 +166,10 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
         }
         const int texcoord = addView(start, bin.size() - start, 4, 5126, "VEC2");
         start = bin.size();
-        for (unsigned short i : {0, 1, 2, 0, 2, 3})
+        // Counter-clockwise seen from +z, or, facing away, from -z.
+        const std::vector<unsigned short> order = q.facingAway ? std::vector<unsigned short>{0, 2, 1, 0, 3, 2}
+                                                               : std::vector<unsigned short>{0, 1, 2, 0, 2, 3};
+        for (unsigned short i : order)
             Append(bin, i);
         const int indices = addView(start, bin.size() - start, 6, 5123, "SCALAR");
         while (bin.size() % 4)
@@ -182,10 +189,19 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
     bool anyTexture = false;
     for (const GltfMaterial& m : scene.Materials) {
         char buf[256];
-        std::snprintf(buf, sizeof(buf), "%s{\"pbrMetallicRoughness\":{\"baseColorFactor\":[%g,%g,%g,%g]%s}}",
+        std::snprintf(buf, sizeof(buf), "%s{\"pbrMetallicRoughness\":{\"baseColorFactor\":[%g,%g,%g,%g]%s}",
                       materials.empty() ? "" : ",", m.rgba[0], m.rgba[1], m.rgba[2], m.rgba[3],
                       m.textured ? ",\"baseColorTexture\":{\"index\":0}" : "");
         materials += buf;
+        if (m.alphaMode)
+            materials += std::string(",\"alphaMode\":\"") + m.alphaMode + "\"";
+        if (m.alphaCutoff >= 0.0f) {
+            std::snprintf(buf, sizeof(buf), ",\"alphaCutoff\":%g", m.alphaCutoff);
+            materials += buf;
+        }
+        if (m.doubleSided)
+            materials += ",\"doubleSided\":true";
+        materials += "}";
         anyTexture = anyTexture || m.textured;
     }
 
@@ -962,6 +978,223 @@ TEST_F(ModelMaterialTest, AModelsOwnTexturesTakeTheSamplingAskedOfTheModel) {
     const BRITE::ModelHandle plain = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
     EXPECT_TRUE(m_backend.SetModelTextureSampling(plain, trilinear)) << "a model with no textures of its own";
     m_backend.UnloadModel(plain);
+    m_backend.UnloadModel(model);
+}
+
+// ---------------------------------------------------------------------------
+// glTF alpha and sidedness. The alpha cases use the red|green texture with the
+// RED half at alpha 102 -- 102/255 = 0.4 -- and the green half opaque, on the
+// quad whose texture spans it once: RED_TEXELS samples alpha 0.4, GREEN_TEXELS
+// alpha 1.0. Black is the clear colour, so black means "not drawn".
+// ---------------------------------------------------------------------------
+
+namespace {
+Scene HalfSeeThroughQuad(const char* alphaMode, float alphaCutoff) {
+    Scene scene;
+    GltfMaterial material;
+    material.textured = true;
+    material.alphaMode = alphaMode;
+    material.alphaCutoff = alphaCutoff;
+    scene.Materials = {material};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+    return scene;
+}
+constexpr ::Color SEE_THROUGH_RED = {255, 0, 0, 102};
+constexpr ::Color SOLID_GREEN = {0, 255, 0, 255};
+} // namespace
+
+// A MASK material cut at 0.5: the red half's 0.4 is below it and is not drawn,
+// black; the green half's 1.0 is drawn, lit, (0, 186, 0).
+//
+// Mutations: the discard removed -> the red half draws; the texture's alpha left
+// out of the test -> 1.0 on both halves, nothing cut; the comparison turned
+// (alpha > cutoff discarded) -> the green half is cut instead.
+TEST_F(ModelMaterialTest, AMaskMaterialCutsOutTexelsBelowItsCutoff) {
+    WriteHalvesPng(m_dir.Path() / "texture.png", SEE_THROUGH_RED, SOLID_GREEN);
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), HalfSeeThroughQuad("MASK", 0.5f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    const auto pixels = Draw(model);
+    ExpectColour(At(pixels, RED_TEXELS), 0, 0, 0, "alpha 0.4 under a cutoff of 0.5: not drawn");
+    ExpectColour(At(pixels, GREEN_TEXELS), 0, LIT_FULL, 0, "alpha 1.0: drawn");
+    m_backend.UnloadModel(model);
+}
+
+// The cutoff is the file's own: at 0.3 the red half's 0.4 stays -- and a texel a
+// mask keeps is drawn SOLID, (186, 0, 0), not blended at 0.4 over the black
+// behind it, which would be 0.4 * 186 = 74.
+//
+// Mutations: the file's cutoff not read (0.5 always) -> the red half is cut,
+// black; the kept fragment's alpha left at 0.4 -> 74.
+TEST_F(ModelMaterialTest, AMaskKeepsTexelsAtOrAboveTheFilesCutoffSolid) {
+    WriteHalvesPng(m_dir.Path() / "texture.png", SEE_THROUGH_RED, SOLID_GREEN);
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), HalfSeeThroughQuad("MASK", 0.3f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    const auto pixels = Draw(model);
+    ExpectColour(At(pixels, RED_TEXELS), LIT_FULL, 0, 0, "alpha 0.4 over a cutoff of 0.3: drawn, solid");
+    m_backend.UnloadModel(model);
+}
+
+// An OPAQUE material -- a file that says nothing of alpha -- ignores the
+// texture's alpha, as glTF says: the red half draws solid, (186, 0, 0).
+//
+// Mutation: the texture's alpha multiplied in whatever the mode -> the red half
+// blends at 0.4, 74.
+TEST_F(ModelMaterialTest, AnOpaqueMaterialIgnoresItsTexturesAlpha) {
+    WriteHalvesPng(m_dir.Path() / "texture.png", SEE_THROUGH_RED, SOLID_GREEN);
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), HalfSeeThroughQuad(nullptr, -1.0f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    const auto pixels = Draw(model);
+    ExpectColour(At(pixels, RED_TEXELS), LIT_FULL, 0, 0, "opaque: the texture's alpha ignored");
+    m_backend.UnloadModel(model);
+}
+
+// A draw can ask for the cut-out on a mesh built in code: masked at 0.5 the red
+// half is not drawn. The next draw does not ask, and is translucent -- a tint
+// alpha of 128 -- so it blends: the lit red, 0.729740, times 128/255 = 0.501961
+// over black is 0.366301, 93. A mask left behind by the first draw would still
+// make it solid, 186, even with nothing cut; only a translucent draw shows it.
+//
+// Mutations: the draw's AlphaMask ignored -> the red half draws the first time;
+// the mask uniform set only when a draw asks -> the second draw reads 186.
+TEST_F(ModelMaterialTest, ADrawCutsOutAMeshBuiltInCodeForThatDrawOnly) {
+    WriteHalvesPng(m_dir.Path() / "halves.png", SEE_THROUGH_RED, SOLID_GREEN);
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255});
+    for (const BRITE::Vector3& p : mesh.Positions)
+        mesh.TexCoords.push_back({(p.x + 1.0f) * 0.5f, (1.0f - p.y) * 0.5f});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle halves = m_backend.LoadTexture((m_dir.Path() / "halves.png").string().c_str());
+
+    BRITE::PBRMaterial masked;
+    masked.AlbedoMap = halves;
+    masked.AlphaMask = true;
+    const auto cut = Draw(model, masked);
+    ExpectColour(At(cut, RED_TEXELS), 0, 0, 0, "the draw's mask: not drawn");
+    ExpectColour(At(cut, GREEN_TEXELS), 0, LIT_FULL, 0, "the draw's mask: drawn");
+
+    BRITE::PBRMaterial translucent;
+    translucent.AlbedoMap = halves;
+    translucent.AlbedoTint = {255, 255, 255, 128};
+    ExpectColour(At(Draw(model, translucent), RED_TEXELS), 93, 0, 0, "the next draw: not masked, and blending");
+
+    m_backend.UnloadTexture(halves);
+    m_backend.UnloadModel(model);
+}
+
+// An unlit backdrop with a see-through sky is cut out too: the mask comes before
+// the unlit colour is written. Unlit, the kept half is its texel, (0, 255, 0).
+//
+// Mutation: the cut-out placed after the unlit branch's early return -> the red
+// half draws, (255, 0, 0).
+TEST_F(ModelMaterialTest, AnUnlitMaskedSurfaceIsCutOutToo) {
+    WriteHalvesPng(m_dir.Path() / "texture.png", SEE_THROUGH_RED, SOLID_GREEN);
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), HalfSeeThroughQuad("MASK", 0.5f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+
+    const auto pixels = Draw(model, unlit);
+    ExpectColour(At(pixels, RED_TEXELS), 0, 0, 0, "unlit, below the cutoff: not drawn");
+    ExpectColour(At(pixels, GREEN_TEXELS), 0, 255, 0, "unlit, kept: its texel");
+    m_backend.UnloadModel(model);
+}
+
+// A quad seen from behind. The camera looks down -z; a quad facing away (its
+// normal -z, wound counter-clockwise only when seen from -z) shows the camera
+// its back. One-sided, it is culled: black. Double-sided, it is drawn -- and
+// lit as its front would be. Under a sun travelling -z (from the camera toward
+// the scene) and no ambient, a quad FACING the camera has N = +z, V = +z,
+// L = +z; the back face with its normal turned to face the viewer has exactly
+// the same N, V and L, so every term of the lighting is the same number, and
+// the two pixels match. Unturned, its N is -z, N.L is -1, clamped to nothing,
+// and it is black.
+//
+// Mutations: culling left on for a double-sided mesh -> black; the back face's
+// normal not turned -> black where the front is lit.
+TEST_F(ModelMaterialTest, ADoubleSidedQuadSeenFromBehindIsLitAsItsFrontIs) {
+    BRITE::RenderPass sunlit;
+    BRITE::Light sun;
+    sun.Direction = {0.0f, 0.0f, -1.0f};
+    sun.Intensity = 3.0f;
+    sunlit.Lights.push_back(sun);
+
+    Scene front;
+    front.Materials = {GltfMaterial{}};
+    front.Quads = {{-1.0f, 1.0f, 0}};
+    const BRITE::ModelHandle facing = m_backend.LoadModel(WriteGltf(m_dir.Path(), front).string().c_str());
+    ASSERT_NE(facing, BRITE::NullModelHandle);
+    const BRITE::Color frontLit = At(DrawPass(sunlit, {{facing, {}}}), LEFT_HALF);
+    EXPECT_GT(frontLit.r, 100) << "the front, lit";
+    m_backend.UnloadModel(facing);
+
+    Scene oneSided;
+    oneSided.Materials = {GltfMaterial{}};
+    Quad away{-1.0f, 1.0f, 0};
+    away.facingAway = true;
+    oneSided.Quads = {away};
+    const BRITE::ModelHandle culled = m_backend.LoadModel(WriteGltf(m_dir.Path(), oneSided).string().c_str());
+    ASSERT_NE(culled, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(sunlit, {{culled, {}}}), LEFT_HALF), 0, 0, 0, "one-sided, from behind: culled");
+    m_backend.UnloadModel(culled);
+
+    Scene twoSided = oneSided;
+    twoSided.Materials[0].doubleSided = true;
+    const BRITE::ModelHandle both = m_backend.LoadModel(WriteGltf(m_dir.Path(), twoSided).string().c_str());
+    ASSERT_NE(both, BRITE::NullModelHandle);
+    ExpectColour(At(DrawPass(sunlit, {{both, {}}}), LEFT_HALF), frontLit.r, frontLit.g, frontLit.b,
+                 "double-sided, from behind: as the front");
+    m_backend.UnloadModel(both);
+}
+
+// Double-sided is per mesh: a double-sided half and a one-sided half, both
+// facing away, in one model and one draw, under the one light. The left is
+// drawn, 186 -- the flat ambient does not care which way a normal points -- and
+// the right, drawn after it, is still culled.
+//
+// Mutation: culling not turned back on after a double-sided mesh -> the right
+// half draws, 186.
+TEST_F(ModelMaterialTest, ADoubleSidedMeshLeavesTheNextOneCulled) {
+    Scene scene;
+    GltfMaterial both;
+    both.doubleSided = true;
+    scene.Materials = {both, GltfMaterial{}};
+    Quad left{-1.0f, 0.0f, 0};
+    left.facingAway = true;
+    Quad right{0.0f, 1.0f, 1};
+    right.facingAway = true;
+    scene.Quads = {left, right};
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    const auto pixels = Draw(model);
+    ExpectColour(At(pixels, LEFT_HALF), LIT_FULL, LIT_FULL, LIT_FULL, "double-sided, from behind");
+    ExpectColour(At(pixels, RIGHT_HALF), 0, 0, 0, "one-sided, from behind, drawn after it");
+    m_backend.UnloadModel(model);
+}
+
+// A draw can make a mesh built in code double-sided: a quad wound to face away
+// is culled as it is, and drawn when the draw asks, 186 under the one light.
+//
+// Mutation: the draw's DoubleSided ignored -> black.
+TEST_F(ModelMaterialTest, ADrawMakesAMeshBuiltInCodeDoubleSided) {
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255});
+    mesh.Indices = {0, 2, 1, 0, 3, 2};
+    for (BRITE::Vector3& n : mesh.Normals)
+        n = {0.0f, 0.0f, -1.0f};
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    ExpectColour(At(Draw(model), LEFT_HALF), 0, 0, 0, "facing away: culled");
+    BRITE::PBRMaterial both;
+    both.DoubleSided = true;
+    ExpectColour(At(Draw(model, both), LEFT_HALF), LIT_FULL, LIT_FULL, LIT_FULL, "the draw's double-sided");
     m_backend.UnloadModel(model);
 }
 
