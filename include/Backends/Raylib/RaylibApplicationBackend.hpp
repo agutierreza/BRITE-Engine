@@ -10,6 +10,9 @@ namespace Raylib {
 class RaylibApplicationBackend : public IApplicationBackend {
   public:
     void Init(const std::string& title, int width, int height) override;
+    // raylib offers one multisampled back buffer, 4x, so any count above 1
+    // asks for that.
+    void Init(const std::string& title, int width, int height, const WindowOptions& options) override;
     void Shutdown() override;
 
     bool WindowShouldClose() override;

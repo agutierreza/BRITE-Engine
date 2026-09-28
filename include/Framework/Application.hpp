@@ -22,13 +22,30 @@ struct SceneAction {
     std::shared_ptr<Scene> scene;
 };
 
+// What an application settles before its window exists; the constructor
+// creates the window, so these cannot change afterwards.
+struct ApplicationOptions {
+    // Samples per pixel for multisample anti-aliasing; 1 is none. The window is
+    // asked for a multisampled back buffer. An application rendering at an
+    // internal resolution draws its scenes into a framebuffer of its own and
+    // hands the window one finished picture, whose edges a multisampled window
+    // cannot reach -- so that framebuffer is multisampled too, and resolved
+    // before post-processing and the final blit read it.
+    int MultisampleCount = 1;
+};
+
 class Application {
   public:
     Application(std::unique_ptr<BRITE::Backends::IApplicationBackend> appBackend,
                 std::unique_ptr<BRITE::Backends::IInputBackend> inputBackend,
                 std::unique_ptr<BRITE::Backends::IRenderBackend> renderBackend,
                 const std::string& title = "BRITE Engine", const std::string& orgName = "BRITE",
-                const std::string& appName = "BRITE", int width = 1280, int height = 720);
+                const std::string& appName = "BRITE", int width = 1280, int height = 720,
+                const ApplicationOptions& options = {});
+
+    const ApplicationOptions& GetOptions() const {
+        return m_options;
+    }
     virtual ~Application();
 
     void Run();
@@ -111,6 +128,7 @@ class Application {
     void ShutdownSubsystems();
 
     std::string m_title;
+    ApplicationOptions m_options;
     std::string m_orgName;
     std::string m_appName;
     int m_width;

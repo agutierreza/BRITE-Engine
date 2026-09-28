@@ -43,6 +43,19 @@ class IRenderBackend {
 
     // We also need some way to create/destroy render targets if the application uses internal resolution scaling
     virtual BRITE::TextureHandle LoadRenderTexture(int width, int height) = 0;
+    // A render texture drawn with `samples` samples per pixel -- multisample
+    // anti-aliasing for a pass that targets it. Each pass drawn into it is
+    // resolved to one colour per pixel when the pass ends, so everything that
+    // reads it -- a sprite, a post-process pass, ReadRenderTexture -- reads the
+    // smoothed picture. A count the device cannot give is lowered to its most;
+    // 1 or less is an ordinary render texture. A backend that cannot
+    // multisample returns an ordinary one, which is what this default does, so
+    // that an implementation written before it existed still builds. Unloaded
+    // with UnloadRenderTexture.
+    virtual BRITE::TextureHandle LoadMultisampledRenderTexture(int width, int height, int samples) {
+        (void)samples;
+        return LoadRenderTexture(width, height);
+    }
     virtual void UnloadRenderTexture(BRITE::TextureHandle target) = 0;
 
     // Read a render texture back to the CPU, top row first, as RGBA8. For tools

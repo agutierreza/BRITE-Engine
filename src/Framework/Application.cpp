@@ -48,10 +48,11 @@ static char* LoadFileTextCustom(const char* fileName) {
 Application::Application(std::unique_ptr<BRITE::Backends::IApplicationBackend> appBackend,
                          std::unique_ptr<BRITE::Backends::IInputBackend> inputBackend,
                          std::unique_ptr<BRITE::Backends::IRenderBackend> renderBackend, const std::string& title,
-                         const std::string& orgName, const std::string& appName, int width, int height)
+                         const std::string& orgName, const std::string& appName, int width, int height,
+                         const ApplicationOptions& options)
     : m_appBackend(std::move(appBackend)), m_inputBackend(std::move(inputBackend)),
-      m_renderBackend(std::move(renderBackend)), m_title(title), m_orgName(orgName), m_appName(appName), m_width(width),
-      m_height(height), m_running(false), m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
+      m_renderBackend(std::move(renderBackend)), m_title(title), m_options(options), m_orgName(orgName),
+      m_appName(appName), m_width(width), m_height(height), m_running(false), m_fixedDt(1.0 / 60.0), m_timeScale(1.0) {
     InitSubsystems(title, width, height);
 }
 
@@ -99,7 +100,9 @@ void Application::InitSubsystems(const std::string& title, int width, int height
 
     // 4. Initialize backend window
     if (m_appBackend) {
-        m_appBackend->Init(title, width, height);
+        BRITE::Backends::WindowOptions window;
+        window.MultisampleCount = m_options.MultisampleCount;
+        m_appBackend->Init(title, width, height, window);
         m_appBackend->SetTargetFPS(144);
     }
 
@@ -154,7 +157,10 @@ void Application::SetInternalResolution(int width, int height) {
     }
     m_internalResolution = {(float)width, (float)height};
     if (m_renderBackend) {
-        m_framebuffer = m_renderBackend->LoadRenderTexture(width, height);
+        // The scenes are drawn into m_framebuffer, so it is the one that needs
+        // the samples; the alternate only ever receives full-screen
+        // post-process passes, which have no edges of their own to smooth.
+        m_framebuffer = m_renderBackend->LoadMultisampledRenderTexture(width, height, m_options.MultisampleCount);
         m_framebufferAlt = m_renderBackend->LoadRenderTexture(width, height);
     }
     m_useInternalResolution = true;

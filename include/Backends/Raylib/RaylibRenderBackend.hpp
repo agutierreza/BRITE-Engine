@@ -26,7 +26,13 @@ class RaylibRenderBackend : public IRenderBackend {
     void SubmitRenderPass(const BRITE::RenderPass& pass) override;
 
     BRITE::TextureHandle LoadRenderTexture(int width, int height) override;
+    BRITE::TextureHandle LoadMultisampledRenderTexture(int width, int height, int samples) override;
     void UnloadRenderTexture(BRITE::TextureHandle target) override;
+
+    // How many samples per pixel a render texture is drawn with: 1 for an
+    // ordinary one, 0 when the handle names no render texture. For tests and
+    // tools; a draw never needs it.
+    int RenderTextureSamples(BRITE::TextureHandle target) const;
     bool ReadRenderTexture(BRITE::TextureHandle target, int& width, int& height,
                            std::vector<BRITE::Color>& pixels) override;
 
@@ -117,6 +123,17 @@ class RaylibRenderBackend : public IRenderBackend {
         void* ptr; // Points to either a Texture2D or a RenderTexture2D
     };
     std::unordered_map<BRITE::TextureHandle, TextureData> m_textures;
+
+    // A multisampled render texture's drawing surface. The handle's own entry
+    // in m_textures is an ordinary render texture, the one a pass is resolved
+    // into and every reader reads; passes draw into this framebuffer instead.
+    struct MultisampledTarget {
+        unsigned int framebuffer = 0;
+        unsigned int colour = 0; // renderbuffers, `samples` samples a pixel
+        unsigned int depth = 0;
+        int samples = 0;
+    };
+    std::unordered_map<BRITE::TextureHandle, MultisampledTarget> m_multisampled;
 
     // Track raylib ::Shader objects by ShaderHandle
     std::unordered_map<BRITE::ShaderHandle, void*> m_shaders;

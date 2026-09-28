@@ -9,6 +9,14 @@ void RaylibApplicationBackend::Init(const std::string& title, int width, int hei
     ::InitWindow(width, height, title.c_str());
 }
 
+void RaylibApplicationBackend::Init(const std::string& title, int width, int height, const WindowOptions& options) {
+    // A hint, read when the window is created. raylib adds flags to whatever
+    // the caller already set, so nothing else the caller asked for is lost.
+    if (options.MultisampleCount > 1)
+        ::SetConfigFlags(FLAG_MSAA_4X_HINT);
+    ::InitWindow(width, height, title.c_str());
+}
+
 void RaylibApplicationBackend::Shutdown() {
     ::CloseWindow();
 }

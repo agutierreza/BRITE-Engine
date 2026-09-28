@@ -9,6 +9,25 @@
 #include <string>
 #include <utility>
 
+// Five OpenGL 3.0 calls rlgl does not wrap, the ones a multisampled render
+// texture needs. They are reached through raylib's own GL loader, glad, whose
+// function pointers raylib compiles in and leaves visible to the program it is
+// linked into, already loaded once the window exists. Were raylib to rename or
+// hide them, this would fail to link -- loudly -- rather than at run time.
+extern "C" {
+#if defined(_WIN32) && !defined(_WIN64)
+#define BRITE_GL_CALL __stdcall
+#else
+#define BRITE_GL_CALL
+#endif
+extern void(BRITE_GL_CALL* glad_glGenRenderbuffers)(int count, unsigned int* renderbuffers);
+extern void(BRITE_GL_CALL* glad_glBindRenderbuffer)(unsigned int target, unsigned int renderbuffer);
+extern void(BRITE_GL_CALL* glad_glRenderbufferStorageMultisample)(unsigned int target, int samples,
+                                                                  unsigned int internalFormat, int width, int height);
+extern void(BRITE_GL_CALL* glad_glDeleteRenderbuffers)(int count, const unsigned int* renderbuffers);
+extern void(BRITE_GL_CALL* glad_glGetIntegerv)(unsigned int name, int* values);
+}
+
 namespace BRITE {
 namespace Backends {
 namespace Raylib {
@@ -18,6 +37,13 @@ namespace {
 // raylib.h does not export. Each material's maps array is allocated this long and
 // DrawMesh reads this many, so a copy of one must be exactly this long.
 constexpr int MATERIAL_MAPS_PER_MATERIAL = 12;
+
+// OpenGL names rlgl does not define, for the multisampled render texture.
+constexpr unsigned int GL_RENDERBUFFER_ = 0x8D41;
+constexpr unsigned int GL_RGBA8_ = 0x8058;
+constexpr unsigned int GL_DEPTH_COMPONENT24_ = 0x81A6;
+constexpr unsigned int GL_MAX_SAMPLES_ = 0x8D57;
+constexpr int GL_COLOR_BUFFER_BIT_ = 0x4000;
 
 // Sets a texture's filters, anisotropy and wrap, generating its mipmaps first
 // when the filter reads them. The filters go straight to rlgl rather than
@@ -55,7 +81,16 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         auto it = m_textures.find(pass.TargetFramebuffer);
         if (it != m_textures.end() && it->second.isRenderTexture) {
             RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
-            ::BeginTextureMode(*rt);
+            // A multisampled target is drawn into its multisampled framebuffer,
+            // at the same size; the pass is resolved into rt when it ends.
+            auto multisampled = m_multisampled.find(pass.TargetFramebuffer);
+            if (multisampled != m_multisampled.end()) {
+                RenderTexture2D surface = *rt;
+                surface.id = multisampled->second.framebuffer;
+                ::BeginTextureMode(surface);
+            } else {
+                ::BeginTextureMode(*rt);
+            }
         } else {
             return; // Invalid target
         }
@@ -319,6 +354,18 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
 
     if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
         ::EndTextureMode();
+        // Resolve a multisampled target: average each pixel's samples into the
+        // ordinary render texture that every reader of the handle reads.
+        auto multisampled = m_multisampled.find(pass.TargetFramebuffer);
+        if (multisampled != m_multisampled.end()) {
+            const RenderTexture2D* rt = static_cast<RenderTexture2D*>(m_textures[pass.TargetFramebuffer].ptr);
+            const int width = rt->texture.width, height = rt->texture.height;
+            ::rlBindFramebuffer(RL_READ_FRAMEBUFFER, multisampled->second.framebuffer);
+            ::rlBindFramebuffer(RL_DRAW_FRAMEBUFFER, rt->id);
+            ::rlBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT_);
+            ::rlBindFramebuffer(RL_READ_FRAMEBUFFER, 0);
+            ::rlBindFramebuffer(RL_DRAW_FRAMEBUFFER, 0);
+        }
     } else {
         ::EndDrawing();
     }
@@ -485,7 +532,61 @@ BRITE::TextureHandle RaylibRenderBackend::LoadRenderTexture(int width, int heigh
     return handle;
 }
 
+BRITE::TextureHandle RaylibRenderBackend::LoadMultisampledRenderTexture(int width, int height, int samples) {
+    // The ordinary render texture every reader reads, and the pass resolves into.
+    const BRITE::TextureHandle handle = LoadRenderTexture(width, height);
+    if (samples <= 1)
+        return handle;
+
+    int most = 0;
+    glad_glGetIntegerv(GL_MAX_SAMPLES_, &most);
+    const int count = std::min(samples, most);
+    if (count <= 1) {
+        spdlog::warn("BRITE: this device cannot multisample a render texture; {} samples asked, an ordinary one "
+                     "given",
+                     samples);
+        return handle;
+    }
+
+    MultisampledTarget target;
+    target.samples = count;
+    glad_glGenRenderbuffers(1, &target.colour);
+    glad_glBindRenderbuffer(GL_RENDERBUFFER_, target.colour);
+    glad_glRenderbufferStorageMultisample(GL_RENDERBUFFER_, count, GL_RGBA8_, width, height);
+    glad_glGenRenderbuffers(1, &target.depth);
+    glad_glBindRenderbuffer(GL_RENDERBUFFER_, target.depth);
+    glad_glRenderbufferStorageMultisample(GL_RENDERBUFFER_, count, GL_DEPTH_COMPONENT24_, width, height);
+    glad_glBindRenderbuffer(GL_RENDERBUFFER_, 0);
+
+    target.framebuffer = ::rlLoadFramebuffer();
+    ::rlFramebufferAttach(target.framebuffer, target.colour, RL_ATTACHMENT_COLOR_CHANNEL0, RL_ATTACHMENT_RENDERBUFFER,
+                          0);
+    ::rlFramebufferAttach(target.framebuffer, target.depth, RL_ATTACHMENT_DEPTH, RL_ATTACHMENT_RENDERBUFFER, 0);
+    if (!::rlFramebufferComplete(target.framebuffer)) {
+        spdlog::warn("BRITE: a {}-sample render texture could not be made; an ordinary one given", count);
+        glad_glDeleteRenderbuffers(1, &target.colour);
+        ::rlUnloadFramebuffer(target.framebuffer); // and the depth renderbuffer attached to it
+        return handle;
+    }
+    m_multisampled[handle] = target;
+    return handle;
+}
+
+int RaylibRenderBackend::RenderTextureSamples(BRITE::TextureHandle target) const {
+    auto it = m_textures.find(target);
+    if (it == m_textures.end() || !it->second.isRenderTexture)
+        return 0;
+    auto multisampled = m_multisampled.find(target);
+    return multisampled != m_multisampled.end() ? multisampled->second.samples : 1;
+}
+
 void RaylibRenderBackend::UnloadRenderTexture(BRITE::TextureHandle target) {
+    auto multisampled = m_multisampled.find(target);
+    if (multisampled != m_multisampled.end()) {
+        glad_glDeleteRenderbuffers(1, &multisampled->second.colour);
+        ::rlUnloadFramebuffer(multisampled->second.framebuffer); // and the depth renderbuffer attached to it
+        m_multisampled.erase(multisampled);
+    }
     auto it = m_textures.find(target);
     if (it != m_textures.end() && it->second.isRenderTexture) {
         RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
