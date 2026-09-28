@@ -15,7 +15,11 @@
 //           normals +z, no vertex colours, indices 0 1 2 0 2 3, material 0
 //   mesh 1  a 2 x 1 quad, (0,0) (2,0) (2,1) (0,1) at z = 0, normals +z,
 //           vertex colours (128,255,255,255) on vertex 0 and white on the rest,
+//           texture coordinates (0,0) (0.25,0) (0.25,0.5) (0,0.5),
 //           indices 0 1 2 0 2 3, material 1
+//
+//   Only mesh 1 has texture coordinates, and a node's transform moves positions
+//   and normals, never texture coordinates: they read back exactly as written.
 //
 //   node 0  mesh 0, translation (-1.5, 0, 0)
 //   node 1  no mesh, translation (1, 0, 0), scale 0.5, parent of node 2
@@ -70,9 +74,10 @@ constexpr float EPSILON = 1e-5f;
 
 struct GltfMesh {
     std::vector<BRITE::Vector3> Positions;
-    std::vector<BRITE::Vector3> Normals; // empty: no NORMAL attribute
-    std::vector<BRITE::Color> Colors;    // empty: no COLOR_0 attribute
-    std::vector<unsigned short> Indices; // empty: drawn without indices
+    std::vector<BRITE::Vector3> Normals;   // empty: no NORMAL attribute
+    std::vector<BRITE::Color> Colors;      // empty: no COLOR_0 attribute
+    std::vector<BRITE::Vector2> TexCoords; // empty: no TEXCOORD_0 attribute
+    std::vector<unsigned short> Indices;   // empty: drawn without indices
     int Material = -1;
 };
 
@@ -172,6 +177,14 @@ fs::path WriteGltf(const fs::path& dir, const GltfFile& file) {
             }
             attributes += ",\"COLOR_0\":" + std::to_string(addView(start, count, 5121, "VEC4", true));
         }
+        if (!mesh.TexCoords.empty()) {
+            start = bin.size();
+            for (const auto& t : mesh.TexCoords) {
+                Append(bin, t.x);
+                Append(bin, t.y);
+            }
+            attributes += ",\"TEXCOORD_0\":" + std::to_string(addView(start, count, 5126, "VEC2", false));
+        }
         std::string primitive = "{\"attributes\":{" + attributes + "}";
         if (!mesh.Indices.empty()) {
             start = bin.size();
@@ -244,6 +257,7 @@ GltfFile TwoNodeModel() {
     longQuad.Positions = {{0.0f, 0.0f, 0.0f}, {2.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
     longQuad.Normals = FACING_Z;
     longQuad.Colors = {{128, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}, {255, 255, 255, 255}};
+    longQuad.TexCoords = {{0.0f, 0.0f}, {0.25f, 0.0f}, {0.25f, 0.5f}, {0.0f, 0.5f}};
     longQuad.Indices = QUAD;
     longQuad.Material = 1;
     file.Meshes = {unitQuad, longQuad};
@@ -306,7 +320,9 @@ class ModelReadbackTest : public ::testing::Test {
 // Mutations: the normals copied without renormalising -> mesh 1's read (0, 0, 2);
 // the material's colour not folded in -> mesh 0 reads white and mesh 1's vertex 0
 // (128, 255, 255, 255); the vertex colour ignored -> mesh 1's vertex 0 reads
-// (127, 255, 255, 127); the meshes read in reverse order -> every position fails.
+// (127, 255, 255, 127); the meshes read in reverse order -> every position fails;
+// texture coordinates not read back -> mesh 1 has none; invented for a mesh with
+// none -> mesh 0 has four; u and v swapped -> mesh 1's vertex 1 reads (0, 0.25).
 TEST_F(ModelReadbackTest, ATwoNodeModelReadsBackWithItsNodeTransformsAndMaterialColours) {
     const BRITE::ModelHandle model = Load(TwoNodeModel());
     ASSERT_NE(model, BRITE::NullModelHandle);
@@ -320,6 +336,7 @@ TEST_F(ModelReadbackTest, ATwoNodeModelReadsBackWithItsNodeTransformsAndMaterial
     ASSERT_EQ(left.Normals.size(), 4u);
     ASSERT_EQ(left.Colors.size(), 4u);
     EXPECT_EQ(left.Indices, (std::vector<std::uint32_t>{0, 1, 2, 0, 2, 3}));
+    EXPECT_TRUE(left.TexCoords.empty()) << "mesh 0's file gave it no texture coordinates";
     // The unit quad moved 1.5 m to -x.
     ExpectVector(left.Positions[0], -2.0f, -0.5f, 0.0f, "mesh 0, vertex 0");
     ExpectVector(left.Positions[1], -1.0f, -0.5f, 0.0f, "mesh 0, vertex 1");
@@ -336,6 +353,13 @@ TEST_F(ModelReadbackTest, ATwoNodeModelReadsBackWithItsNodeTransformsAndMaterial
     ASSERT_EQ(right.Normals.size(), 4u);
     ASSERT_EQ(right.Colors.size(), 4u);
     EXPECT_EQ(right.Indices, (std::vector<std::uint32_t>{0, 1, 2, 0, 2, 3}));
+    // As written, untouched by the nodes' transforms.
+    ASSERT_EQ(right.TexCoords.size(), 4u);
+    const float us[4] = {0.0f, 0.25f, 0.25f, 0.0f}, vs[4] = {0.0f, 0.0f, 0.5f, 0.5f};
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(right.TexCoords[i].x, us[i]) << "mesh 1, u " << i;
+        EXPECT_EQ(right.TexCoords[i].y, vs[i]) << "mesh 1, v " << i;
+    }
     // Through node 1 and node 2, as the header works them.
     ExpectVector(right.Positions[0], 1.0f, 0.25f, 0.0f, "mesh 1, vertex 0");
     ExpectVector(right.Positions[1], 1.0f, 1.25f, 0.0f, "mesh 1, vertex 1");
@@ -436,12 +460,14 @@ TEST_F(ModelReadbackTest, TheMeshesReadBackDrawThePictureTheModelDraws) {
 //
 // Mutations: an index read one place along -> the indices differ; normals
 // read from the positions array -> the normals differ; a colour channel
-// swapped -> the colours differ.
+// swapped -> the colours differ; texture coordinates not uploaded by
+// LoadModelFromMesh -> none come back.
 TEST_F(ModelReadbackTest, AMeshBuiltInCodeReadsBackAsItWentIn) {
     BRITE::MeshData mesh;
     mesh.Positions = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 0.5f}};
     mesh.Normals = {{0.0f, 0.0f, 1.0f}, {0.6f, 0.8f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}};
     mesh.Colors = {{10, 20, 30, 255}, {40, 50, 60, 200}, {70, 80, 90, 100}, {255, 0, 128, 0}};
+    mesh.TexCoords = {{0.0f, 0.0f}, {3.5f, 0.0f}, {0.0f, -2.0f}, {3.5f, -2.0f}};
     mesh.Indices = {0, 1, 2, 2, 1, 3};
     const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
     ASSERT_NE(model, BRITE::NullModelHandle);
@@ -453,11 +479,14 @@ TEST_F(ModelReadbackTest, AMeshBuiltInCodeReadsBackAsItWentIn) {
     ASSERT_EQ(back.Positions.size(), mesh.Positions.size());
     ASSERT_EQ(back.Normals.size(), mesh.Normals.size());
     ASSERT_EQ(back.Colors.size(), mesh.Colors.size());
+    ASSERT_EQ(back.TexCoords.size(), mesh.TexCoords.size());
     for (std::size_t i = 0; i < mesh.Positions.size(); ++i) {
         const std::string which = "vertex " + std::to_string(i);
         ExpectVector(back.Positions[i], mesh.Positions[i].x, mesh.Positions[i].y, mesh.Positions[i].z, which);
         ExpectVector(back.Normals[i], mesh.Normals[i].x, mesh.Normals[i].y, mesh.Normals[i].z, which);
         ExpectColour(back.Colors[i], mesh.Colors[i].r, mesh.Colors[i].g, mesh.Colors[i].b, mesh.Colors[i].a, which);
+        EXPECT_EQ(back.TexCoords[i].x, mesh.TexCoords[i].x) << which;
+        EXPECT_EQ(back.TexCoords[i].y, mesh.TexCoords[i].y) << which;
     }
     EXPECT_EQ(back.Indices, mesh.Indices);
     EXPECT_EQ(BRITE::CheckMeshData(back, RaylibRenderBackend::MaxVerticesPerMesh), BRITE::MeshDataProblem::None);

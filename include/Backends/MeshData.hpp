@@ -14,11 +14,15 @@ namespace BRITE {
 // uploads what it is given. Indices are triangles, three per face, wound
 // counter-clockwise seen from outside so backface culling keeps the outside.
 // Colours are optional; an empty vector means white, which lets the draw's
-// AlbedoTint colour the whole model.
+// AlbedoTint colour the whole model. Texture coordinates are optional too: a
+// mesh without them cannot show a texture, and draws exactly as it did before
+// they existed. (0, 0) is the texture's first texel row, left end; a
+// coordinate outside 0..1 repeats or clamps as the texture's wrap mode says.
 struct MeshData {
     std::vector<Vector3> Positions;
     std::vector<Vector3> Normals;       // same length as Positions
     std::vector<Color> Colors;          // same length as Positions, or empty
+    std::vector<Vector2> TexCoords;     // same length as Positions, or empty
     std::vector<std::uint32_t> Indices; // three per triangle, each < Positions.size()
 };
 
@@ -27,13 +31,14 @@ struct MeshData {
 // check that has quietly stopped doing its job.
 enum class MeshDataProblem {
     None,
-    NoVertices,          // Positions is empty
-    NoTriangles,         // Indices is empty
-    NormalCountMismatch, // Normals is not the length of Positions
-    ColorCountMismatch,  // Colors is neither empty nor the length of Positions
-    PartialTriangle,     // Indices is not a whole number of triangles
-    TooManyVertices,     // more vertices than the backend can index in one mesh
-    IndexOutOfRange,     // an index names a vertex that does not exist
+    NoVertices,            // Positions is empty
+    NoTriangles,           // Indices is empty
+    NormalCountMismatch,   // Normals is not the length of Positions
+    ColorCountMismatch,    // Colors is neither empty nor the length of Positions
+    TexCoordCountMismatch, // TexCoords is neither empty nor the length of Positions
+    PartialTriangle,       // Indices is not a whole number of triangles
+    TooManyVertices,       // more vertices than the backend can index in one mesh
+    IndexOutOfRange,       // an index names a vertex that does not exist
 };
 
 // Check a mesh against the rules above and against a backend's limit on

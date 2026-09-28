@@ -104,6 +104,32 @@ TEST(MeshDataCheck, AColourShortIsRefused) {
     EXPECT_EQ(CheckMeshData(mesh, GENEROUS_LIMIT), MeshDataProblem::ColorCountMismatch);
 }
 
+TEST(MeshDataCheck, TextureCoordinatesOnePerVertexAreAccepted) {
+    // Three positions and three texture coordinates: 3 == 3. The well-formed
+    // triangle above has none, and is accepted, so both lengths the rule allows
+    // -- zero and the vertex count -- are covered.
+    //
+    // MUTATIONS: refusing any texture coordinates at all refuses this mesh;
+    // dropping the "TexCoords is not empty" guard refuses the triangle above.
+    MeshData mesh = Triangle();
+    mesh.TexCoords = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}};
+    EXPECT_EQ(CheckMeshData(mesh, GENEROUS_LIMIT), MeshDataProblem::None);
+}
+
+TEST(MeshDataCheck, TextureCoordinatesShortOrOverAreRefused) {
+    // Three positions with two texture coordinates, and with four: 2 and 4 are
+    // each neither 0 nor 3.
+    //
+    // MUTATION: removing the texture-coordinate check accepts both (None).
+    MeshData shortOne = Triangle();
+    shortOne.TexCoords = {{0.0f, 0.0f}, {1.0f, 0.0f}};
+    EXPECT_EQ(CheckMeshData(shortOne, GENEROUS_LIMIT), MeshDataProblem::TexCoordCountMismatch);
+
+    MeshData overOne = Triangle();
+    overOne.TexCoords = {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 1.0f}, {1.0f, 1.0f}};
+    EXPECT_EQ(CheckMeshData(overOne, GENEROUS_LIMIT), MeshDataProblem::TexCoordCountMismatch);
+}
+
 TEST(MeshDataCheck, AnIncompleteTriangleIsRefused) {
     // Indices 0, 1, 2, 0: four of them, and 4 % 3 == 1, so the last triangle has
     // one corner. Every index is below 3, so nothing else is wrong.

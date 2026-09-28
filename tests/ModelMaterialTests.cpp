@@ -372,6 +372,34 @@ TEST_F(ModelMaterialTest, ADrawCommandsTextureReplacesTheModelsOwnForThatDrawOnl
     m_backend.UnloadModel(model);
 }
 
+// A mesh built in code with texture coordinates shows a texture once across
+// them. The quad spans x -1..1 and y -1..1 with u = (x + 1) / 2 and
+// v = (1 - y) / 2, the same mapping the glTF quads above use, so the red|green
+// texture named by the draw lands exactly as it does on a loaded model: red at
+// pixel 27, green at pixel 36, each lit to 186 (worked beside RED_TEXELS).
+//
+// Mutations: the coordinates not uploaded -> every fragment samples (0, 0), red,
+// so pixel 36 reads red; u and v swapped on upload -> the middle row's u is
+// v = 0.5156, texel 4, green, so pixel 27 reads green.
+TEST_F(ModelMaterialTest, AModelBuiltInCodeShowsATextureOnceAcrossItsTexCoords) {
+    WriteHalvesPng(m_dir.Path() / "halves.png", {255, 0, 0, 255}, {0, 255, 0, 255});
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255});
+    for (const BRITE::Vector3& p : mesh.Positions)
+        mesh.TexCoords.push_back({(p.x + 1.0f) * 0.5f, (1.0f - p.y) * 0.5f});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle halves = m_backend.LoadTexture((m_dir.Path() / "halves.png").string().c_str());
+
+    BRITE::PBRMaterial textured;
+    textured.AlbedoMap = halves;
+    const auto pixels = Draw(model, textured);
+    ExpectColour(At(pixels, RED_TEXELS), LIT_FULL, 0, 0, "the texture's red half");
+    ExpectColour(At(pixels, GREEN_TEXELS), 0, LIT_FULL, 0, "the texture's green half");
+
+    m_backend.UnloadTexture(halves);
+    m_backend.UnloadModel(model);
+}
+
 // A model built in code has no material of its own: its colour is its vertex
 // colours times the draw command's tint. Yellow (1, 1, 0) vertices under a cyan
 // (0, 1, 1) tint multiply to green (0, 1, 0), so the lit result is (0, 186, 0).

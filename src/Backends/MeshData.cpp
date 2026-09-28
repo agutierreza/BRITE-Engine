@@ -13,6 +13,8 @@ MeshDataProblem CheckMeshData(const MeshData& mesh, std::size_t maxVertices) {
         return MeshDataProblem::NormalCountMismatch;
     if (!mesh.Colors.empty() && mesh.Colors.size() != vertexCount)
         return MeshDataProblem::ColorCountMismatch;
+    if (!mesh.TexCoords.empty() && mesh.TexCoords.size() != vertexCount)
+        return MeshDataProblem::TexCoordCountMismatch;
     if (mesh.Indices.size() % 3 != 0)
         return MeshDataProblem::PartialTriangle;
     if (vertexCount > maxVertices)
@@ -36,6 +38,8 @@ const char* Describe(MeshDataProblem problem) {
         return "its normals do not match its positions";
     case MeshDataProblem::ColorCountMismatch:
         return "its colours do not match its positions";
+    case MeshDataProblem::TexCoordCountMismatch:
+        return "its texture coordinates do not match its positions";
     case MeshDataProblem::PartialTriangle:
         return "its indices are not a whole number of triangles";
     case MeshDataProblem::TooManyVertices:

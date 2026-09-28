@@ -48,7 +48,9 @@ class IRenderBackend {
     //   Colors   always one per vertex: the vertex colour (white where the mesh
     //            has none) times its material's base colour. A material's
     //            textures are not carried; a textured mesh reads back as its
-    //            base colour alone.
+    //            base colour alone, until the caller names the texture as the
+    //            draw's AlbedoMap.
+    //   TexCoords  the mesh's first set, or empty when it has none.
     //   Indices  always three per triangle; a mesh drawn without an index list
     //            reads back as 0, 1, 2, ...
     //

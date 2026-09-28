@@ -550,9 +550,9 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModelFromMesh(const BRITE::MeshData&
     const BRITE::MeshDataProblem problem = BRITE::CheckMeshData(data, MaxVerticesPerMesh);
     if (problem != BRITE::MeshDataProblem::None) {
         spdlog::error("BRITE: LoadModelFromMesh refused a mesh because {} ({} positions, {} normals, {} colours, "
-                      "{} indices; at most {} vertices per mesh)",
+                      "{} texture coordinates, {} indices; at most {} vertices per mesh)",
                       BRITE::Describe(problem), data.Positions.size(), data.Normals.size(), data.Colors.size(),
-                      data.Indices.size(), MaxVerticesPerMesh);
+                      data.TexCoords.size(), data.Indices.size(), MaxVerticesPerMesh);
         return BRITE::NullModelHandle;
     }
     const std::size_t vertexCount = data.Positions.size();
@@ -580,6 +580,13 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModelFromMesh(const BRITE::MeshData&
             mesh.colors[i * 4 + 1] = data.Colors[i].g;
             mesh.colors[i * 4 + 2] = data.Colors[i].b;
             mesh.colors[i * 4 + 3] = data.Colors[i].a;
+        }
+    }
+    if (!data.TexCoords.empty()) {
+        mesh.texcoords = static_cast<float*>(RL_MALLOC(vertexCount * 2 * sizeof(float)));
+        for (std::size_t i = 0; i < vertexCount; ++i) {
+            mesh.texcoords[i * 2 + 0] = data.TexCoords[i].x;
+            mesh.texcoords[i * 2 + 1] = data.TexCoords[i].y;
         }
     }
     for (std::size_t i = 0; i < data.Indices.size(); ++i) {
@@ -677,6 +684,14 @@ bool RaylibRenderBackend::ReadModelMeshes(BRITE::ModelHandle model, std::vector<
                 return ModulateChannel(vertex != nullptr ? vertex[c] : 255, own);
             };
             out.Colors[i] = {channel(0, base.r), channel(1, base.g), channel(2, base.b), channel(3, base.a)};
+        }
+
+        // The first set of texture coordinates, when the mesh has one. A second
+        // set (glTF's TEXCOORD_1) has no place in MeshData and is left behind.
+        if (mesh.texcoords != nullptr) {
+            out.TexCoords.resize(vertexCount);
+            for (std::size_t i = 0; i < vertexCount; ++i)
+                out.TexCoords[i] = {mesh.texcoords[i * 2 + 0], mesh.texcoords[i * 2 + 1]};
         }
 
         // Without an index list raylib draws the vertices in order, three to a
