@@ -36,11 +36,13 @@
 
 #include <raylib.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <random>
 #include <string>
 #include <utility>
@@ -50,6 +52,16 @@
 // OpenGL 1.1, exported by opengl32.dll itself: the one way to ask whether a
 // texture name is still alive without reaching into the backend.
 extern "C" __declspec(dllimport) unsigned char __stdcall glIsTexture(unsigned int texture);
+// And the rest of what reading a texture's state back takes, all OpenGL 1.1.
+extern "C" __declspec(dllimport) void __stdcall glBindTexture(unsigned int target, unsigned int texture);
+extern "C" __declspec(dllimport) void __stdcall glGetIntegerv(unsigned int pname, int* params);
+extern "C" __declspec(dllimport) void __stdcall glGetFloatv(unsigned int pname, float* params);
+extern "C" __declspec(dllimport) void __stdcall glGetTexParameteriv(unsigned int target, unsigned int pname,
+                                                                    int* params);
+extern "C" __declspec(dllimport) void __stdcall glGetTexParameterfv(unsigned int target, unsigned int pname,
+                                                                    float* params);
+extern "C" __declspec(dllimport) void __stdcall glGetTexLevelParameteriv(unsigned int target, int level,
+                                                                         unsigned int pname, int* params);
 #endif
 
 namespace fs = std::filesystem;
@@ -68,8 +80,9 @@ constexpr int TOLERANCE = 2;  // a GPU's rounding to 8 bits, and nothing more
 // ---------------------------------------------------------------------------
 
 struct Quad {
-    float x0, x1;      // the quad spans x0..x1 and y -1..1
-    int material = -1; // index into Materials, or -1 for none
+    float x0, x1;         // the quad spans x0..x1 and y -1..1
+    int material = -1;    // index into Materials, or -1 for none
+    float uvScale = 1.0f; // how many times a texture spans the whole picture's quad range
 };
 
 struct GltfMaterial {
@@ -140,11 +153,12 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
             Append(bin, 1.0f);
         }
         const int normal = addView(start, bin.size() - start, 4, 5126, "VEC3");
-        // u runs with world x across the whole picture's quad range, -1..1 -> 0..1.
+        // u runs with world x across the whole picture's quad range, -1..1 -> 0..1,
+        // times the quad's uvScale.
         start = bin.size();
         for (int i = 0; i < 4; ++i) {
-            Append(bin, (xs[i] + 1.0f) * 0.5f);
-            Append(bin, (1.0f - ys[i]) * 0.5f);
+            Append(bin, (xs[i] + 1.0f) * 0.5f * q.uvScale);
+            Append(bin, (1.0f - ys[i]) * 0.5f * q.uvScale);
         }
         const int texcoord = addView(start, bin.size() - start, 4, 5126, "VEC2");
         start = bin.size();
@@ -195,6 +209,14 @@ void WriteHalvesPng(const fs::path& path, ::Color left, ::Color right) {
     ::Image image = ::GenImageColor(8, 1, right);
     for (int x = 0; x < 4; ++x)
         ::ImageDrawPixel(&image, x, 0, left);
+    ::ExportImage(image, path.string().c_str());
+    ::UnloadImage(image);
+}
+
+// A size x size checker of single texels: white where x + y is even, black
+// where it is odd -- so any 2 x 2 block of it is half white and half black.
+void WriteCheckerPng(const fs::path& path, int size) {
+    ::Image image = ::GenImageChecked(size, size, 1, 1, {255, 255, 255, 255}, {0, 0, 0, 255});
     ::ExportImage(image, path.string().c_str());
     ::UnloadImage(image);
 }
@@ -675,6 +697,271 @@ TEST_F(ModelMaterialTest, FogIsOffUnlessAPassAsksAndDoesNotOutliveThatPass) {
 
     ExpectColour(At(DrawPass(FoggedPass(1.0f, 4.0f), {{model, {}}}), CENTRE), 100, 200, 50, "a fogged pass");
     ExpectColour(At(Draw(model), CENTRE), LIT_FULL, LIT_FULL, LIT_FULL, "the default pass after it");
+    m_backend.UnloadModel(model);
+}
+
+// ---------------------------------------------------------------------------
+// Texture sampling. The pixel cases draw unlit, so a pixel is its texel's bytes
+// with no light to work through.
+//
+// THE DISTANT CHECKER. A 2 x 2 checker repeated 48 times across the 2 m quad:
+// 96 texels over 32 pixels, three texels to a pixel. At pixel column c the
+// quad's u is 24 * (x + 1) with x = (c + 0.5)/16 - 2, so the texel coordinate is
+//
+//     s = 2u = 48 * ((c + 0.5)/16 - 1) = 3c - 46.5
+//
+// and the same in rows. Every sample sits on a texel CENTRE (k + 0.5), so the
+// point and bilinear filters each return one whole texel, 0 or 255, and never a
+// blend. Mipmaps do: three texels a pixel is a level of detail of log2(3) =
+// 1.58, beyond the checker's last level, 1, which is one texel -- the mean of
+// the four, (255 + 0 + 0 + 255)/4 = 127.5, stored as 127 or 128.
+// ---------------------------------------------------------------------------
+
+constexpr int CHECKER_REPEATS = 48;
+
+// The quad's inside, clear of its edges: pixels 18..45 each way.
+bool EveryInsidePixel(const std::vector<BRITE::Color>& pixels, const std::function<bool(int)>& test) {
+    for (int row = 18; row <= 45; ++row)
+        for (int column = 18; column <= 45; ++column)
+            if (!test(pixels[static_cast<std::size_t>(row) * SIZE + column].r))
+                return false;
+    return true;
+}
+bool AnyInsidePixel(const std::vector<BRITE::Color>& pixels, int value) {
+    return !EveryInsidePixel(pixels, [value](int r) { return r != value; });
+}
+bool IsAverage(int r) {
+    return r >= 125 && r <= 130; // 127.5, and the GPU's rounding either side
+}
+
+// A texture's sampling state, read back from OpenGL itself.
+struct GlSampling {
+    int MinFilter = -1, MagFilter = -1, WrapS = -1, WrapT = -1;
+    int Level1Width = -1; // 0 when the texture has no level 1: no mipmaps
+    float Anisotropy = 1.0f;
+};
+
+#if defined(_WIN32)
+constexpr unsigned int GL_TEXTURE_2D_ = 0x0DE1;
+constexpr int GL_NEAREST_ = 0x2600, GL_LINEAR_ = 0x2601, GL_LINEAR_MIPMAP_LINEAR_ = 0x2703;
+constexpr int GL_REPEAT_ = 0x2901, GL_CLAMP_TO_EDGE_ = 0x812F;
+
+GlSampling ReadGlSampling(unsigned int id) {
+    int previous = 0;
+    glGetIntegerv(0x8069 /* GL_TEXTURE_BINDING_2D */, &previous);
+    glBindTexture(GL_TEXTURE_2D_, id);
+    GlSampling s;
+    glGetTexParameteriv(GL_TEXTURE_2D_, 0x2801 /* GL_TEXTURE_MIN_FILTER */, &s.MinFilter);
+    glGetTexParameteriv(GL_TEXTURE_2D_, 0x2800 /* GL_TEXTURE_MAG_FILTER */, &s.MagFilter);
+    glGetTexParameteriv(GL_TEXTURE_2D_, 0x2802 /* GL_TEXTURE_WRAP_S */, &s.WrapS);
+    glGetTexParameteriv(GL_TEXTURE_2D_, 0x2803 /* GL_TEXTURE_WRAP_T */, &s.WrapT);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D_, 1, 0x1000 /* GL_TEXTURE_WIDTH */, &s.Level1Width);
+    glGetTexParameterfv(GL_TEXTURE_2D_, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY */, &s.Anisotropy);
+    glBindTexture(GL_TEXTURE_2D_, static_cast<unsigned int>(previous));
+    return s;
+}
+
+// The most anisotropy the device allows; 0 when it has none to offer.
+float MaxAnisotropy() {
+    float most = 0.0f;
+    glGetFloatv(0x84FF /* GL_MAX_TEXTURE_MAX_ANISOTROPY */, &most);
+    return most;
+}
+#endif
+
+// A texture loads sampled as it always has: the nearest texel both ways, no
+// mipmaps, repeating, no anisotropy -- which is what TextureSampling's defaults
+// name, so setting the defaults changes nothing.
+//
+// Mutation: LoadTexture applying trilinear sampling -> the filters read
+// GL_LINEAR_MIPMAP_LINEAR and GL_LINEAR, and level 1 exists.
+TEST_F(ModelMaterialTest, ATextureLoadsSampledAsItAlwaysHas) {
+#if defined(_WIN32)
+    WriteCheckerPng(m_dir.Path() / "checker.png", 8);
+    const BRITE::TextureHandle texture = m_backend.LoadTexture((m_dir.Path() / "checker.png").string().c_str());
+    ASSERT_NE(m_backend.NativeTextureId(texture), 0u);
+
+    const GlSampling loaded = ReadGlSampling(m_backend.NativeTextureId(texture));
+    EXPECT_EQ(loaded.MinFilter, GL_NEAREST_);
+    EXPECT_EQ(loaded.MagFilter, GL_NEAREST_);
+    EXPECT_EQ(loaded.WrapS, GL_REPEAT_);
+    EXPECT_EQ(loaded.WrapT, GL_REPEAT_);
+    EXPECT_EQ(loaded.Level1Width, 0) << "no mipmaps";
+    EXPECT_FLOAT_EQ(loaded.Anisotropy, 1.0f);
+    m_backend.UnloadTexture(texture);
+#else
+    GTEST_SKIP() << "reads texture state through opengl32";
+#endif
+}
+
+// Each option reaches the texture in OpenGL. An 8 x 8 texture asked for
+// trilinear filtering, anisotropy 4 and clamping has a level 1 of 8/2 = 4
+// texels, filters GL_LINEAR_MIPMAP_LINEAR and GL_LINEAR, clamps both ways, and
+// anisotropy 4 -- or the device's maximum, if that is lower. Asked for bilinear
+// and repeat after that, it reads GL_LINEAR both ways and repeats; asked for
+// point, GL_NEAREST both ways, even though it now has mipmaps.
+//
+// Mutations: the mipmaps not generated -> level 1 is 0 wide; the anisotropy not
+// passed on -> 1; the wrap set on s alone -> t still repeats; the filters set
+// through raylib's SetTextureFilter -> point reads GL_NEAREST_MIPMAP_NEAREST
+// once the texture has mipmaps.
+TEST_F(ModelMaterialTest, EachSamplingOptionReachesTheTexture) {
+#if defined(_WIN32)
+    WriteCheckerPng(m_dir.Path() / "checker.png", 8);
+    const BRITE::TextureHandle texture = m_backend.LoadTexture((m_dir.Path() / "checker.png").string().c_str());
+    const unsigned int id = m_backend.NativeTextureId(texture);
+    ASSERT_NE(id, 0u);
+    using BRITE::Backends::SamplingFilter;
+    using BRITE::Backends::SamplingWrap;
+
+    BRITE::Backends::TextureSampling far;
+    far.Filter = SamplingFilter::Trilinear;
+    far.Anisotropy = 4;
+    far.Wrap = SamplingWrap::Clamp;
+    ASSERT_TRUE(m_backend.SetTextureSampling(texture, far));
+    const GlSampling trilinear = ReadGlSampling(id);
+    EXPECT_EQ(trilinear.Level1Width, 4) << "mipmaps: level 1 is half of 8";
+    EXPECT_EQ(trilinear.MinFilter, GL_LINEAR_MIPMAP_LINEAR_);
+    EXPECT_EQ(trilinear.MagFilter, GL_LINEAR_);
+    EXPECT_EQ(trilinear.WrapS, GL_CLAMP_TO_EDGE_);
+    EXPECT_EQ(trilinear.WrapT, GL_CLAMP_TO_EDGE_);
+    const float most = MaxAnisotropy();
+    if (most >= 1.0f)
+        EXPECT_FLOAT_EQ(trilinear.Anisotropy, std::min(4.0f, most));
+
+    BRITE::Backends::TextureSampling smooth;
+    smooth.Filter = SamplingFilter::Bilinear;
+    ASSERT_TRUE(m_backend.SetTextureSampling(texture, smooth));
+    const GlSampling bilinear = ReadGlSampling(id);
+    EXPECT_EQ(bilinear.MinFilter, GL_LINEAR_);
+    EXPECT_EQ(bilinear.MagFilter, GL_LINEAR_);
+    EXPECT_EQ(bilinear.WrapS, GL_REPEAT_);
+    EXPECT_EQ(bilinear.WrapT, GL_REPEAT_);
+    EXPECT_FLOAT_EQ(bilinear.Anisotropy, 1.0f);
+
+    ASSERT_TRUE(m_backend.SetTextureSampling(texture, {}));
+    const GlSampling point = ReadGlSampling(id);
+    EXPECT_EQ(point.MinFilter, GL_NEAREST_);
+    EXPECT_EQ(point.MagFilter, GL_NEAREST_);
+    m_backend.UnloadTexture(texture);
+#else
+    GTEST_SKIP() << "reads texture state through opengl32";
+#endif
+}
+
+// A handle that names no plain texture is refused: the null handle, one never
+// issued, and a render texture. So is a model handle that names no model.
+//
+// Mutations: SetTextureSampling returning true for a handle it cannot find ->
+// the first two EXPECT_FALSEs fail; SetModelTextureSampling returning true for
+// a model it cannot find -> the last fails.
+TEST_F(ModelMaterialTest, SamplingAHandleThatNamesNoTextureIsRefused) {
+    EXPECT_FALSE(m_backend.SetTextureSampling(BRITE::NullTextureHandle, {}));
+    EXPECT_FALSE(m_backend.SetTextureSampling(987654, {}));
+    EXPECT_FALSE(m_backend.SetTextureSampling(m_target, {})) << "the render texture";
+    EXPECT_FALSE(m_backend.SetModelTextureSampling(987654, {}));
+}
+
+// The distant checker of the header above, drawn point-sampled and then
+// trilinear. Point: every pixel is a whole texel, 0 or 255, and both appear.
+// Trilinear: every pixel is the checker's mean, 127.5.
+//
+// Mutations: the mipmaps not generated -> a mipmapped filter on a texture with
+// one level is incomplete and samples black, 0; trilinear mapped to the bilinear
+// filter -> every sample sits on a texel centre and reads 0 or 255.
+TEST_F(ModelMaterialTest, ATrilinearTextureAveragesADistantCheckerWherePointSamplingCannot) {
+    WriteCheckerPng(m_dir.Path() / "checker.png", 2);
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255});
+    for (const BRITE::Vector3& p : mesh.Positions)
+        mesh.TexCoords.push_back({(p.x + 1.0f) * 0.5f * CHECKER_REPEATS, (1.0f - p.y) * 0.5f * CHECKER_REPEATS});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle checker = m_backend.LoadTexture((m_dir.Path() / "checker.png").string().c_str());
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    unlit.AlbedoMap = checker;
+
+    const auto point = Draw(model, unlit);
+    EXPECT_TRUE(EveryInsidePixel(point, [](int r) { return r == 0 || r == 255; })) << "point: whole texels";
+    EXPECT_TRUE(AnyInsidePixel(point, 0) && AnyInsidePixel(point, 255)) << "point: both colours";
+
+    BRITE::Backends::TextureSampling trilinear;
+    trilinear.Filter = BRITE::Backends::SamplingFilter::Trilinear;
+    ASSERT_TRUE(m_backend.SetTextureSampling(checker, trilinear));
+    const auto averaged = Draw(model, unlit);
+    EXPECT_TRUE(EveryInsidePixel(averaged, IsAverage)) << "trilinear: the mean, 127.5";
+
+    m_backend.UnloadTexture(checker);
+    m_backend.UnloadModel(model);
+}
+
+// Repeat against clamp, on the red|green texture with u = x + 1, running 0..2
+// across the quad. Pixel 20 is x = 20.5/16 - 2 = -0.71875, u = 0.28125: texel
+// 8 * 0.28125 = 2.25 -> 2, red, either way. Pixel 36 is x = 0.28125, u = 1.28125:
+// repeating, the texture starts again at 0.28125, texel 2, red; clamped, u stays
+// at the right edge, texel 7, green. A texture no one has set repeats.
+//
+// Mutations: the wrap never applied -> clamped reads red at 36; Clamp mapped to
+// repeat -> the same.
+TEST_F(ModelMaterialTest, ClampReadsTheEdgeTexelWhereRepeatReadsTheTextureAgain) {
+    WriteHalvesPng(m_dir.Path() / "halves.png", {255, 0, 0, 255}, {0, 255, 0, 255});
+    BRITE::MeshData mesh = QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255});
+    for (const BRITE::Vector3& p : mesh.Positions)
+        mesh.TexCoords.push_back({p.x + 1.0f, (1.0f - p.y) * 0.5f});
+    const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    const BRITE::TextureHandle halves = m_backend.LoadTexture((m_dir.Path() / "halves.png").string().c_str());
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+    unlit.AlbedoMap = halves;
+
+    const auto asLoaded = Draw(model, unlit);
+    ExpectColour(At(asLoaded, 20), 255, 0, 0, "u 0.28, as loaded");
+    ExpectColour(At(asLoaded, 36), 255, 0, 0, "u 1.28, as loaded: repeating");
+
+    BRITE::Backends::TextureSampling clamped;
+    clamped.Wrap = BRITE::Backends::SamplingWrap::Clamp;
+    ASSERT_TRUE(m_backend.SetTextureSampling(halves, clamped));
+    const auto pixels = Draw(model, unlit);
+    ExpectColour(At(pixels, 20), 255, 0, 0, "u 0.28, clamped");
+    ExpectColour(At(pixels, 36), 0, 255, 0, "u 1.28, clamped to the edge texel");
+
+    m_backend.UnloadTexture(halves);
+    m_backend.UnloadModel(model);
+}
+
+// A loaded model's own texture takes the sampling asked of the model: the same
+// distant checker, this time a glTF quad whose material brought it. Point as
+// loaded, 0 or 255; after SetModelTextureSampling with trilinear, 127.5. A model
+// built in code, with no texture of its own, is still a model: true.
+//
+// Mutation: SetModelTextureSampling finding nothing to apply (the ownership
+// test inverted) -> the model's checker stays 0 or 255.
+TEST_F(ModelMaterialTest, AModelsOwnTexturesTakeTheSamplingAskedOfTheModel) {
+    WriteCheckerPng(m_dir.Path() / "texture.png", 2);
+    Scene scene;
+    GltfMaterial textured;
+    textured.textured = true;
+    scene.Materials = {textured};
+    Quad quad{-1.0f, 1.0f, 0};
+    quad.uvScale = CHECKER_REPEATS;
+    scene.Quads = {quad};
+    const BRITE::ModelHandle model = m_backend.LoadModel(WriteGltf(m_dir.Path(), scene).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    BRITE::PBRMaterial unlit;
+    unlit.Unlit = true;
+
+    const auto point = Draw(model, unlit);
+    EXPECT_TRUE(EveryInsidePixel(point, [](int r) { return r == 0 || r == 255; })) << "as loaded: whole texels";
+
+    BRITE::Backends::TextureSampling trilinear;
+    trilinear.Filter = BRITE::Backends::SamplingFilter::Trilinear;
+    ASSERT_TRUE(m_backend.SetModelTextureSampling(model, trilinear));
+    EXPECT_TRUE(EveryInsidePixel(Draw(model, unlit), IsAverage)) << "trilinear: the mean, 127.5";
+
+    const BRITE::ModelHandle plain = m_backend.LoadModelFromMesh(QuadMesh(-1.0f, 1.0f, {255, 255, 255, 255}));
+    EXPECT_TRUE(m_backend.SetModelTextureSampling(plain, trilinear)) << "a model with no textures of its own";
+    m_backend.UnloadModel(plain);
     m_backend.UnloadModel(model);
 }
 

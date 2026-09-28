@@ -613,8 +613,9 @@ TEST(ModelReadbackColour, OneChannelTimesAnotherRoundsToTheNearest) {
 }
 
 namespace {
-// A backend written before ReadModelMeshes existed: it overrides every pure
-// method and nothing else, so it inherits the interface's default.
+// A backend written before ReadModelMeshes and the texture-sampling calls
+// existed: it overrides every pure method and nothing else, so it inherits the
+// interface's defaults.
 class OlderBackend : public BRITE::Backends::IRenderBackend {
   public:
     void SubmitRenderPass(const BRITE::RenderPass&) override {}
@@ -667,4 +668,16 @@ TEST(ModelReadbackDefault, ABackendThatCannotReadBackSaysSo) {
     std::vector<BRITE::MeshData> meshes = {placeholder};
     EXPECT_FALSE(backend.ReadModelMeshes(backend.LoadModel("any"), meshes));
     EXPECT_TRUE(meshes.empty());
+}
+
+// The same backend cannot change how a texture is sampled, and says so rather
+// than claiming it did -- for a texture handle or a model's textures.
+//
+// Mutations: either default returns true -> its EXPECT_FALSE fails.
+TEST(TextureSamplingDefault, ABackendThatCannotSetSamplingSaysSo) {
+    OlderBackend backend;
+    BRITE::Backends::TextureSampling trilinear;
+    trilinear.Filter = BRITE::Backends::SamplingFilter::Trilinear;
+    EXPECT_FALSE(backend.SetTextureSampling(backend.LoadTexture("any"), trilinear));
+    EXPECT_FALSE(backend.SetModelTextureSampling(backend.LoadModel("any"), trilinear));
 }

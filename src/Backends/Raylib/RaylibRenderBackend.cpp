@@ -18,6 +18,36 @@ namespace {
 // raylib.h does not export. Each material's maps array is allocated this long and
 // DrawMesh reads this many, so a copy of one must be exactly this long.
 constexpr int MATERIAL_MAPS_PER_MATERIAL = 12;
+
+// Sets a texture's filters, anisotropy and wrap, generating its mipmaps first
+// when the filter reads them. The filters go straight to rlgl rather than
+// through raylib's SetTextureFilter, whose "point" and "bilinear" turn into
+// mipmapped filters once a texture has mipmaps: here each filter means the same
+// whatever was asked of the texture before.
+void ApplySampling(::Texture2D& texture, const TextureSampling& sampling) {
+    int minFilter = RL_TEXTURE_FILTER_NEAREST;
+    int magFilter = RL_TEXTURE_FILTER_NEAREST;
+    switch (sampling.Filter) {
+    case SamplingFilter::Point:
+        break;
+    case SamplingFilter::Bilinear:
+        minFilter = magFilter = RL_TEXTURE_FILTER_LINEAR;
+        break;
+    case SamplingFilter::Trilinear:
+        if (texture.mipmaps <= 1)
+            ::GenTextureMipmaps(&texture);
+        minFilter = RL_TEXTURE_FILTER_MIP_LINEAR;
+        magFilter = RL_TEXTURE_FILTER_LINEAR;
+        break;
+    }
+    ::rlTextureParameters(texture.id, RL_TEXTURE_MIN_FILTER, minFilter);
+    ::rlTextureParameters(texture.id, RL_TEXTURE_MAG_FILTER, magFilter);
+    // rlgl resets the level to 1 before setting it, so 1 turns it off.
+    ::rlTextureParameters(texture.id, RL_TEXTURE_FILTER_ANISOTROPIC, std::max(1, sampling.Anisotropy));
+    const int wrap = sampling.Wrap == SamplingWrap::Clamp ? RL_TEXTURE_WRAP_CLAMP : RL_TEXTURE_WRAP_REPEAT;
+    ::rlTextureParameters(texture.id, RL_TEXTURE_WRAP_S, wrap);
+    ::rlTextureParameters(texture.id, RL_TEXTURE_WRAP_T, wrap);
+}
 } // namespace
 
 void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
@@ -506,6 +536,53 @@ void RaylibRenderBackend::UnloadTexture(BRITE::TextureHandle texture) {
         delete tex;
         m_textures.erase(it);
     }
+}
+
+bool RaylibRenderBackend::SetTextureSampling(BRITE::TextureHandle texture, const TextureSampling& sampling) {
+    auto it = m_textures.find(texture);
+    if (it == m_textures.end() || it->second.isRenderTexture)
+        return false;
+    ApplySampling(*static_cast<::Texture2D*>(it->second.ptr), sampling);
+    return true;
+}
+
+bool RaylibRenderBackend::SetModelTextureSampling(BRITE::ModelHandle model, const TextureSampling& sampling) {
+    auto it = m_models.find(model);
+    if (it == m_models.end())
+        return false;
+    ::Model* rlModel = static_cast<::Model*>(it->second);
+
+    // The textures the model owns, each once -- the shared placeholder is not
+    // the model's to change. A texture bound in several maps is sampled once,
+    // and every map holding it learns the mipmap count that produced.
+    std::vector<unsigned int> bound;
+    for (int m = 0; m < rlModel->materialCount; ++m)
+        for (int map = 0; map < MATERIAL_MAPS_PER_MATERIAL; ++map)
+            bound.push_back(rlModel->materials[m].maps[map].texture.id);
+    for (const unsigned int id : TexturesOwnedByModel(bound, ::rlGetTextureIdDefault())) {
+        ::Texture2D* first = nullptr;
+        for (int m = 0; m < rlModel->materialCount; ++m) {
+            for (int map = 0; map < MATERIAL_MAPS_PER_MATERIAL; ++map) {
+                ::Texture2D& held = rlModel->materials[m].maps[map].texture;
+                if (held.id != id)
+                    continue;
+                if (first == nullptr) {
+                    first = &held;
+                    ApplySampling(held, sampling);
+                } else {
+                    held.mipmaps = first->mipmaps;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+unsigned int RaylibRenderBackend::NativeTextureId(BRITE::TextureHandle texture) const {
+    auto it = m_textures.find(texture);
+    if (it == m_textures.end() || it->second.isRenderTexture)
+        return 0;
+    return static_cast<const ::Texture2D*>(it->second.ptr)->id;
 }
 
 BRITE::EnvironmentMap RaylibRenderBackend::LoadEnvironmentMap(const char* hdrFileName) {

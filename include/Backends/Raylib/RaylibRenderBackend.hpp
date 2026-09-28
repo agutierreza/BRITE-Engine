@@ -32,6 +32,13 @@ class RaylibRenderBackend : public IRenderBackend {
 
     BRITE::TextureHandle LoadTexture(const char* fileName) override;
     void UnloadTexture(BRITE::TextureHandle texture) override;
+    bool SetTextureSampling(BRITE::TextureHandle texture, const TextureSampling& sampling) override;
+    bool SetModelTextureSampling(BRITE::ModelHandle model, const TextureSampling& sampling) override;
+
+    // The OpenGL name behind a texture handle, or 0 when it names no plain
+    // texture: for tests and tools that inspect a texture's state in the
+    // graphics API itself.
+    unsigned int NativeTextureId(BRITE::TextureHandle texture) const;
 
     BRITE::ModelHandle LoadModel(const char* fileName) override;
     BRITE::ModelHandle LoadModelFromMesh(const BRITE::MeshData& mesh) override;

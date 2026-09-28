@@ -10,6 +10,31 @@ namespace Backends {
 
 enum class ShaderUniformDataType { Float = 0, Vec2, Vec3, Vec4, Int, IVec2, IVec3, IVec4, Sampler2D };
 
+// How a texture is read between and across its texels.
+enum class SamplingFilter {
+    Point,     // the nearest texel: crisp up close, grainy and shimmering far away
+    Bilinear,  // a blend of the four nearest texels, from the full-size texture only
+    Trilinear, // mipmaps are generated, and the two levels nearest the surface's
+               // distance are blended: for a texture repeated across a large surface
+};
+
+// What a texture coordinate outside 0..1 reads.
+enum class SamplingWrap {
+    Repeat, // the texture again, as many times as the coordinates run
+    Clamp,  // the texel at the nearest edge
+};
+
+// The defaults are what a texture has when it is loaded, so a texture no one
+// sets reads exactly as it always has.
+struct TextureSampling {
+    SamplingFilter Filter = SamplingFilter::Point;
+    // Anisotropic filtering: how many samples a surface seen at a grazing angle
+    // may take along its slope. 1 is none; 4 to 16 are usual. A device honours
+    // up to its own maximum.
+    int Anisotropy = 1;
+    SamplingWrap Wrap = SamplingWrap::Repeat;
+};
+
 class IRenderBackend {
   public:
     virtual ~IRenderBackend() = default;
@@ -27,6 +52,26 @@ class IRenderBackend {
 
     virtual BRITE::TextureHandle LoadTexture(const char* fileName) = 0;
     virtual void UnloadTexture(BRITE::TextureHandle texture) = 0;
+
+    // How a texture is sampled from now on, by every draw that names it.
+    // Returns false when the handle names no texture, or names a render
+    // texture (whose mipmaps would go stale with every pass drawn into it) --
+    // or when the backend cannot, which is what these defaults do, so that an
+    // implementation written before they existed still builds.
+    virtual bool SetTextureSampling(BRITE::TextureHandle texture, const TextureSampling& sampling) {
+        (void)texture;
+        (void)sampling;
+        return false;
+    }
+    // The same for every texture a loaded model brought with it: its
+    // materials' own textures. A texture a draw names in its material is a
+    // handle of its own, set through SetTextureSampling. Returns false when the
+    // handle names no model; a model with no textures of its own is true.
+    virtual bool SetModelTextureSampling(BRITE::ModelHandle model, const TextureSampling& sampling) {
+        (void)model;
+        (void)sampling;
+        return false;
+    }
 
     virtual BRITE::ModelHandle LoadModel(const char* fileName) = 0;
     // A model from geometry generated in code. Returns NullModelHandle, and
