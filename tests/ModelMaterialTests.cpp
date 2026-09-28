@@ -95,6 +95,8 @@ struct GltfMaterial {
     const float* emissive = nullptr; // an emissiveFactor, written only when set
     float emissiveStrength = -1.0f;  // KHR_materials_emissive_strength, written only when 0 or more
     bool emissiveTextured = false;   // the emissive texture samples texture.png
+    float metallic = -1.0f;          // metallicFactor, written only when 0 or more
+    float roughness = -1.0f;         // roughnessFactor, written only when 0 or more
 };
 
 struct Scene {
@@ -192,10 +194,19 @@ fs::path WriteGltf(const fs::path& dir, const Scene& scene) {
     bool anyTexture = false;
     for (const GltfMaterial& m : scene.Materials) {
         char buf[256];
-        std::snprintf(buf, sizeof(buf), "%s{\"pbrMetallicRoughness\":{\"baseColorFactor\":[%g,%g,%g,%g]%s}",
+        std::snprintf(buf, sizeof(buf), "%s{\"pbrMetallicRoughness\":{\"baseColorFactor\":[%g,%g,%g,%g]%s",
                       materials.empty() ? "" : ",", m.rgba[0], m.rgba[1], m.rgba[2], m.rgba[3],
                       m.textured ? ",\"baseColorTexture\":{\"index\":0}" : "");
         materials += buf;
+        if (m.metallic >= 0.0f) {
+            std::snprintf(buf, sizeof(buf), ",\"metallicFactor\":%g", m.metallic);
+            materials += buf;
+        }
+        if (m.roughness >= 0.0f) {
+            std::snprintf(buf, sizeof(buf), ",\"roughnessFactor\":%g", m.roughness);
+            materials += buf;
+        }
+        materials += "}"; // pbrMetallicRoughness
         if (m.alphaMode)
             materials += std::string(",\"alphaMode\":\"") + m.alphaMode + "\"";
         if (m.alphaCutoff >= 0.0f) {
@@ -1356,6 +1367,124 @@ TEST_F(ModelMaterialTest, ADrawsEmissionMapGlowsAndADrawsEmissionReplacesTheFile
     ExpectColour(At(DrawPass(BRITE::RenderPass{}, {{file, green}}), LEFT_HALF), 0, LIT_FULL, 0,
                  "the draw's green over the file's red");
     m_backend.UnloadModel(file);
+}
+
+// ---------------------------------------------------------------------------
+// A file's own metallic and roughness. Every case lights a white quad (base
+// colour 1) with one sun travelling -z -- from behind the camera, straight onto
+// the quad -- at intensity pi, and no ambient, and reads the middle pixel. There
+// the light L, the view V, the half vector H and the normal N all point along
+// +z (to well inside a GPU's rounding at pixel (32, 32)), so every dot product
+// in pbr.fs is 1 and its Cook-Torrance reduces by hand. Radiance is pi, which
+// cancels the 1/pi in both terms:
+//
+//   Lo = (kD * albedo / pi + D * G * F / 4) * pi,   G = 1, F = F0 at H.V = 1
+//
+// ROUGH DIELECTRIC (metallic 0, roughness 1): a = roughness^4 = 1, so
+//   D = a / (pi * (NH^2 (a - 1) + 1)^2) = 1/pi, whatever NH is;
+//   F0 = 0.04, kD = (1 - 0.04)(1 - 0) = 0.96
+//   Lo = (0.96/pi + (1/pi)(0.04)/4) * pi = 0.96 + 0.01 = 0.97
+//   0.97/1.97 = 0.492386;  0.492386^(1/2.2) = e^(-0.708394/2.2) = 0.724737 -> 184.8 -> 185
+//
+// ROUGH METAL (metallic 1, roughness 1): F0 = albedo = 1, so F = 1, kD = 0:
+//   Lo = (1/pi)(1)/4 * pi = 0.25;  0.25/1.25 = 0.2;  0.2^(1/2.2) = e^(-1.609438/2.2)
+//      = 0.481157 -> 122.7 -> 123
+//
+// GLOSSY DIELECTRIC (metallic 0, roughness 0.3): a = 0.3^4 = 0.0081, so
+//   D = 1 / (pi * a) = 39.2975;  k = (0.3 + 1)^2 / 8 = 0.21125, and G = 1 at NV = 1
+//   Lo = 0.96 + 39.2975 * 0.04 / 4 * pi = 0.96 + 1.234567 = 2.194567
+//   2.194567/3.194567 = 0.686964;  ^(1/2.2) = e^(-0.375513/2.2) = 0.843083 -> 215.0 -> 215
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr int ROUGH_DIELECTRIC = 185;
+constexpr int ROUGH_METAL = 123;
+constexpr int GLOSSY_DIELECTRIC = 215;
+constexpr int MIDDLE = 32;
+
+BRITE::RenderPass SunBehindTheCamera() {
+    BRITE::RenderPass pass;
+    BRITE::Light sun;
+    sun.Direction = {0.0f, 0.0f, -1.0f};
+    sun.Intensity = 3.14159265f;
+    pass.Lights.push_back(sun);
+    return pass;
+}
+
+Scene WhiteQuad(float metallic, float roughness) {
+    Scene scene;
+    GltfMaterial material;
+    material.metallic = metallic;
+    material.roughness = roughness;
+    scene.Materials = {material};
+    scene.Quads = {{-1.0f, 1.0f, 0}};
+    return scene;
+}
+
+int MiddleGrey(const std::vector<BRITE::Color>& pixels) {
+    return At(pixels, MIDDLE).r;
+}
+} // namespace
+
+// A file that writes no metallicFactor is not taken at glTF's word -- fully
+// metallic, 123 -- but falls back to the draw's Metallic, 0: a rough dielectric,
+// 185.
+//
+// Mutation: glTF's unwritten default used -> 123.
+TEST_F(ModelMaterialTest, AFileThatWritesNoMetallicFactorIsNotMetal) {
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), WhiteQuad(-1.0f, -1.0f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, {}}})), ROUGH_DIELECTRIC, TOLERANCE);
+    m_backend.UnloadModel(model);
+}
+
+// A file that writes metallicFactor 1 is metal, 123 -- not the draw's 0, 185.
+//
+// Mutation: the file's metallic not applied -> 185.
+TEST_F(ModelMaterialTest, AFilesOwnMetallicFactorIsItsOwn) {
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), WhiteQuad(1.0f, -1.0f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, {}}})), ROUGH_METAL, TOLERANCE);
+    m_backend.UnloadModel(model);
+}
+
+// A file that writes roughnessFactor 0.3 is glossy, 215 -- not the draw's 1, 185.
+//
+// Mutation: the file's roughness not applied -> 185.
+TEST_F(ModelMaterialTest, AFilesOwnRoughnessFactorIsItsOwn) {
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), WhiteQuad(-1.0f, 0.3f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{model, {}}})), GLOSSY_DIELECTRIC, TOLERANCE);
+    m_backend.UnloadModel(model);
+}
+
+// The draw's Metallic is the fallback where the file writes nothing -- a file
+// that says nothing, drawn with Metallic 1, is metal, 123 -- and only there: a
+// file that writes metallicFactor 0, drawn with Metallic 1, stays a dielectric,
+// 185.
+//
+// Mutations: the draw's Metallic ignored where the file is silent -> 185 for the
+// first; the draw's winning over the file's -> 123 for the second.
+TEST_F(ModelMaterialTest, TheDrawsMetallicFillsOnlyWhatTheFileLeavesUnwritten) {
+    BRITE::PBRMaterial metal;
+    metal.Metallic = 1.0f;
+
+    const BRITE::ModelHandle silent =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), WhiteQuad(-1.0f, -1.0f)).string().c_str());
+    ASSERT_NE(silent, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{silent, metal}})), ROUGH_METAL, TOLERANCE)
+        << "the file silent: the draw's metal";
+    m_backend.UnloadModel(silent);
+
+    const BRITE::ModelHandle dielectric =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), WhiteQuad(0.0f, -1.0f)).string().c_str());
+    ASSERT_NE(dielectric, BRITE::NullModelHandle);
+    EXPECT_NEAR(MiddleGrey(DrawPass(SunBehindTheCamera(), {{dielectric, metal}})), ROUGH_DIELECTRIC, TOLERANCE)
+        << "the file's written 0 over the draw's 1";
+    m_backend.UnloadModel(dielectric);
 }
 
 // Which of a model's bound texture ids are its own, worked by hand: 0 is no

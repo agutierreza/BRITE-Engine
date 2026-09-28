@@ -158,3 +158,34 @@ TEST(GltfMaterials, EmissionReadsAsWritten) {
     EXPECT_FLOAT_EQ(materials[1].EmissiveStrength, 1.0f);
     EXPECT_FLOAT_EQ(materials[2].EmissiveStrength, 4.0f);
 }
+
+// Metallic and roughness: a material that writes neither reads glTF's 1 and 1,
+// marked as NOT written, so a reader can fall back; one that writes both reads
+// them, marked written -- including a written 1, which is not the same as none.
+//
+// Mutations: metallicFactor not read -> material 1 reads 1 and not written;
+// HasMetallicFactor set whether written or not -> material 0 reads written;
+// roughnessFactor read from the metallic key -> material 1 reads 0.25, not 0.6.
+TEST(GltfMaterials, MetallicAndRoughnessReadWithWhetherTheyWereWritten) {
+    const std::string file = R"({
+      "asset": {"version": "2.0"},
+      "materials": [
+        {"pbrMetallicRoughness": {"baseColorFactor": [1, 1, 1, 1]}},
+        {"pbrMetallicRoughness": {"metallicFactor": 0.25, "roughnessFactor": 0.6}},
+        {"pbrMetallicRoughness": {"metallicFactor": 1}}
+      ]
+    })";
+    std::vector<GltfMaterialInfo> materials;
+    ASSERT_TRUE(ReadGltfMaterials(Bytes(file), materials));
+    ASSERT_EQ(materials.size(), 3u);
+    EXPECT_FALSE(materials[0].HasMetallicFactor);
+    EXPECT_FALSE(materials[0].HasRoughnessFactor);
+    EXPECT_FLOAT_EQ(materials[0].MetallicFactor, 1.0f) << "glTF's default, kept for a reader who wants it";
+    EXPECT_TRUE(materials[1].HasMetallicFactor);
+    EXPECT_TRUE(materials[1].HasRoughnessFactor);
+    EXPECT_FLOAT_EQ(materials[1].MetallicFactor, 0.25f);
+    EXPECT_FLOAT_EQ(materials[1].RoughnessFactor, 0.6f);
+    EXPECT_TRUE(materials[2].HasMetallicFactor) << "a written 1 is written";
+    EXPECT_FLOAT_EQ(materials[2].MetallicFactor, 1.0f);
+    EXPECT_FALSE(materials[2].HasRoughnessFactor);
+}

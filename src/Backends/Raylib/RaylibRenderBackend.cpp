@@ -522,8 +522,17 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, bool
     ::SetShaderValue(*shader, m_pbrLocs.useTexNormal, &useNormal, SHADER_UNIFORM_INT);
     ::SetShaderValue(*shader, m_pbrLocs.useTexMRA, &useMRA, SHADER_UNIFORM_INT);
 
-    ::SetShaderValue(*shader, m_pbrLocs.metallicValue, &material.Metallic, SHADER_UNIFORM_FLOAT);
-    ::SetShaderValue(*shader, m_pbrLocs.roughnessValue, &material.Roughness, SHADER_UNIFORM_FLOAT);
+    // A file's own metallic and roughness where it wrote them; the draw's where
+    // it did not, and for a mesh with no file. glTF's unwritten default -- fully
+    // metallic -- is never used, because a metal has no diffuse light and would
+    // draw dark under anything but an environment map.
+    const float metallic =
+        (fileMaterial != nullptr && fileMaterial->HasMetallicFactor) ? fileMaterial->MetallicFactor : material.Metallic;
+    const float roughness = (fileMaterial != nullptr && fileMaterial->HasRoughnessFactor)
+                                ? fileMaterial->RoughnessFactor
+                                : material.Roughness;
+    ::SetShaderValue(*shader, m_pbrLocs.metallicValue, &metallic, SHADER_UNIFORM_FLOAT);
+    ::SetShaderValue(*shader, m_pbrLocs.roughnessValue, &roughness, SHADER_UNIFORM_FLOAT);
     // No occlusion map means nothing is occluded. Left unset this read as zero
     // and multiplied the whole ambient term away.
     const float ao = 1.0f;

@@ -75,6 +75,17 @@ bool ReadGltfMaterials(const std::vector<unsigned char>& bytes, std::vector<Gltf
                 info.AlphaCutoff = cutoff->get<float>();
             if (const auto sided = entry.find("doubleSided"); sided != entry.end() && sided->is_boolean())
                 info.DoubleSided = sided->get<bool>();
+            if (const auto pbr = entry.find("pbrMetallicRoughness"); pbr != entry.end() && pbr->is_object()) {
+                if (const auto metallic = pbr->find("metallicFactor");
+                    metallic != pbr->end() && metallic->is_number()) {
+                    info.MetallicFactor = metallic->get<float>();
+                    info.HasMetallicFactor = true;
+                }
+                if (const auto rough = pbr->find("roughnessFactor"); rough != pbr->end() && rough->is_number()) {
+                    info.RoughnessFactor = rough->get<float>();
+                    info.HasRoughnessFactor = true;
+                }
+            }
             if (const auto emissive = entry.find("emissiveFactor");
                 emissive != entry.end() && emissive->is_array() && emissive->size() == 3) {
                 for (std::size_t c = 0; c < 3; ++c)

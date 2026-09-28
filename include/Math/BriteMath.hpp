@@ -265,7 +265,9 @@ struct PBRMaterial {
     // Roughness 1 is fully rough, glTF's default; anything glossier is the
     // caller's choice. Metallic 0 is NOT glTF's default (glTF says 1, meaning
     // "as the metallic map says"): with no map, a surface is a dielectric
-    // unless the caller asks for metal.
+    // unless the caller asks for metal. A loaded model whose file WRITES a
+    // metallicFactor or roughnessFactor uses its own; these are the fallback
+    // for a file that writes neither, and for every mesh built in code.
     float Metallic = 0.0f;
     float Roughness = 1.0f;
     // Draw the albedo as authored -- tint times vertex colour times albedo

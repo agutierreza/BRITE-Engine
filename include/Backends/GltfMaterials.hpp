@@ -24,6 +24,14 @@ struct GltfMaterialInfo {
     // KHR_materials_emissive_strength: a multiplier on EmissiveFactor, so a
     // factor capped at 1 can still glow brighter. 1 when the file has none.
     float EmissiveStrength = 1.0f;
+    // pbrMetallicRoughness's two scalars, and whether the file wrote each. glTF
+    // defaults both to 1 -- fully metallic, fully rough -- and a fully metallic
+    // surface has no diffuse light at all, so a file that says nothing is not
+    // taken to mean metal: a reader uses its own fallback where Has... is false.
+    float MetallicFactor = 1.0f;
+    float RoughnessFactor = 1.0f;
+    bool HasMetallicFactor = false;
+    bool HasRoughnessFactor = false;
 };
 
 // Reads the materials of a glTF file, in the order the file lists them, from
