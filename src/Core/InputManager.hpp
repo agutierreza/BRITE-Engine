@@ -39,6 +39,9 @@ constexpr bool Includes(InputDevice devices, InputDevice device) {
 class InputManager {
   public:
     static void Initialize(Backends::IInputBackend* backend);
+    // The backend the manager polls, or null when it has none. Process-wide:
+    // whoever set it must clear it before the backend is destroyed.
+    static Backends::IInputBackend* Backend();
 
     // Called once per render frame
     static void PollVariable(entt::dispatcher& dispatcher);

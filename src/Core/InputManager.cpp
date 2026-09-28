@@ -32,6 +32,10 @@ void InputManager::Initialize(Backends::IInputBackend* backend) {
     s_backend = backend;
 }
 
+Backends::IInputBackend* InputManager::Backend() {
+    return s_backend;
+}
+
 static const MouseButtonCode AllMouseButtons[] = {MouseButtonCode::Left, MouseButtonCode::Right,
                                                   MouseButtonCode::Middle};
 

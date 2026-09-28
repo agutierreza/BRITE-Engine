@@ -130,6 +130,16 @@ void Application::ShutdownSubsystems() {
     if (m_appBackend) {
         m_appBackend->Shutdown();
     }
+    // The input manager is process-wide and keeps a pointer to the backend it
+    // polls. The backend dies with this Application, so the pointer goes with
+    // it -- if it is still this one's: a later Application that brought its own
+    // has taken the manager over, and it is not this one's to clear. (An
+    // Application with no input backend leaves the manager alone: it has
+    // nothing to hand it, and clearing it would switch off the input of one
+    // that is still alive.)
+    if (m_inputBackend && BRITE::InputManager::Backend() == m_inputBackend.get()) {
+        BRITE::InputManager::Initialize(nullptr);
+    }
     PHYSFS_deinit();
     // Flushed, never shut down. The logger belongs to the process, not to one
     // application: spdlog::shutdown() dropped the default logger for good, and
