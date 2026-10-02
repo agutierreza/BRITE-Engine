@@ -86,6 +86,23 @@ class Application {
         return m_internalResolution;
     }
 
+    // The scene stack. Each of these is DEFERRED: it is queued, and the queue is
+    // applied at the top of the next frame, in the order it was asked for and
+    // before any scene ticks -- so all three are safe to call from inside a scene.
+    //
+    //   PushScene    starts `newScene` on top of the stack.
+    //   PopScene     shuts the top scene down and removes it.
+    //   ChangeScene  REPLACES THE WHOLE STACK: shuts down every scene on it, from
+    //                the top down, and then starts `newScene` as the only one.
+    //
+    // Whatever must outlive a ChangeScene therefore cannot be owned by a scene on
+    // the stack. Own it in the Application (or above it) and hand it to each
+    // scene, for example through the scene's constructor -- which runs while the
+    // old scenes are still alive, because the change is applied only afterwards.
+    //
+    // To replace only the top scene and keep the ones under it, call PopScene and
+    // then PushScene in the same frame: both are applied together, so no tick
+    // sees the stack without its top.
     void PushScene(std::shared_ptr<Scene> newScene);
     void PopScene();
     void ChangeScene(std::shared_ptr<Scene> newScene);

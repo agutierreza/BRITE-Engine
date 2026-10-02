@@ -265,6 +265,7 @@ enable_testing()
 add_executable(BRITETests tests/SceneFuzzTest.cpp tests/MeshDataTests.cpp tests/InputManagerTests.cpp
                           tests/TickFractionTests.cpp tests/ModelMaterialTests.cpp tests/ModelReadbackTests.cpp
                           tests/MultisampleTests.cpp tests/ApplicationLifetimeTests.cpp
+                          tests/SceneStackTests.cpp
                           tests/GltfMaterialsTests.cpp)
 target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
 
