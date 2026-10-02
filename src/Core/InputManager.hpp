@@ -74,22 +74,31 @@ class InputManager {
     static float GetMouseDeltaX();
     static float GetMouseDeltaY();
 
-    // Claiming a key.
+    // Claiming an input.
     //
     // A layer drawn over the rest of the application -- a menu, a text field, a
-    // console -- reads keys that the application also has actions bound to, and
-    // one press must not do both. ClaimKey takes `key` away from every ACTION for
-    // the rest of this fixed tick: IsActionPressed, IsActionDown and
-    // ActionDownDevices behave as if it were up. The raw key queries --
-    // IsKeyPressed, IsKeyDown, IsKeyReleased -- still see it, which is how the
-    // layer that claimed it reads it. Gamepad and mouse bindings of the same
-    // action are untouched: only the key is claimed.
+    // console -- reads keys, gamepad buttons and mouse buttons that the
+    // application also has actions bound to, and one press must not do both.
+    // ClaimKey takes `key` away from every ACTION for the rest of this fixed
+    // tick: IsActionPressed, IsActionDown and ActionDownDevices behave as if it
+    // were up. The raw queries -- IsKeyPressed, IsKeyDown, IsKeyReleased -- still
+    // see it, which is how the layer that claimed it reads it.
+    // ClaimGamepadButton and ClaimMouseButton do the same for a gamepad button
+    // and a mouse button, with IsGamepadButton* and IsMouseButton* as their raw
+    // queries.
     //
-    // A claim lasts until the next FlushFixed. A layer that owns keys for as long
-    // as it is open claims them on every tick it is open, BEFORE anything reads
-    // the actions bound to them that tick.
+    // A claim takes the one input it names and nothing else: the same action's
+    // bindings on other inputs, of the same device or another, still work.
+    //
+    // A claim lasts until the next FlushFixed. A layer that owns inputs for as
+    // long as it is open claims them on every tick it is open, BEFORE anything
+    // reads the actions bound to them that tick.
     static void ClaimKey(KeyCode key);
     static bool IsKeyClaimed(KeyCode key);
+    static void ClaimGamepadButton(GamepadButtonCode button);
+    static bool IsGamepadButtonClaimed(GamepadButtonCode button);
+    static void ClaimMouseButton(MouseButtonCode button);
+    static bool IsMouseButtonClaimed(MouseButtonCode button);
 
     // Action Mapping
     template <typename TEnum> static void BindAction(TEnum action, KeyCode key) {
@@ -117,13 +126,13 @@ class InputManager {
             }
         }
         for (GamepadButtonCode b : s_actionGamepadBindings[actionId]) {
-            if (IsGamepadButtonDown(b)) {
+            if (IsGamepadButtonDown(b) && !IsGamepadButtonClaimed(b)) {
                 devices |= InputDevice::Gamepad;
                 break;
             }
         }
         for (MouseButtonCode m : s_actionMouseBindings[actionId]) {
-            if (IsMouseButtonDown(m)) {
+            if (IsMouseButtonDown(m) && !IsMouseButtonClaimed(m)) {
                 devices |= InputDevice::Mouse;
                 break;
             }
@@ -143,11 +152,11 @@ class InputManager {
                 return true;
         }
         for (GamepadButtonCode b : s_actionGamepadBindings[actionId]) {
-            if (IsGamepadButtonPressed(b))
+            if (IsGamepadButtonPressed(b) && !IsGamepadButtonClaimed(b))
                 return true;
         }
         for (MouseButtonCode m : s_actionMouseBindings[actionId]) {
-            if (IsMouseButtonPressed(m))
+            if (IsMouseButtonPressed(m) && !IsMouseButtonClaimed(m))
                 return true;
         }
         return false;
@@ -180,6 +189,9 @@ class InputManager {
     static std::unordered_map<GamepadButtonCode, bool> s_gamepadButtonsReleasedThisTick;
     static std::unordered_map<GamepadAxisCode, float> s_gamepadAxes;
     static bool s_gamepadAvailable;
+
+    static std::unordered_map<GamepadButtonCode, bool> s_gamepadButtonsClaimedThisTick; // see ClaimGamepadButton
+    static std::unordered_map<MouseButtonCode, bool> s_buttonsClaimedThisTick;          // see ClaimMouseButton
 
     // Action Binding Maps
     static std::unordered_map<uint32_t, std::vector<KeyCode>> s_actionKeyBindings;

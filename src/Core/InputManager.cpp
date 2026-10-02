@@ -16,6 +16,8 @@ std::unordered_map<GamepadButtonCode, bool> InputManager::s_gamepadButtonsDown;
 std::unordered_map<GamepadButtonCode, bool> InputManager::s_gamepadButtonsPressedThisTick;
 std::unordered_map<GamepadButtonCode, bool> InputManager::s_gamepadButtonsReleasedThisTick;
 std::unordered_map<GamepadAxisCode, float> InputManager::s_gamepadAxes;
+std::unordered_map<GamepadButtonCode, bool> InputManager::s_gamepadButtonsClaimedThisTick;
+std::unordered_map<MouseButtonCode, bool> InputManager::s_buttonsClaimedThisTick;
 bool InputManager::s_gamepadAvailable = false;
 
 std::unordered_map<uint32_t, std::vector<KeyCode>> InputManager::s_actionKeyBindings;
@@ -98,6 +100,8 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     s_buttonsReleasedThisTick.clear();
     s_gamepadButtonsPressedThisTick.clear();
     s_gamepadButtonsReleasedThisTick.clear();
+    s_gamepadButtonsClaimedThisTick.clear(); // claims last one fixed tick -- see ClaimGamepadButton
+    s_buttonsClaimedThisTick.clear();
     s_mouseDeltaX = 0.0f;
     s_mouseDeltaY = 0.0f;
 
@@ -211,6 +215,24 @@ void InputManager::ClaimKey(KeyCode key) {
 bool InputManager::IsKeyClaimed(KeyCode key) {
     size_t idx = static_cast<size_t>(key);
     return idx < KeyCount ? s_keysClaimedThisTick[idx] : false;
+}
+
+void InputManager::ClaimGamepadButton(GamepadButtonCode button) {
+    s_gamepadButtonsClaimedThisTick[button] = true;
+}
+
+bool InputManager::IsGamepadButtonClaimed(GamepadButtonCode button) {
+    const auto it = s_gamepadButtonsClaimedThisTick.find(button);
+    return it != s_gamepadButtonsClaimedThisTick.end() && it->second;
+}
+
+void InputManager::ClaimMouseButton(MouseButtonCode button) {
+    s_buttonsClaimedThisTick[button] = true;
+}
+
+bool InputManager::IsMouseButtonClaimed(MouseButtonCode button) {
+    const auto it = s_buttonsClaimedThisTick.find(button);
+    return it != s_buttonsClaimedThisTick.end() && it->second;
 }
 bool InputManager::IsMouseButtonPressed(MouseButtonCode button) {
     return s_buttonsPressedThisTick[button];

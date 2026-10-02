@@ -287,6 +287,85 @@ TEST_F(InputManagerDevices, AClaimLastsUntilTheNextFixedTick) {
     EXPECT_TRUE(InputManager::IsActionDown(Action::Claimable));
 }
 
+TEST_F(InputManagerDevices, AClaimedGamepadButtonIsHiddenFromEveryActionAndNotFromTheLayerThatClaimedIt) {
+    // The pad's lower face button is pressed and a layer claims it: the action
+    // bound to it reads as neither pressed nor down and no device holds it,
+    // while the raw button queries, which the layer reads, still say pressed and
+    // down. A layer drawn over the application can take a pad button exactly as
+    // it can take a key.
+    // MUTATIONS: not asking IsGamepadButtonClaimed in IsActionPressed -- red on
+    // the first expectation; not asking it in ActionDownDevices -- red on the
+    // second and third; a claim that records nothing -- red on the first three.
+    InputManager::BindAction(Action::Claimable, GamepadButtonCode::RightFaceDown);
+    m_backend.padPressed = {GamepadButtonCode::RightFaceDown};
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    InputManager::ClaimGamepadButton(GamepadButtonCode::RightFaceDown);
+
+    EXPECT_FALSE(InputManager::IsActionPressed(Action::Claimable));
+    EXPECT_FALSE(InputManager::IsActionDown(Action::Claimable));
+    EXPECT_EQ(InputManager::ActionDownDevices(Action::Claimable), InputDevice::None);
+    EXPECT_TRUE(InputManager::IsGamepadButtonPressed(GamepadButtonCode::RightFaceDown));
+    EXPECT_TRUE(InputManager::IsGamepadButtonDown(GamepadButtonCode::RightFaceDown));
+    m_backend.Clear();
+}
+
+TEST_F(InputManagerDevices, AClaimedMouseButtonIsHiddenFromEveryActionAndNotFromTheLayerThatClaimedIt) {
+    // The same for the mouse: the right button is pressed and claimed.
+    // MUTATIONS: not asking IsMouseButtonClaimed in IsActionPressed -- red on the
+    // first expectation; not asking it in ActionDownDevices -- red on the second
+    // and third.
+    InputManager::BindAction(Action::Claimable, MouseButtonCode::Right);
+    m_backend.mousePressed = {MouseButtonCode::Right};
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    InputManager::ClaimMouseButton(MouseButtonCode::Right);
+
+    EXPECT_FALSE(InputManager::IsActionPressed(Action::Claimable));
+    EXPECT_FALSE(InputManager::IsActionDown(Action::Claimable));
+    EXPECT_EQ(InputManager::ActionDownDevices(Action::Claimable), InputDevice::None);
+    EXPECT_TRUE(InputManager::IsMouseButtonPressed(MouseButtonCode::Right));
+    EXPECT_TRUE(InputManager::IsMouseButtonDown(MouseButtonCode::Right));
+    m_backend.Clear();
+}
+
+TEST_F(InputManagerDevices, AClaimedButtonIsThatButtonAloneAndTheActionsOtherButtonStillWorks) {
+    // The action is on two pad buttons; the lower is claimed and the upper is
+    // pressed as well. The upper still presses the action, and the pad is the
+    // device holding it: a claim names one input, not a device.
+    // MUTATION: a claim that hid every pad binding of the action reads
+    // not-pressed; red.
+    InputManager::BindAction(Action::Claimable, GamepadButtonCode::RightFaceDown);
+    InputManager::BindAction(Action::Claimable, GamepadButtonCode::RightFaceUp);
+    m_backend.padPressed = {GamepadButtonCode::RightFaceDown, GamepadButtonCode::RightFaceUp};
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    InputManager::ClaimGamepadButton(GamepadButtonCode::RightFaceDown);
+
+    EXPECT_TRUE(InputManager::IsActionPressed(Action::Claimable));
+    EXPECT_EQ(InputManager::ActionDownDevices(Action::Claimable), InputDevice::Gamepad);
+    m_backend.Clear();
+}
+
+TEST_F(InputManagerDevices, AButtonsClaimLastsUntilTheNextFixedTick) {
+    // Claimed on one tick, both buttons are still held on the next; nobody
+    // claims them again, and they are free once more.
+    // MUTATION: not clearing a device's claims in FlushFixed leaves its button
+    // claimed for ever; red on that device's expectation.
+    m_backend.padPressed = {GamepadButtonCode::RightFaceDown};
+    m_backend.mousePressed = {MouseButtonCode::Right};
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    InputManager::ClaimGamepadButton(GamepadButtonCode::RightFaceDown);
+    InputManager::ClaimMouseButton(MouseButtonCode::Right);
+    ASSERT_TRUE(InputManager::IsGamepadButtonClaimed(GamepadButtonCode::RightFaceDown));
+    ASSERT_TRUE(InputManager::IsMouseButtonClaimed(MouseButtonCode::Right));
+
+    Tick(); // the next fixed tick
+    EXPECT_FALSE(InputManager::IsGamepadButtonClaimed(GamepadButtonCode::RightFaceDown));
+    EXPECT_FALSE(InputManager::IsMouseButtonClaimed(MouseButtonCode::Right));
+}
+
 // Whether a gamepad is available. An axis cannot answer it: an absent pad reads
 // rest, and so does an attached one nobody is touching.
 
