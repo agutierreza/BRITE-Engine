@@ -3,7 +3,7 @@
 #include <ECS/Events.hpp>
 #include <box2d/math_functions.h>
 #include <cmath>
-#include <tracy/Tracy.hpp>
+#include "../Core/Profiler.hpp"
 
 namespace BRITE {
 
@@ -27,7 +27,7 @@ void Box2DBackend::Init(entt::registry& registry) {
 }
 
 void Box2DBackend::PreStep(entt::registry& registry) {
-    ZoneScoped;
+    BRITE_PROFILE_ZONE;
 
     // PRE-STEP
     {
@@ -148,7 +148,7 @@ void Box2DBackend::PreStep(entt::registry& registry) {
 }
 
 void Box2DBackend::Step(entt::registry& registry, float dt) {
-    ZoneScoped;
+    BRITE_PROFILE_ZONE;
 
     // STEP
     b2World_Step(m_worldId, dt, 4);

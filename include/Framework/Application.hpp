@@ -151,6 +151,8 @@ class Application {
     int m_width;
     int m_height;
     bool m_running;
+    // This Application started the profiler, so its destructor stops it (Core/Profiler.hpp).
+    bool m_startedProfiler = false;
     double m_fixedDt;
     double m_timeScale;
 

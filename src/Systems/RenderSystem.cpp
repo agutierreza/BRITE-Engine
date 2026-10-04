@@ -1,11 +1,11 @@
 #include "RenderSystem.hpp"
 #include "../ECS/Components.hpp"
 #include <cmath>
-#include <tracy/Tracy.hpp>
+#include "../Core/Profiler.hpp"
 namespace BRITE {
 
 void RenderSystem::Update(entt::registry& registry, RenderPass& pass, Camera2D* camera, Camera3D* camera3d) {
-    ZoneScoped;
+    BRITE_PROFILE_ZONE;
 
     if (camera) {
         pass.Camera = camera;

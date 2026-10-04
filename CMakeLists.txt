@@ -101,6 +101,12 @@ FetchContent_Declare(
     URL https://github.com/wolfpld/tracy/archive/refs/tags/v0.10.tar.gz
 )
 set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
+# The profiler's lifetime is the framework's: it starts and stops with the Application
+# (src/Core/Profiler.hpp), so its threads end inside main() rather than during static
+# destruction, where a runtime that skips thread_local destructors for threads ending in
+# exit() leaves Tracy's queue writing into a dead thread's storage.
+set(TRACY_DELAYED_INIT ON CACHE BOOL "" FORCE)
+set(TRACY_MANUAL_LIFETIME ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(tracy)
 
 # SoLoud (Compiling directly from source)
@@ -175,6 +181,7 @@ endmacro()
 
 add_library(${PROJECT_NAME} STATIC
     src/Core/InputManager.cpp
+    src/Core/Profiler.cpp
     src/Systems/RenderSystem.cpp
     src/Systems/PhysicsSystem.cpp
     src/Systems/Box2DBackend.cpp
@@ -256,6 +263,11 @@ if(BRITE_ENABLE_SANITIZERS)
         target_link_options(${PROJECT_NAME} PUBLIC
             -fsanitize=address -fsanitize=undefined)
         message(STATUS "BRITE: ASan + UBSan enabled (engine, tests, and clients)")
+        # Tracy's crash handler goes first in the vectored exception chain and, while a profiler
+        # is connected, takes any access violation for a crash -- including the first-chance faults
+        # AddressSanitizer raises on purpose to commit its shadow memory -- and ends the process.
+        # With the sanitizers on, crashes are AddressSanitizer's to report.
+        target_compile_definitions(TracyClient PUBLIC TRACY_NO_CRASH_HANDLER)
     else()
         message(WARNING "BRITE_ENABLE_SANITIZERS is ON but compiler '${CMAKE_CXX_COMPILER_ID}' is unsupported; ignoring")
     endif()
@@ -266,8 +278,13 @@ add_executable(BRITETests tests/SceneFuzzTest.cpp tests/MeshDataTests.cpp tests/
                           tests/TickFractionTests.cpp tests/ModelMaterialTests.cpp tests/ModelReadbackTests.cpp
                           tests/MultisampleTests.cpp tests/ApplicationLifetimeTests.cpp
                           tests/SceneStackTests.cpp
-                          tests/GltfMaterialsTests.cpp)
+                          tests/GltfMaterialsTests.cpp
+                          tests/ProfilerLifetimeTests.cpp)
 target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
+if(WIN32)
+    # ProfilerLifetimeTests finds its own profiler's port in the table of listening sockets.
+    target_link_libraries(BRITETests PRIVATE iphlpapi)
+endif()
 
 include(GoogleTest)
 gtest_discover_tests(BRITETests)

@@ -4,7 +4,7 @@
 #include <box3d/collision.h>
 #include <box3d/math_functions.h>
 #include <raymath.h>
-#include <tracy/Tracy.hpp>
+#include "../Core/Profiler.hpp"
 
 namespace BRITE {
 
@@ -29,7 +29,7 @@ void Box3DBackend::Init(entt::registry& registry) {
 }
 
 void Box3DBackend::PreStep(entt::registry& registry) {
-    ZoneScoped;
+    BRITE_PROFILE_ZONE;
 
     // PRE-STEP
     {
@@ -168,7 +168,7 @@ void Box3DBackend::PreStep(entt::registry& registry) {
 }
 
 void Box3DBackend::Step(entt::registry& registry, float dt) {
-    ZoneScoped;
+    BRITE_PROFILE_ZONE;
 
     // STEP
     b3World_Step(m_worldId, dt, 4);

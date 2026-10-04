@@ -2,6 +2,7 @@
 #include "Framework/Scene.hpp"
 
 #include "../Core/InputManager.hpp"
+#include "../Core/Profiler.hpp"
 #include "../Systems/PhysicsSystem.hpp"
 #include <algorithm>
 #include <cassert>
@@ -64,6 +65,12 @@ void Application::InitSubsystems(const std::string& title, int width, int height
     // 1. Initialize spdlog
     spdlog::set_level(spdlog::level::debug);
     spdlog::info("Starting BRITE Engine Framework...");
+
+    // The profiler runs for this Application's lifetime, and once per process (Core/Profiler.hpp).
+    m_startedProfiler = BRITE::Profiler::Start();
+    if (!m_startedProfiler && BRITE::Profiler::CurrentState() == BRITE::Profiler::State::Stopped) {
+        spdlog::info("Profiler: it ran for an earlier Application in this process and does not run again");
+    }
 
     // 2. Initialize PhysicsFS
     if (!PHYSFS_init(m_appName.c_str())) {
@@ -148,6 +155,12 @@ void Application::ShutdownSubsystems() {
     // is lost -- and leaves the logger for whoever comes next.
     if (auto logger = spdlog::default_logger())
         logger->flush();
+    // Last: every scene is gone, so no zone of the framework's is open. Tracy's threads end here,
+    // inside main, where their thread_local destructors still run.
+    if (m_startedProfiler) {
+        BRITE::Profiler::Stop();
+        m_startedProfiler = false;
+    }
 }
 
 void Application::SetTargetFPS(int fps) {
