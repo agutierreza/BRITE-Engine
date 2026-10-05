@@ -302,7 +302,14 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             // Culling off for this mesh alone, and back on before the next.
             if (bothSides)
                 ::rlDisableBackfaceCulling();
+            // Depth writes off for this mesh alone, and back on before anything
+            // else: the next mesh, and the primitives, which rlgl batches and
+            // draws later, as the 3D mode ends.
+            if (!cmd.Material.DepthWrite)
+                ::rlDisableDepthMask();
             ::DrawMesh(rlModel->meshes[m], material, transform);
+            if (!cmd.Material.DepthWrite)
+                ::rlEnableDepthMask();
             if (bothSides)
                 ::rlEnableBackfaceCulling();
         }

@@ -307,6 +307,15 @@ struct PBRMaterial {
     // as authored. Set, it replaces a loaded model's own emission for this draw.
     Color Emission = Black;
     float EmissionStrength = 1.0f;
+    // Whether the draw writes its depth. Off, it is still depth-TESTED -- hidden
+    // by anything nearer already drawn -- but leaves no depth of its own, so
+    // whatever is drawn after it is tested against what lay behind it: for a
+    // see-through layer over a surface -- a decal, a tint, a glow -- that must
+    // not hide what is drawn later, and for several such layers at one height,
+    // which blend over each other instead of fighting for the same depth. A
+    // see-through layer's colour then depends on the order the layers are drawn
+    // in. On by default: an opaque surface writes its depth.
+    bool DepthWrite = true;
 };
 
 struct EnvironmentMap {
