@@ -109,11 +109,80 @@ void Application::InitSubsystems(const std::string& title, int width, int height
     if (m_appBackend) {
         BRITE::Backends::WindowOptions window;
         window.MultisampleCount = m_options.MultisampleCount;
+        window.Mode = m_options.Mode;
+        window.Resizable = m_options.Resizable;
         m_appBackend->Init(title, width, height, window);
         m_appBackend->SetTargetFPS(144);
+        m_windowMode = m_appBackend->GetWindowMode();
+        if (m_windowMode != m_options.Mode) {
+            spdlog::warn("Window: asked to open in another mode and the backend could not; it opened windowed");
+        }
     }
+    // Before the first frame, so the sizes are valid from OnStart on; with no
+    // window, the size the window would have had.
+    m_windowSize = {width, height};
+    ReadSizes();
+    m_drawSizeChanged = false;
 
     // 5. Initialize SoLoud removed
+}
+
+void Application::SetWindowMode(BRITE::Backends::WindowMode mode) {
+    m_modeRequested = true;
+    m_requestedMode = mode;
+}
+
+void Application::SetWindowSize(int width, int height) {
+    if (width <= 0 || height <= 0) {
+        spdlog::warn("Window: a size of {} x {} is no size, and is ignored", width, height);
+        return;
+    }
+    m_sizeRequested = true;
+    m_requestedSize = {width, height};
+}
+
+void Application::ApplyWindowRequests() {
+    if (!m_appBackend) {
+        // Nothing to change; the requests are dropped rather than kept for a
+        // window that will never exist.
+        m_modeRequested = false;
+        m_sizeRequested = false;
+        return;
+    }
+    using BRITE::Backends::WindowMode;
+    if (m_modeRequested) {
+        m_modeRequested = false;
+        if (!m_appBackend->SetWindowMode(m_requestedMode)) {
+            spdlog::warn("Window: the backend could not change the window's mode; it stays as it was");
+        }
+        m_windowMode = m_appBackend->GetWindowMode();
+    }
+    // A size is only a windowed one: while full screen it waits for windowed.
+    if (m_sizeRequested && m_windowMode == WindowMode::Windowed) {
+        m_sizeRequested = false;
+        if (!m_appBackend->SetWindowSize(m_requestedSize.Width, m_requestedSize.Height)) {
+            spdlog::warn("Window: the backend could not resize the window to {} x {}", m_requestedSize.Width,
+                         m_requestedSize.Height);
+        }
+    }
+}
+
+void Application::ReadSizes() {
+    if (m_appBackend) {
+        const PixelSize reported{m_appBackend->GetScreenWidth(), m_appBackend->GetScreenHeight()};
+        // Minimised, a window may report nothing; it keeps the size it had.
+        if (reported.Width > 0 && reported.Height > 0) {
+            m_windowSize = reported;
+        }
+    }
+    m_drawSize = m_useInternalResolution ? PixelSize{static_cast<int>(m_internalResolution.x),
+                                                     static_cast<int>(m_internalResolution.y)}
+                                         : m_windowSize;
+    // Against what the previous frame saw at ITS top, not against m_drawSize:
+    // SetInternalResolution changes m_drawSize during a frame, and a frame
+    // that compared against it would miss that change.
+    m_drawSizeChanged = !(m_drawSize == m_frameTopDrawSize);
+    m_frameTopDrawSize = m_drawSize;
 }
 
 void Application::ShutdownSubsystems() {
@@ -193,6 +262,13 @@ void Application::SetInternalResolution(int width, int height) {
         m_framebufferAlt = m_renderBackend->LoadRenderTexture(width, height);
     }
     m_useInternalResolution = true;
+    // The framebuffer the scenes draw into is replaced now, so the draw size
+    // is too, rather than at the top of the next frame.
+    const PixelSize drawn{width, height};
+    if (!(drawn == m_drawSize)) {
+        m_drawSize = drawn;
+        m_drawSizeChanged = true;
+    }
 }
 
 void Application::PushScene(std::shared_ptr<Scene> newScene) {
@@ -220,6 +296,11 @@ void Application::Run() {
     OnStart(); // Let the user game configure the initial scene
 
     while (m_running && (!m_appBackend || !m_appBackend->WindowShouldClose())) {
+        // The window first: whatever was asked of it last frame, then the
+        // sizes every phase of this frame reads.
+        ApplyWindowRequests();
+        ReadSizes();
+
         // Handle Scene Transitions
         for (auto& action : m_pendingActions) {
             if (action.type == SceneActionType::Push) {
@@ -275,6 +356,10 @@ void Application::Run() {
                     BRITE::InputManager::FlushFixed(*dispatcher);
                 }
             }
+
+            // The application's own tick: the input above is this tick's, and
+            // no scene has read it yet.
+            OnFixedTick(m_fixedDt);
 
             for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
                 auto& scene = *it;
@@ -370,8 +455,8 @@ void Application::Run() {
             screenPass.ClearColor = BRITE::Black; // BLACK
             screenPass.ShouldClear = true;
 
-            int screenWidth = m_appBackend->GetScreenWidth();
-            int screenHeight = m_appBackend->GetScreenHeight();
+            const int screenWidth = m_windowSize.Width;
+            const int screenHeight = m_windowSize.Height;
 
             float scale =
                 std::min((float)screenWidth / m_internalResolution.x, (float)screenHeight / m_internalResolution.y);

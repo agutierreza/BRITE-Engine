@@ -23,7 +23,8 @@ struct SceneAction {
 };
 
 // What an application settles before its window exists; the constructor
-// creates the window, so these cannot change afterwards.
+// creates the window with them. The window's mode and size can also be changed
+// afterwards (SetWindowMode, SetWindowSize); the rest cannot.
 struct ApplicationOptions {
     // Samples per pixel for multisample anti-aliasing; 1 is none. The window is
     // asked for a multisampled back buffer. An application rendering at an
@@ -32,6 +33,18 @@ struct ApplicationOptions {
     // cannot reach -- so that framebuffer is multisampled too, and resolved
     // before post-processing and the final blit read it.
     int MultisampleCount = 1;
+    // The mode the window opens in. Opened full screen, the constructor's width
+    // and height are the windowed size: the one it takes on leaving full screen.
+    BRITE::Backends::WindowMode Mode = BRITE::Backends::WindowMode::Windowed;
+    // Whether the person at the screen may resize the window by its frame.
+    bool Resizable = false;
+};
+
+// A size in pixels.
+struct PixelSize {
+    int Width = 0;
+    int Height = 0;
+    bool operator==(const PixelSize&) const = default;
 };
 
 class Application {
@@ -81,9 +94,67 @@ class Application {
         return m_tickFraction;
     }
 
+    // Draw the scenes into a framebuffer of this size, letterboxed into the
+    // window. It changes the draw size (below) at once, not at the next frame:
+    // the framebuffer is replaced now.
     void SetInternalResolution(int width, int height);
     BRITE::Vector2 GetInternalResolution() const {
         return m_internalResolution;
+    }
+
+    // The window, and what the scenes draw at.
+    //
+    // Both sizes are read ONCE PER FRAME, at the top of the frame, after any
+    // window change asked for has been applied and before any scene ticks or
+    // renders -- so every phase of a frame sees the same size, and the size a
+    // scene lays out by is the size its OnRender is drawn at. They are first
+    // read as the constructor creates the window, so they are valid in OnStart.
+    //
+    //   GetWindowSize  what the window draws into, in pixels. A window reported
+    //                  as nothing wide or high -- minimised -- keeps the size it
+    //                  had, so nothing laid out by it collapses to zero.
+    //   GetDrawSize    what the scenes draw into: the internal resolution when
+    //                  one is set, and otherwise the window's size. A scene
+    //                  sizing anything to the screen asks this.
+    //   DrawSizeChanged  whether the draw size this frame began with differs
+    //                  from the one the previous frame began with (for the first
+    //                  frame, from the size read at construction): the frame to
+    //                  lay out again in. SetInternalResolution, which changes the
+    //                  draw size at once, also sets it at once, for the rest of
+    //                  its frame -- and the next frame reports the change again.
+    //                  A change may be reported twice; it is never missed.
+    //
+    // With no window backend there is no window to read, and both are the
+    // width and height the constructor was given.
+    PixelSize GetWindowSize() const {
+        return m_windowSize;
+    }
+    PixelSize GetDrawSize() const {
+        return m_drawSize;
+    }
+    bool DrawSizeChanged() const {
+        return m_drawSizeChanged;
+    }
+
+    // Changing the window. Both are DEFERRED, like the scene stack: kept, and
+    // applied at the top of the next frame before the sizes above are read --
+    // so they are safe to call from any phase, and a frame never draws at a
+    // size its scenes did not see. The last of each asked before a frame wins.
+    //
+    //   SetWindowMode  windowed, or borderless full screen at the monitor's own
+    //                  resolution. A backend that cannot is left as it is, with
+    //                  a warning; GetWindowMode says what the window is in.
+    //   SetWindowSize  the windowed size. Applied at once when the window is
+    //                  windowed; while it is full screen, kept, and applied as
+    //                  it returns to windowed -- full screen's size belongs to
+    //                  the monitor. Applied in that order within one frame: the
+    //                  mode, then the size.
+    void SetWindowMode(BRITE::Backends::WindowMode mode);
+    void SetWindowSize(int width, int height);
+    // The mode the window is in, as of the top of this frame: a mode asked for
+    // during the frame is not reported until the frame that applies it.
+    BRITE::Backends::WindowMode GetWindowMode() const {
+        return m_windowMode;
     }
 
     // The scene stack. Each of these is DEFERRED: it is queued, and the queue is
@@ -140,9 +211,29 @@ class Application {
     // Override this to set the initial scene and load global assets
     virtual void OnStart() {}
 
+    // Override this for what the application itself does on a fixed tick,
+    // before any scene: input that belongs to the application rather than to
+    // a scene, such as a full-screen key, a screenshot key or a pause key.
+    //
+    // Called once per fixed tick, with the fixed timestep, AFTER that tick's
+    // input has been applied -- so the actions read here are the tick's, as a
+    // scene's are -- and BEFORE the scene stack is walked. So a key claimed here
+    // (InputManager::ClaimKey) is hidden from every scene's actions in the same
+    // tick, and a window or scene change asked for here is applied at the top
+    // of the next frame like any other. It runs whatever the scenes do: when a
+    // scene blocks the updates of those under it, and when the stack is empty.
+    // The default does nothing.
+    virtual void OnFixedTick(double dt) {
+        (void)dt;
+    }
+
   private:
     void InitSubsystems(const std::string& title, int width, int height);
     void ShutdownSubsystems();
+    // Applies the window changes asked for, then reads the sizes. Once per
+    // frame, at its top, and once as the window is created.
+    void ApplyWindowRequests();
+    void ReadSizes();
 
     std::string m_title;
     ApplicationOptions m_options;
@@ -179,6 +270,20 @@ class Application {
     BRITE::TextureHandle m_framebufferAlt = BRITE::NullTextureHandle;
     BRITE::Vector2 m_internalResolution = {0.0f, 0.0f};
     bool m_useInternalResolution = false;
+
+    // The window: what it is, and what has been asked of it since the last frame.
+    PixelSize m_windowSize;
+    PixelSize m_drawSize;
+    bool m_drawSizeChanged = false;
+    // The draw size as the last ReadSizes left it: what DrawSizeChanged compares with.
+    PixelSize m_frameTopDrawSize;
+    BRITE::Backends::WindowMode m_windowMode = BRITE::Backends::WindowMode::Windowed;
+    bool m_modeRequested = false;
+    BRITE::Backends::WindowMode m_requestedMode = BRITE::Backends::WindowMode::Windowed;
+    // A windowed size asked for and not yet applied: asked this frame, or kept
+    // while the window is full screen.
+    bool m_sizeRequested = false;
+    PixelSize m_requestedSize;
 
     std::vector<BRITE::ShaderHandle> m_postProcessShaders;
 };

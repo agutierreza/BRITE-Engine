@@ -279,7 +279,9 @@ add_executable(BRITETests tests/SceneFuzzTest.cpp tests/MeshDataTests.cpp tests/
                           tests/MultisampleTests.cpp tests/ApplicationLifetimeTests.cpp
                           tests/SceneStackTests.cpp
                           tests/GltfMaterialsTests.cpp
-                          tests/ProfilerLifetimeTests.cpp)
+                          tests/ProfilerLifetimeTests.cpp
+                          tests/WindowModeTests.cpp
+                          tests/FixedTickHookTests.cpp)
 target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
 if(WIN32)
     # ProfilerLifetimeTests finds its own profiler's port in the table of listening sockets.
