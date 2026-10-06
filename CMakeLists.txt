@@ -274,20 +274,36 @@ if(BRITE_ENABLE_SANITIZERS)
 endif()
 
 enable_testing()
-add_executable(BRITETests tests/SceneFuzzTest.cpp tests/MeshDataTests.cpp tests/InputManagerTests.cpp
-                          tests/TickFractionTests.cpp tests/ModelMaterialTests.cpp tests/ModelReadbackTests.cpp
-                          tests/MultisampleTests.cpp tests/ApplicationLifetimeTests.cpp
-                          tests/SceneStackTests.cpp
-                          tests/GltfMaterialsTests.cpp
-                          tests/ProfilerLifetimeTests.cpp
-                          tests/WindowModeTests.cpp
-                          tests/FixedTickHookTests.cpp
-                          tests/DepthWriteTests.cpp)
-target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
-if(WIN32)
-    # ProfilerLifetimeTests finds its own profiler's port in the table of listening sockets.
-    target_link_libraries(BRITETests PRIVATE iphlpapi)
-endif()
 
-include(GoogleTest)
-gtest_discover_tests(BRITETests)
+# BRITE's own suite is built and registered with ctest when BRITE is the project being configured, and not when another
+# project adds BRITE with add_subdirectory: that project's ctest is its own suite, and the engine's would otherwise
+# run inside it -- and be linked by its every build -- whatever the project was testing. BRITE_BUILD_TESTS turns the
+# suite on there too. Top level is read as CMAKE_SOURCE_DIR being this directory, which every CMake this file accepts
+# can say; PROJECT_IS_TOP_LEVEL says the same from 3.21 on.
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(BRITE_BUILD_TESTS_DEFAULT ON)
+else()
+    set(BRITE_BUILD_TESTS_DEFAULT OFF)
+endif()
+option(BRITE_BUILD_TESTS "Build BRITETests and register it with ctest (default: only when BRITE is the top-level project)"
+       ${BRITE_BUILD_TESTS_DEFAULT})
+
+if(BRITE_BUILD_TESTS)
+    add_executable(BRITETests tests/SceneFuzzTest.cpp tests/MeshDataTests.cpp tests/InputManagerTests.cpp
+                              tests/TickFractionTests.cpp tests/ModelMaterialTests.cpp tests/ModelReadbackTests.cpp
+                              tests/MultisampleTests.cpp tests/ApplicationLifetimeTests.cpp
+                              tests/SceneStackTests.cpp
+                              tests/GltfMaterialsTests.cpp
+                              tests/ProfilerLifetimeTests.cpp
+                              tests/WindowModeTests.cpp
+                              tests/FixedTickHookTests.cpp
+                              tests/DepthWriteTests.cpp)
+    target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
+    if(WIN32)
+        # ProfilerLifetimeTests finds its own profiler's port in the table of listening sockets.
+        target_link_libraries(BRITETests PRIVATE iphlpapi)
+    endif()
+
+    include(GoogleTest)
+    gtest_discover_tests(BRITETests)
+endif()
