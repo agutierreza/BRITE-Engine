@@ -6,7 +6,6 @@
 #include "Systems/PhysicsSystem.hpp"
 #include <algorithm>
 #include <cassert>
-#include <physfs.h>
 #include <spdlog/spdlog.h>
 
 namespace brite {
@@ -38,32 +37,8 @@ void Application::InitSubsystems(const std::string& title, int width, int height
         spdlog::info("Profiler: it ran for an earlier Application in this process and does not run again");
     }
 
-    // 2. Initialize PhysicsFS
-    if (!PHYSFS_init(m_appName.c_str())) {
-        spdlog::critical("PHYSFS: Failed to initialize! Error: {}", PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
-    }
-
-    const char* prefDir = PHYSFS_getPrefDir(m_orgName.c_str(), m_appName.c_str());
-    if (prefDir) {
-        if (PHYSFS_setWriteDir(prefDir) == 0) {
-            spdlog::error("PHYSFS: Failed to set write dir to {}. Error: {}", prefDir,
-                          PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
-        } else {
-            spdlog::info("PHYSFS: Write dir set to {}", prefDir);
-        }
-    } else {
-        spdlog::error("PHYSFS: Failed to get pref dir for {} / {}", m_orgName, m_appName);
-    }
-
-    if (PHYSFS_mount("assets.pak", NULL, 1)) {
-        spdlog::info("PHYSFS: Mounted assets.pak");
-    } else if (PHYSFS_mount("build/assets.pak", NULL, 1)) {
-        spdlog::info("PHYSFS: Mounted build/assets.pak");
-    } else if (PHYSFS_mount("assets", "assets", 1)) {
-        spdlog::info("PHYSFS: Mounted local assets folder to /assets");
-    } else {
-        spdlog::warn("PHYSFS: Failed to mount any assets!");
-    }
+    // 2. PhysicsFS, the application's files and a saved game state are the persistence module's (SaveStore),
+    // owned by an application that wants them: the framework itself reads and writes no file.
 
     if (m_inputBackend) {
         BRITE::InputManager::Initialize(m_inputBackend.get());
@@ -180,7 +155,6 @@ void Application::ShutdownSubsystems() {
     if (m_inputBackend && BRITE::InputManager::Backend() == m_inputBackend.get()) {
         BRITE::InputManager::Initialize(nullptr);
     }
-    PHYSFS_deinit();
     // Flushed, never shut down. The logger belongs to the process, not to one
     // application: spdlog::shutdown() dropped the default logger for good, and
     // the next Application in the same process logged through nothing as it
@@ -453,68 +427,6 @@ void Application::Run() {
 
             m_renderBackend->SubmitRenderPass(screenPass);
         }
-    }
-}
-
-bool Application::SaveState(const std::string& filename) {
-    try {
-        std::string serialized = m_gameState.dump(4);
-
-        PHYSFS_File* file = PHYSFS_openWrite(filename.c_str());
-        if (!file) {
-            spdlog::error("PHYSFS: Failed to open {} for writing. Error: {}", filename,
-                          PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
-            return false;
-        }
-
-        PHYSFS_sint64 written = PHYSFS_writeBytes(file, serialized.c_str(), serialized.length());
-        PHYSFS_close(file);
-
-        if (written != serialized.length()) {
-            spdlog::error("PHYSFS: Failed to write all bytes to {}", filename);
-            return false;
-        }
-
-        spdlog::info("Saved state to {}", filename);
-        return true;
-    } catch (const std::exception& e) {
-        spdlog::error("Exception saving state: {}", e.what());
-        return false;
-    }
-}
-
-bool Application::LoadState(const std::string& filename) {
-    if (!PHYSFS_exists(filename.c_str())) {
-        spdlog::warn("Save file {} does not exist", filename);
-        return false;
-    }
-
-    PHYSFS_File* file = PHYSFS_openRead(filename.c_str());
-    if (!file) {
-        spdlog::error("PHYSFS: Failed to open {} for reading. Error: {}", filename,
-                      PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
-        return false;
-    }
-
-    PHYSFS_sint64 size = PHYSFS_fileLength(file);
-    std::string buffer;
-    buffer.resize(size);
-
-    PHYSFS_sint64 readBytes = PHYSFS_readBytes(file, buffer.data(), size);
-    PHYSFS_close(file);
-
-    if (readBytes != size) {
-        spdlog::error("PHYSFS: Failed to read all bytes from {}", filename);
-        return false;
-    }
-
-    try {
-        m_gameState = nlohmann::json::parse(buffer);
-        spdlog::info("Loaded state from {}", filename);
-        return true;
-    } catch (const std::exception& e) {
-        spdlog::error("Exception loading state: {}", e.what());
-        return false;
     }
 }
 

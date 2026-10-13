@@ -14,7 +14,10 @@ class FuzzScene : public Scene {
     int m_frameCount = 0;
 
   public:
-    FuzzScene(Application* app) : Scene(app) {}
+    // Every scene here is given a Box2D world, as every scene was until physics became a scene's choice.
+    FuzzScene(Application* app) : Scene(app) {
+        GetPhysicsSystem().Init(m_registry, std::make_unique<Box2DBackend>());
+    }
 
     void OnInstantiation() override {
         auto entity = m_registry.create();

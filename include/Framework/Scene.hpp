@@ -1,16 +1,11 @@
 #pragma once
 #include <Backends/RenderPass.hpp>
+#include <Framework/Application.hpp>
 #include <Systems/PhysicsSystem.hpp>
 #include <entt/entt.hpp>
 #include <memory>
-#include <raylib.h>
 #include <string>
 #include <vector>
-
-namespace SoLoud {
-class Wav;
-class WavStream;
-} // namespace SoLoud
 
 namespace brite {
 namespace framework {
@@ -39,6 +34,8 @@ class Scene {
     entt::registry& GetRegistry() {
         return m_registry;
     }
+    // The scene's physics. It has none until it is given a backend (PhysicsSystem::Init), and then the framework
+    // steps that backend in phases 2 and 4 of every fixed tick.
     BRITE::PhysicsSystem& GetPhysicsSystem() {
         return m_physicsSystem;
     }
@@ -49,18 +46,8 @@ class Scene {
   protected:
     Application* m_app;
     entt::registry m_registry;
+    // After the registry: destroyed before it, and after the destructor has cleared it.
     BRITE::PhysicsSystem m_physicsSystem;
-
-    // Automated Asset Tracking
-    std::vector<Texture2D> m_trackedTextures;
-    std::vector<Font> m_trackedFonts;
-    std::vector<std::unique_ptr<SoLoud::Wav>> m_trackedWavs;
-    std::vector<std::unique_ptr<SoLoud::WavStream>> m_trackedWavStreams;
-
-    Texture2D LoadSceneTexture(const std::string& path);
-    Font LoadSceneFont(const std::string& path);
-    SoLoud::Wav* LoadSceneWav(const std::string& path);
-    SoLoud::WavStream* LoadSceneWavStream(const std::string& path);
 };
 
 } // namespace framework

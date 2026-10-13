@@ -194,6 +194,9 @@ add_library(${PROJECT_NAME} STATIC
     modules/raylib/src/Backends/Raylib/RaylibApplicationBackend.cpp
     modules/raylib/src/Backends/Raylib/RaylibInputBackend.cpp
     modules/raylib/src/Backends/Raylib/RaylibRenderBackend.cpp
+    modules/raylib/src/Backends/Raylib/RaylibSceneAssets.cpp
+    modules/audio/src/Audio/SceneSounds.cpp
+    modules/persistence/src/Persistence/SaveStore.cpp
 )
 
 # The public headers: the core's in include/, and each backend's in its module's own include root, each keeping
@@ -204,6 +207,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC
     modules/raylib/include
     modules/box2d/include
     modules/box3d/include
+    modules/audio/include
+    modules/persistence/include
     ${physfs_SOURCE_DIR}/src
     ${rlimgui_SOURCE_DIR}
 )
@@ -300,7 +305,11 @@ if(BRITE_BUILD_TESTS)
                               tests/ProfilerLifetimeTests.cpp
                               tests/WindowModeTests.cpp
                               tests/FixedTickHookTests.cpp
-                              tests/DepthWriteTests.cpp)
+                              tests/DepthWriteTests.cpp
+                              tests/ScenePhysicsTests.cpp
+                              tests/SaveStoreTests.cpp
+                              tests/SceneSoundsTests.cpp
+                              tests/RaylibSceneAssetsTests.cpp)
     target_link_libraries(BRITETests PRIVATE ${PROJECT_NAME} gtest_main)
     if(WIN32)
         # ProfilerLifetimeTests finds its own profiler's port in the table of listening sockets.

@@ -4,7 +4,6 @@
 #include "Backends/IRenderBackend.hpp"
 #include "Math/BriteMath.hpp"
 #include <memory>
-#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
@@ -12,8 +11,6 @@ namespace brite {
 namespace framework {
 
 class Scene;
-
-enum class PhysicsEngineType { Box2D, Box3D };
 
 enum class SceneActionType { Push, Pop, Change };
 
@@ -178,11 +175,14 @@ class Application {
     void PopScene();
     void ChangeScene(std::shared_ptr<Scene> newScene);
 
-    nlohmann::json& GetGameState() {
-        return m_gameState;
+    // The organisation and application names the application was made with: what a module that keeps the
+    // application's files under the user's preference folder (the persistence module's SaveStore) is handed.
+    const std::string& GetOrgName() const {
+        return m_orgName;
     }
-    bool SaveState(const std::string& filename);
-    bool LoadState(const std::string& filename);
+    const std::string& GetAppName() const {
+        return m_appName;
+    }
 
     // TODO: We need an architecture to extract all parameters from existing and future shaders
     // dynamically, rather than relying on hardcoded GetShaderLocation/SetShaderValue calls in client code.
@@ -197,14 +197,6 @@ class Application {
 
     BRITE::Backends::IRenderBackend* GetRenderBackend() {
         return m_renderBackend.get();
-    }
-
-    void SetPhysicsEngine(PhysicsEngineType type) {
-        m_physicsEngine = type;
-    }
-
-    PhysicsEngineType GetPhysicsEngine() const {
-        return m_physicsEngine;
     }
 
   protected:
@@ -257,13 +249,9 @@ class Application {
     std::vector<std::shared_ptr<Scene>> m_sceneStack;
     std::vector<SceneAction> m_pendingActions;
 
-    nlohmann::json m_gameState;
-
     std::unique_ptr<BRITE::Backends::IApplicationBackend> m_appBackend;
     std::unique_ptr<BRITE::Backends::IInputBackend> m_inputBackend;
     std::unique_ptr<BRITE::Backends::IRenderBackend> m_renderBackend;
-
-    PhysicsEngineType m_physicsEngine = PhysicsEngineType::Box2D;
 
     // Internal Resolution Management
     BRITE::TextureHandle m_framebuffer = BRITE::NullTextureHandle;
