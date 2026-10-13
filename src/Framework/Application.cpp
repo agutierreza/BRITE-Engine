@@ -12,40 +12,6 @@
 namespace brite {
 namespace framework {
 
-// --- PhysFS Raylib Callbacks ---
-static unsigned char* LoadFileDataCustom(const char* fileName, int* dataSize) {
-    if (!PHYSFS_exists(fileName)) {
-        spdlog::error("PHYSFS: File not found: {}", fileName);
-        return nullptr;
-    }
-    PHYSFS_File* file = PHYSFS_openRead(fileName);
-    if (!file)
-        return nullptr;
-    PHYSFS_sint64 size = PHYSFS_fileLength(file);
-    unsigned char* data = (unsigned char*)MemAlloc(size);
-    PHYSFS_readBytes(file, data, size);
-    PHYSFS_close(file);
-    if (dataSize)
-        *dataSize = (int)size;
-    return data;
-}
-
-static char* LoadFileTextCustom(const char* fileName) {
-    if (!PHYSFS_exists(fileName)) {
-        spdlog::error("PHYSFS: File not found: {}", fileName);
-        return nullptr;
-    }
-    PHYSFS_File* file = PHYSFS_openRead(fileName);
-    if (!file)
-        return nullptr;
-    PHYSFS_sint64 size = PHYSFS_fileLength(file);
-    char* text = (char*)MemAlloc(size + 1);
-    PHYSFS_readBytes(file, text, size);
-    text[size] = '\0';
-    PHYSFS_close(file);
-    return text;
-}
-
 Application::Application(std::unique_ptr<BRITE::Backends::IApplicationBackend> appBackend,
                          std::unique_ptr<BRITE::Backends::IInputBackend> inputBackend,
                          std::unique_ptr<BRITE::Backends::IRenderBackend> renderBackend, const std::string& title,
@@ -98,8 +64,6 @@ void Application::InitSubsystems(const std::string& title, int width, int height
     } else {
         spdlog::warn("PHYSFS: Failed to mount any assets!");
     }
-
-    // 3. (Removed Raylib file callbacks through PhysicsFS; should be handled by backend or manually if needed)
 
     if (m_inputBackend) {
         BRITE::InputManager::Initialize(m_inputBackend.get());
@@ -175,9 +139,9 @@ void Application::ReadSizes() {
             m_windowSize = reported;
         }
     }
-    m_drawSize = m_useInternalResolution ? PixelSize{static_cast<int>(m_internalResolution.x),
-                                                     static_cast<int>(m_internalResolution.y)}
-                                         : m_windowSize;
+    m_drawSize = m_useInternalResolution
+                     ? PixelSize{static_cast<int>(m_internalResolution.x), static_cast<int>(m_internalResolution.y)}
+                     : m_windowSize;
     // Against what the previous frame saw at ITS top, not against m_drawSize:
     // SetInternalResolution changes m_drawSize during a frame, and a frame
     // that compared against it would miss that change.

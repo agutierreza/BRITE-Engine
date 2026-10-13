@@ -1,14 +1,20 @@
 #include "Box3DBackend.hpp"
+#include "../Core/Profiler.hpp"
 #include <ECS/Components.hpp>
 #include <ECS/Events.hpp>
 #include <box3d/collision.h>
 #include <box3d/math_functions.h>
-#include <raymath.h>
-#include "../Core/Profiler.hpp"
+#include <numbers>
 
 namespace BRITE {
 
 constexpr float PPM = 30.0f;
+
+// Joint angles are given in degrees and Box3D takes radians. The float nearest pi is the same value raylib's PI macro
+// names (3.14159265358979323846f, which this file once took from raymath.h), so the conversion is unchanged by not
+// depending on raylib for it.
+static_assert(std::numbers::pi_v<float> == 3.14159265358979323846f, "the float pi raylib's PI macro names");
+constexpr float DEGREES_TO_RADIANS = std::numbers::pi_v<float> / 180.0f;
 
 Box3DBackend::Box3DBackend() {
     b3WorldDef worldDef = b3DefaultWorldDef();
@@ -153,10 +159,10 @@ void Box3DBackend::PreStep(entt::registry& registry) {
                             jointDef.base.localFrameB.p = {joint.LocalAnchorB.x / PPM, joint.LocalAnchorB.y / PPM,
                                                            joint.LocalAnchorB.z / PPM};
 
-                            jointDef.targetAngle = joint.ReferenceAngle * (PI / 180.0f);
+                            jointDef.targetAngle = joint.ReferenceAngle * DEGREES_TO_RADIANS;
                             jointDef.enableLimit = joint.EnableLimit;
-                            jointDef.lowerAngle = joint.LowerAngle * (PI / 180.0f);
-                            jointDef.upperAngle = joint.UpperAngle * (PI / 180.0f);
+                            jointDef.lowerAngle = joint.LowerAngle * DEGREES_TO_RADIANS;
+                            jointDef.upperAngle = joint.UpperAngle * DEGREES_TO_RADIANS;
                             jointDef.base.collideConnected = joint.CollideConnected;
                             joint.RuntimeJoint = ToHandle(b3CreateRevoluteJoint(m_worldId, &jointDef));
                         }

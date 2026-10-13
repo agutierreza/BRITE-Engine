@@ -200,7 +200,6 @@ add_library(${PROJECT_NAME} STATIC
 target_include_directories(${PROJECT_NAME} PUBLIC 
     include
     src
-    external/tweeny/include
     ${physfs_SOURCE_DIR}/src
     ${rlimgui_SOURCE_DIR}
 )
