@@ -182,14 +182,6 @@ if(BRITE_BUILD_AUDIO)
     target_include_directories(soloud PUBLIC ${soloud_SOURCE_DIR}/include)
 endif()
 
-# GoogleTest
-FetchContent_Declare(
-    googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
-)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
-
 # ---------------------------------------------------------
 # CMake Macros
 # ---------------------------------------------------------
@@ -384,6 +376,16 @@ option(BRITE_BUILD_TESTS "Build BRITETests and register it with ctest (default: 
        ${BRITE_BUILD_TESTS_DEFAULT})
 
 if(BRITE_BUILD_TESTS)
+    # GoogleTest: fetched for BRITE's own suite and nothing else. A project that adds BRITE and has tests of its own
+    # declares GoogleTest itself; were it to declare the same before adding BRITE, FetchContent's first declaration
+    # would be the one both use.
+    FetchContent_Declare(
+        googletest
+        URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz
+    )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
     # The core's cases always, and each module's only when the module is built.
     set(BRITE_TEST_SOURCES
         tests/InputManagerTests.cpp
