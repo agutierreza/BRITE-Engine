@@ -1,7 +1,7 @@
-#include "RenderSystem.hpp"
-#include "../ECS/Components.hpp"
+#include "Systems/RenderSystem.hpp"
+#include "Core/Profiler.hpp"
+#include "ECS/Components.hpp"
 #include <cmath>
-#include "../Core/Profiler.hpp"
 namespace BRITE {
 
 void RenderSystem::Update(entt::registry& registry, RenderPass& pass, Camera2D* camera, Camera3D* camera3d) {

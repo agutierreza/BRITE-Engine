@@ -102,7 +102,7 @@ FetchContent_Declare(
 )
 set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
 # The profiler's lifetime is the framework's: it starts and stops with the Application
-# (src/Core/Profiler.hpp), so its threads end inside main() rather than during static
+# (include/Core/Profiler.hpp), so its threads end inside main() rather than during static
 # destruction, where a runtime that skips thread_local destructors for threads ending in
 # exit() leaves Tracy's queue writing into a dead thread's storage.
 set(TRACY_DELAYED_INIT ON CACHE BOOL "" FORCE)
@@ -184,22 +184,26 @@ add_library(${PROJECT_NAME} STATIC
     src/Core/Profiler.cpp
     src/Systems/RenderSystem.cpp
     src/Systems/PhysicsSystem.cpp
-    src/Systems/Box2DBackend.cpp
-    src/Systems/Box3DBackend.cpp
-    src/Systems/AoISystem.cpp
     src/Framework/Application.cpp
     src/Framework/Scene.cpp
     src/Backends/MeshData.cpp
-    src/Backends/GltfMaterials.cpp
-    src/Backends/Raylib/RaylibApplicationBackend.cpp
-    src/Backends/Raylib/RaylibInputBackend.cpp
-    src/Backends/Raylib/RaylibRenderBackend.cpp
+    modules/box2d/src/Systems/Box2DBackend.cpp
+    modules/box2d/src/Systems/AoISystem.cpp
+    modules/box3d/src/Systems/Box3DBackend.cpp
+    modules/raylib/src/Backends/GltfMaterials.cpp
+    modules/raylib/src/Backends/Raylib/RaylibApplicationBackend.cpp
+    modules/raylib/src/Backends/Raylib/RaylibInputBackend.cpp
+    modules/raylib/src/Backends/Raylib/RaylibRenderBackend.cpp
 )
 
-# Include external header-only libraries and our own src
-target_include_directories(${PROJECT_NAME} PUBLIC 
+# The public headers: the core's in include/, and each backend's in its module's own include root, each keeping
+# the path a consumer writes (<Core/InputManager.hpp>, <Systems/Box2DBackend.hpp>, <Backends/Raylib/...>). src/ holds
+# only sources and is on no one's include path.
+target_include_directories(${PROJECT_NAME} PUBLIC
     include
-    src
+    modules/raylib/include
+    modules/box2d/include
+    modules/box3d/include
     ${physfs_SOURCE_DIR}/src
     ${rlimgui_SOURCE_DIR}
 )
@@ -211,7 +215,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 # build after editing them reconfigure on its own rather than link a stale copy.
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.vs" BRITE_PBR_VS)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.fs" BRITE_PBR_FS)
-configure_file(src/Backends/Raylib/PbrShaderSource.hpp.in
+configure_file(modules/raylib/src/Backends/Raylib/PbrShaderSource.hpp.in
                "${CMAKE_CURRENT_BINARY_DIR}/generated/Backends/Raylib/PbrShaderSource.hpp" @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.vs"

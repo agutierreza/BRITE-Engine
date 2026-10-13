@@ -1,9 +1,9 @@
 #include "Framework/Application.hpp"
 #include "Framework/Scene.hpp"
 
-#include "../Core/InputManager.hpp"
-#include "../Core/Profiler.hpp"
-#include "../Systems/PhysicsSystem.hpp"
+#include "Core/InputManager.hpp"
+#include "Core/Profiler.hpp"
+#include "Systems/PhysicsSystem.hpp"
 #include <algorithm>
 #include <cassert>
 #include <physfs.h>

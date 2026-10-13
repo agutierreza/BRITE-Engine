@@ -1,6 +1,6 @@
-#include "PhysicsSystem.hpp"
-#include "Box2DBackend.hpp"
-#include "Box3DBackend.hpp"
+#include "Systems/PhysicsSystem.hpp"
+#include "Systems/Box2DBackend.hpp"
+#include "Systems/Box3DBackend.hpp"
 
 namespace BRITE {
 

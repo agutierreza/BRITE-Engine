@@ -1,9 +1,9 @@
-#include "Box2DBackend.hpp"
+#include "Systems/Box2DBackend.hpp"
+#include "Core/Profiler.hpp"
 #include <ECS/Components.hpp>
 #include <ECS/Events.hpp>
 #include <box2d/math_functions.h>
 #include <cmath>
-#include "../Core/Profiler.hpp"
 
 namespace BRITE {
 

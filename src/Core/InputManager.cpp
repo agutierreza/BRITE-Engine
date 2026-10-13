@@ -1,4 +1,4 @@
-#include "InputManager.hpp"
+#include "Core/InputManager.hpp"
 
 namespace BRITE {
 
