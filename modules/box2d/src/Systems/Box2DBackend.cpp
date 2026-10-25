@@ -70,6 +70,7 @@ void Box2DBackend::PreStep(entt::registry& registry) {
                     shapeDef.friction = box.Material->Friction;
                     shapeDef.restitution = box.Material->Restitution;
                     shapeDef.isSensor = box.IsSensor;
+                    shapeDef.enableHitEvents = true; // Box2D reports a hit only for a shape that asks; see Step
 
                     b2Polygon poly = b2MakeOffsetBox(box.Size.x / 2.0f / PPM, box.Size.y / 2.0f / PPM,
                                                      {box.Offset.x / PPM, box.Offset.y / PPM}, 0.0f);
@@ -84,6 +85,7 @@ void Box2DBackend::PreStep(entt::registry& registry) {
                     shapeDef.friction = circle.Material->Friction;
                     shapeDef.restitution = circle.Material->Restitution;
                     shapeDef.isSensor = circle.IsSensor;
+                    shapeDef.enableHitEvents = true;
 
                     b2Circle circ = {{circle.Offset.x / PPM, circle.Offset.y / PPM}, circle.Radius / PPM};
                     circle.RuntimeShape = ToHandle(b2CreateCircleShape(GetB2Body(rb.RuntimeBody), &shapeDef, &circ));
