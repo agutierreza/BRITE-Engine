@@ -4,6 +4,12 @@ if(POLICY CMP0135)
 endif()
 project(BRITEEngine C CXX)
 
+# raylib's bundled GLFW needs Objective-C for its Cocoa backend on macOS; enabled here, once,
+# up front, so it doesn't surface as a confusing configure error deep inside FetchContent.
+if(APPLE)
+    enable_language(OBJC)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
