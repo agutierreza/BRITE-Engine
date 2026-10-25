@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <raylib.h>
 #include <raymath.h>
 #include <rlgl.h>
@@ -96,6 +94,17 @@ void ApplySampling(::Texture2D& texture, const TextureSampling& sampling) {
     const int wrap = sampling.Wrap == SamplingWrap::Clamp ? RL_TEXTURE_WRAP_CLAMP : RL_TEXTURE_WRAP_REPEAT;
     ::rlTextureParameters(texture.id, RL_TEXTURE_WRAP_S, wrap);
     ::rlTextureParameters(texture.id, RL_TEXTURE_WRAP_T, wrap);
+}
+
+// A mesh's material slot, read the same way raylib's own drawing code reads
+// it, but checked against materialCount first: a loader bug or a hand-edited
+// model file could otherwise send an out-of-range index straight into the
+// materials array. Falls back to slot 0, raylib's own default material.
+const ::Material& MeshMaterial(const ::Model& model, int meshIndex) {
+    const int slot = model.meshMaterial[meshIndex];
+    if (slot < 0 || slot >= model.materialCount)
+        return model.materials[0];
+    return model.materials[slot];
 }
 } // namespace
 
@@ -260,7 +269,7 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         // textures replace the model's own for this draw only, and a slot the
         // command leaves empty keeps what the model brought.
         for (int m = 0; m < rlModel->meshCount; ++m) {
-            const ::Material& own = rlModel->materials[rlModel->meshMaterial[m]];
+            const ::Material& own = MeshMaterial(*rlModel, m);
             ::MaterialMap maps[MATERIAL_MAPS_PER_MATERIAL];
             std::memcpy(maps, own.maps, sizeof(maps));
             ::Material material = own;
@@ -871,9 +880,16 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
                                        mesh.vertexCount * 4, 0);
         }
 
-        std::ifstream file(fileName, std::ios::binary);
-        const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
-                                               std::istreambuf_iterator<char>());
+        // Read through raylib's own file-loading hook rather than a second,
+        // independent OS file handle: a caller who sandboxes raylib's reads
+        // (SetLoadFileDataCallback) then sandboxes this re-read too, instead
+        // of it quietly reaching the real filesystem on its own.
+        std::vector<unsigned char> bytes;
+        int fileSize = 0;
+        if (unsigned char* fileData = ::LoadFileData(fileName, &fileSize)) {
+            bytes.assign(fileData, fileData + fileSize);
+            ::UnloadFileData(fileData);
+        }
         std::vector<BRITE::GltfMaterialInfo> materials;
         if (!BRITE::ReadGltfMaterials(bytes, materials)) {
             spdlog::warn("BRITE: {}: its materials could not be read; drawn with their base colours alone", fileName);
@@ -1031,7 +1047,7 @@ bool RaylibRenderBackend::ReadModelMeshes(BRITE::ModelHandle model, std::vector<
         // The draw multiplies the material's colour by the vertex colour; the
         // read-back folds that product into the vertex colour, so a plain white
         // material draws it the same.
-        const ::Color base = rlModel->materials[rlModel->meshMaterial[m]].maps[MATERIAL_MAP_DIFFUSE].color;
+        const ::Color base = MeshMaterial(*rlModel, m).maps[MATERIAL_MAP_DIFFUSE].color;
         out.Colors.resize(vertexCount);
         for (std::size_t i = 0; i < vertexCount; ++i) {
             const unsigned char* vertex = mesh.colors != nullptr ? &mesh.colors[i * 4] : nullptr;
