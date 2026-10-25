@@ -1,5 +1,7 @@
 #include <Persistence/SaveStore.hpp>
 
+#include <memory>
+
 #include <physfs.h>
 #include <spdlog/spdlog.h>
 
@@ -97,20 +99,27 @@ bool SaveStore::LoadState(const std::string& filename) {
                       PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
         return false;
     }
+    // Closed on every path below, including one that throws while reading or parsing.
+    const std::unique_ptr<PHYSFS_File, void (*)(PHYSFS_File*)> fileGuard(file, [](PHYSFS_File* f) {
+        PHYSFS_close(f);
+    });
 
-    PHYSFS_sint64 size = PHYSFS_fileLength(file);
-    std::string buffer;
-    buffer.resize(size);
-
-    PHYSFS_sint64 readBytes = PHYSFS_readBytes(file, buffer.data(), size);
-    PHYSFS_close(file);
-
-    if (readBytes != size) {
-        spdlog::error("PHYSFS: Failed to read all bytes from {}", filename);
+    const PHYSFS_sint64 size = PHYSFS_fileLength(file);
+    if (size < 0) {
+        spdlog::error("PHYSFS: Could not determine the length of {}", filename);
         return false;
     }
 
     try {
+        std::string buffer;
+        buffer.resize(static_cast<std::size_t>(size));
+
+        const PHYSFS_sint64 readBytes = PHYSFS_readBytes(file, buffer.data(), size);
+        if (readBytes != size) {
+            spdlog::error("PHYSFS: Failed to read all bytes from {}", filename);
+            return false;
+        }
+
         m_gameState = nlohmann::json::parse(buffer);
         spdlog::info("Loaded state from {}", filename);
         return true;
