@@ -394,6 +394,8 @@ if(BRITE_BUILD_TESTS)
         tests/SceneStackTests.cpp
         tests/FixedTickHookTests.cpp
         tests/ScenePhysicsTests.cpp
+        tests/PhysicsSystemTests.cpp
+        tests/RenderSystemTests.cpp
         tests/ModuleBoundaryTests.cpp
     )
     if(BRITE_ENABLE_PROFILER)
@@ -410,6 +412,13 @@ if(BRITE_BUILD_TESTS)
             tests/DepthWriteTests.cpp
             tests/RaylibSceneAssetsTests.cpp
         )
+    endif()
+    if(BRITE_BUILD_BOX2D)
+        # The backend and the area of interest, each driven on a registry with no window or application.
+        list(APPEND BRITE_TEST_SOURCES tests/Box2DBackendTests.cpp tests/AoISystemTests.cpp)
+    endif()
+    if(BRITE_BUILD_BOX3D)
+        list(APPEND BRITE_TEST_SOURCES tests/Box3DBackendTests.cpp)
     endif()
     if(BRITE_BUILD_RAYLIB AND BRITE_BUILD_BOX2D)
         # Scenes on raylib's window, swapped as fast as they tick, each stepping a Box2D world.

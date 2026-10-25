@@ -16,6 +16,15 @@ constexpr float PPM = 30.0f;
 static_assert(std::numbers::pi_v<float> == 3.14159265358979323846f, "the float pi raylib's PI macro names");
 constexpr float DEGREES_TO_RADIANS = std::numbers::pi_v<float> / 180.0f;
 
+// Box3D hinges a revolute joint about the z of its local frames, so a hinge about any other axis is made by turning the
+// frames. A joint with no axis -- the zero vector -- hinges about z, the default.
+constexpr b3Vec3 HingeDefaultAxis = {0.0f, 0.0f, 1.0f};
+
+static b3Vec3 HingeAxis(const Vector3& axis) {
+    const b3Vec3 v = {axis.x, axis.y, axis.z};
+    return b3Length(v) > 1e-6f ? b3Normalize(v) : HingeDefaultAxis;
+}
+
 Box3DBackend::Box3DBackend() {
     b3WorldDef worldDef = b3DefaultWorldDef();
     worldDef.gravity.x = 0.0f;
@@ -128,13 +137,7 @@ void Box3DBackend::PreStep(entt::registry& registry) {
                             if (joint.EnableSpring) {
                                 jointDef.enableSpring = true;
                                 jointDef.hertz = joint.Hertz;
-                                // Box3D might not have dampingRatio directly in b3DistanceJointDef? Let's check... if
-                                // it fails, I'll fix it. I think it does. Wait, let me just assume it might have
-                                // dampingRatio or skip it. It usually has `lowerSpringForce` and `upperSpringForce`
-                                // instead of dampingRatio for distance joints in v3? Wait, earlier I saw
-                                // `lowerSpringForce`, `upperSpringForce`, `hertz` but no dampingRatio? Actually let me
-                                // just check the output from before. output was `lowerSpringForce`, `upperSpringForce`,
-                                // `hertz`. No `dampingRatio`. Let me skip damping ratio.
+                                jointDef.dampingRatio = joint.DampingRatio;
                             }
                             joint.RuntimeJoint = ToHandle(b3CreateDistanceJoint(m_worldId, &jointDef));
                         }
@@ -158,6 +161,14 @@ void Box3DBackend::PreStep(entt::registry& registry) {
                             jointDef.base.localFrameB = b3Transform_identity;
                             jointDef.base.localFrameB.p = {joint.LocalAnchorB.x / PPM, joint.LocalAnchorB.y / PPM,
                                                            joint.LocalAnchorB.z / PPM};
+
+                            // Each frame is turned to put its z, which Box3D hinges about, on the joint's axis.
+                            const b3Vec3 axisA = HingeAxis(joint.Axis);
+                            const b3Vec3 axisB = b3Normalize(
+                                b3InvRotateVector(b3Body_GetRotation(jointDef.base.bodyIdB),
+                                                  b3RotateVector(b3Body_GetRotation(jointDef.base.bodyIdA), axisA)));
+                            jointDef.base.localFrameA.q = b3ComputeQuatBetweenUnitVectors(HingeDefaultAxis, axisA);
+                            jointDef.base.localFrameB.q = b3ComputeQuatBetweenUnitVectors(HingeDefaultAxis, axisB);
 
                             jointDef.targetAngle = joint.ReferenceAngle * DEGREES_TO_RADIANS;
                             jointDef.enableLimit = joint.EnableLimit;
