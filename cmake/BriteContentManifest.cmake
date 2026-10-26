@@ -17,6 +17,10 @@
 # two paths that are one file ignoring case, or a listed file that is not there stops the build: a manifest never
 # names what was not shipped.
 
+# A script run with -P sets no policies of its own: without this, a CMake before 4 runs it with the OLD behaviour of
+# every policy, and `if(... IN_LIST ...)` (CMP0057) is "unknown arguments". The engine's own minimum.
+cmake_minimum_required(VERSION 3.20)
+
 foreach(required OUTPUT ROOT APP LISTS_FILE)
     if(NOT DEFINED ${required})
         message(FATAL_ERROR "BriteContentManifest.cmake: -D${required}=... is required")
