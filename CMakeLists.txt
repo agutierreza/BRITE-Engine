@@ -32,6 +32,7 @@ option(BRITE_BUILD_BOX2D "Build the Box2D physics backend and the area-of-intere
 option(BRITE_BUILD_BOX3D "Build the Box3D physics backend" ON)
 option(BRITE_BUILD_AUDIO "Build the audio module: SoLoud, and the sounds a scene keeps" ON)
 option(BRITE_BUILD_PERSISTENCE "Build the persistence module: PhysicsFS, packed assets and a saved game state" ON)
+option(BRITE_BUILD_CONTENT "Build the content module: shipped files named once, read through one root, and a manifest" ON)
 option(BRITE_BUILD_DEBUG_UI "Fetch rlImGui and put it on the include path (a debug UI's raylib binding; needs raylib)" ON)
 option(BRITE_ENABLE_PROFILER "Build the Tracy profiler into the core (started and stopped by the Application)" ON)
 
@@ -93,8 +94,9 @@ if(BRITE_BUILD_BOX3D)
     FetchContent_MakeAvailable(box3d)
 endif()
 
-if(BRITE_BUILD_RAYLIB OR BRITE_BUILD_PERSISTENCE)
-    # nlohmann_json: the raylib module reads glTF materials with it, the persistence module writes the game state.
+if(BRITE_BUILD_RAYLIB OR BRITE_BUILD_PERSISTENCE OR BRITE_BUILD_CONTENT)
+    # nlohmann_json: the raylib module reads glTF materials with it, the persistence module writes the game state, the
+    # content module reads and writes manifests.
     FetchContent_Declare(
         nlohmann_json
         URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
@@ -103,10 +105,15 @@ if(BRITE_BUILD_RAYLIB OR BRITE_BUILD_PERSISTENCE)
 endif()
 
 if(BRITE_BUILD_PERSISTENCE)
-    # PhysicsFS
+    # PhysicsFS, pinned to one commit: a branch's archive is a moving target, and a clean configure would build whatever
+    # upstream held that day. Not to its newest release, release-3.2.0: its cmake_minimum_required(VERSION 3.0) is
+    # refused by CMake 4 ("Compatibility with CMake < 3.5 has been removed"). This is main as of 2026-10-26 -- the
+    # 3.3.0 line every build until now compiled, since it fetched main -- whose own minimum is 3.5...4.0. The hash makes
+    # the archive itself the pin: a different download stops the configure rather than building something else.
     FetchContent_Declare(
         physfs
-        URL https://github.com/icculus/physfs/archive/refs/heads/main.zip
+        URL https://github.com/icculus/physfs/archive/c30aa9086d4caf7548ee76655376aa7aa9098ffc.tar.gz
+        URL_HASH SHA256=52a73e474b3226516ca4ae590fb1b7b20be3c29d04f64cb05270ed873b846744
     )
     set(PHYSFS_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(PHYSFS_BUILD_TEST OFF CACHE BOOL "" FORCE)
@@ -205,6 +212,9 @@ macro(brite_setup_assets TARGET_NAME)
     endif()
 endmacro()
 
+# The content module's build half: brite_add_content and brite_content_manifest.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/BriteContent.cmake)
+
 # ---------------------------------------------------------
 # The core
 # ---------------------------------------------------------
@@ -294,6 +304,30 @@ if(BRITE_BUILD_AUDIO)
     target_include_directories(BRITEAudio PUBLIC modules/audio/include)
     target_link_libraries(BRITEAudio PUBLIC BRITECore soloud)
     list(APPEND BRITE_MODULES BRITEAudio)
+endif()
+
+if(BRITE_BUILD_CONTENT)
+    # Shipped files named once and read through one root, checked against the manifest the build writes
+    # (cmake/BriteContent.cmake). Plain files; IContentSource is the seam an archive source would plug into.
+    add_library(BRITEContent STATIC
+        modules/content/src/Content/Sha256.cpp
+        modules/content/src/Content/Manifest.cpp
+        modules/content/src/Content/ContentRoot.cpp
+        modules/content/src/Content/Folders.cpp
+    )
+    add_library(BRITE::Content ALIAS BRITEContent)
+    target_include_directories(BRITEContent PUBLIC modules/content/include)
+    target_link_libraries(BRITEContent PUBLIC BRITECore PRIVATE nlohmann_json::nlohmann_json)
+    if(WIN32)
+        # SHGetKnownFolderPath and CoTaskMemFree.
+        target_link_libraries(BRITEContent PRIVATE shell32 ole32)
+    endif()
+    list(APPEND BRITE_MODULES BRITEContent)
+    if(BRITE_BUILD_RAYLIB)
+        # raylib's file loads routed through a content root: built when both modules are.
+        target_sources(BRITERaylib PRIVATE modules/raylib/src/Backends/Raylib/RaylibContentLoads.cpp)
+        target_link_libraries(BRITERaylib PUBLIC BRITEContent)
+    endif()
 endif()
 
 if(BRITE_BUILD_PERSISTENCE)
@@ -418,6 +452,13 @@ if(BRITE_BUILD_TESTS)
     if(BRITE_BUILD_PERSISTENCE)
         list(APPEND BRITE_TEST_SOURCES tests/SaveStoreTests.cpp)
     endif()
+    if(BRITE_BUILD_CONTENT)
+        list(APPEND BRITE_TEST_SOURCES tests/ContentTests.cpp tests/ContentManifestScriptTests.cpp
+                                       tests/ContentBuildTests.cpp)
+        if(BRITE_BUILD_RAYLIB)
+            list(APPEND BRITE_TEST_SOURCES tests/RaylibContentLoadsTests.cpp)
+        endif()
+    endif()
     if(BRITE_BUILD_AUDIO)
         list(APPEND BRITE_TEST_SOURCES tests/SceneSoundsTests.cpp)
     endif()
@@ -425,10 +466,22 @@ if(BRITE_BUILD_TESTS)
     target_link_libraries(BRITETests PRIVATE BRITEEngine gtest_main)
     # Which modules this configure builds, for ModuleBoundaryTests: each one's headers must be reachable exactly then.
     set_source_files_properties(tests/ModuleBoundaryTests.cpp PROPERTIES COMPILE_DEFINITIONS
-        "BRITE_TEST_MODULE_RAYLIB=$<BOOL:${BRITE_BUILD_RAYLIB}>;BRITE_TEST_MODULE_BOX2D=$<BOOL:${BRITE_BUILD_BOX2D}>;BRITE_TEST_MODULE_BOX3D=$<BOOL:${BRITE_BUILD_BOX3D}>;BRITE_TEST_MODULE_AUDIO=$<BOOL:${BRITE_BUILD_AUDIO}>;BRITE_TEST_MODULE_PERSISTENCE=$<BOOL:${BRITE_BUILD_PERSISTENCE}>;BRITE_TEST_MODULE_DEBUG_UI=$<BOOL:${BRITE_BUILD_DEBUG_UI}>")
+        "BRITE_TEST_MODULE_RAYLIB=$<BOOL:${BRITE_BUILD_RAYLIB}>;BRITE_TEST_MODULE_BOX2D=$<BOOL:${BRITE_BUILD_BOX2D}>;BRITE_TEST_MODULE_BOX3D=$<BOOL:${BRITE_BUILD_BOX3D}>;BRITE_TEST_MODULE_AUDIO=$<BOOL:${BRITE_BUILD_AUDIO}>;BRITE_TEST_MODULE_PERSISTENCE=$<BOOL:${BRITE_BUILD_PERSISTENCE}>;BRITE_TEST_MODULE_DEBUG_UI=$<BOOL:${BRITE_BUILD_DEBUG_UI}>;BRITE_TEST_MODULE_CONTENT=$<BOOL:${BRITE_BUILD_CONTENT}>")
+    # ContentManifestScriptTests runs the manifest script as a build would.
+    set_source_files_properties(tests/ContentManifestScriptTests.cpp PROPERTIES COMPILE_DEFINITIONS
+        "BRITE_TEST_CMAKE_COMMAND=\"${CMAKE_COMMAND}\";BRITE_TEST_MANIFEST_SCRIPT=\"${BRITE_CONTENT_MANIFEST_SCRIPT}\"")
     if(WIN32)
         # ProfilerLifetimeTests finds its own profiler's port in the table of listening sockets.
         target_link_libraries(BRITETests PRIVATE iphlpapi)
+    endif()
+
+    if(BRITE_BUILD_CONTENT)
+        # The content module's build half, used as a client would: a content set staged beside BRITETests and the
+        # manifest that names it, read back by ContentBuildTests. Building BRITETests alone leaves the manifest
+        # unwritten -- build every target, as ctest expects.
+        brite_add_content(BRITETestContent FROM tests/content INTO content)
+        brite_content_manifest(BRITETests APP BRITETests CONTENT BRITETestContent VERSION test SEQUENCE 1
+                               PROPERTIES purpose=fixture)
     endif()
 
     include(GoogleTest)

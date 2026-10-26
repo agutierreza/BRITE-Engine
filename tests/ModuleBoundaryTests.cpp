@@ -11,7 +11,7 @@
 
 #if !defined(BRITE_TEST_MODULE_RAYLIB) || !defined(BRITE_TEST_MODULE_BOX2D) || !defined(BRITE_TEST_MODULE_BOX3D) ||    \
     !defined(BRITE_TEST_MODULE_AUDIO) || !defined(BRITE_TEST_MODULE_PERSISTENCE) ||                                    \
-    !defined(BRITE_TEST_MODULE_DEBUG_UI)
+    !defined(BRITE_TEST_MODULE_DEBUG_UI) || !defined(BRITE_TEST_MODULE_CONTENT)
 #error "CMakeLists.txt defines BRITE_TEST_MODULE_* for this file"
 #endif
 
@@ -78,6 +78,16 @@ constexpr bool PHYSFS_HEADER = true;
 #else
 constexpr bool PHYSFS_HEADER = false;
 #endif
+#if __has_include(<Content/ContentRoot.hpp>)
+constexpr bool CONTENT_MODULE_HEADER = true;
+#else
+constexpr bool CONTENT_MODULE_HEADER = false;
+#endif
+#if __has_include(<Backends/Raylib/RaylibContentLoads.hpp>)
+constexpr bool RAYLIB_CONTENT_HEADER = true;
+#else
+constexpr bool RAYLIB_CONTENT_HEADER = false;
+#endif
 #if __has_include(<rlImGui.h>)
 constexpr bool RLIMGUI_HEADER = true;
 #else
@@ -108,4 +118,9 @@ TEST(ModuleBoundary, EachModulesHeadersAreOnTheIncludePathExactlyWhenItIsBuilt) 
     EXPECT_EQ(PHYSFS_HEADER, BRITE_TEST_MODULE_PERSISTENCE != 0);
 
     EXPECT_EQ(RLIMGUI_HEADER, BRITE_TEST_MODULE_DEBUG_UI != 0);
+
+    EXPECT_EQ(CONTENT_MODULE_HEADER, BRITE_TEST_MODULE_CONTENT != 0);
+    // The raylib routing's header is in the raylib module's include root, so it is reachable with raylib on; it is
+    // compiled -- and usable -- only with the content module too, which is what its own header includes.
+    EXPECT_EQ(RAYLIB_CONTENT_HEADER, BRITE_TEST_MODULE_RAYLIB != 0);
 }
