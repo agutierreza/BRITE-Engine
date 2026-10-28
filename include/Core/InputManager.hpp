@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <entt/entt.hpp>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -67,6 +68,10 @@ class InputManager {
     // not be its rest -- so a reader that waits for rest before acting on an axis
     // has to start waiting again whenever the pad goes away.
     static bool IsGamepadAvailable();
+    // The available gamepad's name as its backend reports it, from the same
+    // frame as IsGamepadAvailable. Empty when none is available, and when the
+    // backend names no gamepad.
+    static const std::string& GetGamepadName();
 
     static float GetMouseX();
     static float GetMouseY();
@@ -189,6 +194,7 @@ class InputManager {
     static std::unordered_map<GamepadButtonCode, bool> s_gamepadButtonsReleasedThisTick;
     static std::unordered_map<GamepadAxisCode, float> s_gamepadAxes;
     static bool s_gamepadAvailable;
+    static std::string s_gamepadName;
 
     static std::unordered_map<GamepadButtonCode, bool> s_gamepadButtonsClaimedThisTick; // see ClaimGamepadButton
     static std::unordered_map<MouseButtonCode, bool> s_buttonsClaimedThisTick;          // see ClaimMouseButton

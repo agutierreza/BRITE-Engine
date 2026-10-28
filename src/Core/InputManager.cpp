@@ -19,6 +19,7 @@ std::unordered_map<GamepadAxisCode, float> InputManager::s_gamepadAxes;
 std::unordered_map<GamepadButtonCode, bool> InputManager::s_gamepadButtonsClaimedThisTick;
 std::unordered_map<MouseButtonCode, bool> InputManager::s_buttonsClaimedThisTick;
 bool InputManager::s_gamepadAvailable = false;
+std::string InputManager::s_gamepadName;
 
 std::unordered_map<uint32_t, std::vector<KeyCode>> InputManager::s_actionKeyBindings;
 std::unordered_map<uint32_t, std::vector<GamepadButtonCode>> InputManager::s_actionGamepadBindings;
@@ -89,7 +90,9 @@ void InputManager::PollVariable(entt::dispatcher& dispatcher) {
         float value = s_backend->GetGamepadAxis(axis);
         dispatcher.enqueue<GamepadAxisEvent>(GamepadAxisEvent{axis, value});
     }
-    dispatcher.enqueue<GamepadAvailabilityEvent>(GamepadAvailabilityEvent{s_backend->IsGamepadAvailable()});
+    const bool padAvailable = s_backend->IsGamepadAvailable();
+    dispatcher.enqueue<GamepadAvailabilityEvent>(
+        GamepadAvailabilityEvent{padAvailable, padAvailable ? s_backend->GetGamepadName() : std::string{}});
 }
 
 void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
@@ -191,6 +194,7 @@ void InputManager::OnGamepadAxisMove(const GamepadAxisEvent& event) {
 
 void InputManager::OnGamepadAvailability(const GamepadAvailabilityEvent& event) {
     s_gamepadAvailable = event.available;
+    s_gamepadName = event.name;
 }
 
 bool InputManager::IsKeyPressed(KeyCode key) {
@@ -263,6 +267,10 @@ float InputManager::GetGamepadAxis(GamepadAxisCode axis) {
 
 bool InputManager::IsGamepadAvailable() {
     return s_gamepadAvailable;
+}
+
+const std::string& InputManager::GetGamepadName() {
+    return s_gamepadName;
 }
 
 float InputManager::GetMouseX() {

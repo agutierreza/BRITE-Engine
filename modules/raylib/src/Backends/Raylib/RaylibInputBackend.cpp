@@ -390,6 +390,13 @@ bool RaylibInputBackend::IsGamepadAvailable() {
     return ::IsGamepadAvailable(0);
 }
 
+std::string RaylibInputBackend::GetGamepadName() {
+    if (!::IsGamepadAvailable(0))
+        return {};
+    const char* name = ::GetGamepadName(0);
+    return name ? std::string(name) : std::string{};
+}
+
 } // namespace Raylib
 } // namespace Backends
 } // namespace BRITE

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace BRITE {
 
 enum class KeyCode {
@@ -205,10 +207,13 @@ struct GamepadAxisEvent {
     float value;
 };
 
-// Whether a gamepad was available when the frame was polled. Queued every frame,
-// as the axes are, so the state a fixed tick reads is the last frame's before it.
+// Whether a gamepad was available when the frame was polled, and its name then
+// (empty when none was). Queued every frame, as the axes are, so the state a
+// fixed tick reads is the last frame's before it -- the name and the
+// availability always from the same frame.
 struct GamepadAvailabilityEvent {
     bool available;
+    std::string name;
 };
 
 } // namespace BRITE

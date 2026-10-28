@@ -94,6 +94,10 @@ class FakeInputBackend : public BRITE::Backends::IInputBackend {
     bool IsGamepadAvailable() override {
         return padAvailable;
     }
+    std::string padName;
+    std::string GetGamepadName() override {
+        return padName;
+    }
 
     void Clear() {
         keysPressed.clear();
@@ -391,6 +395,34 @@ TEST_F(InputManagerDevices, AGamepadIsAvailableFromTheTickAfterTheBackendSaysSoU
     EXPECT_FALSE(InputManager::IsGamepadAvailable());
 }
 
+TEST_F(InputManagerDevices, AGamepadsNameComesFromTheSameFrameAsItsAvailability) {
+    // A pad is plugged in, a different one replaces it, then it goes while the
+    // backend still holds a stale name. The name a tick reads is the last polled
+    // frame's, and only while that frame had a pad.
+    // MUTATIONS: not applying the name in FlushFixed -- empty after the first
+    // tick; red. Reading the backend's name whatever its availability -- the stale
+    // name survives the pad; red. Reading it straight from the backend instead of
+    // the tick's event -- the new name before the tick; red.
+    EXPECT_TRUE(InputManager::GetGamepadName().empty()) << "nothing has been polled";
+    m_backend.padAvailable = true;
+    m_backend.padName = "Pad One";
+    InputManager::PollVariable(m_dispatcher);
+    EXPECT_TRUE(InputManager::GetGamepadName().empty()) << "a frame's poll takes effect at the tick, not before";
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_EQ(InputManager::GetGamepadName(), "Pad One");
+
+    m_backend.padName = "Pad Two";
+    InputManager::PollVariable(m_dispatcher);
+    EXPECT_EQ(InputManager::GetGamepadName(), "Pad One") << "the tick has not run yet";
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_EQ(InputManager::GetGamepadName(), "Pad Two");
+
+    m_backend.padAvailable = false; // the backend still says "Pad Two"
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_TRUE(InputManager::GetGamepadName().empty()) << "no pad, no name";
+}
+
 TEST_F(InputManagerDevices, TheLastFramePolledBeforeATickDecidesWhetherAGamepadIsAvailable) {
     // Two frames drawn in one tick: the pad was there for the first and gone by
     // the second. The tick reads the second.
@@ -454,4 +486,7 @@ TEST(GamepadAvailability, ABackendThatDoesNotSayReportsNoGamepad) {
         }
     } silent;
     EXPECT_FALSE(silent.IsGamepadAvailable());
+    // GetGamepadName is not pure either, and names no gamepad by default.
+    // MUTATION: a default returning any text -- red.
+    EXPECT_TRUE(silent.GetGamepadName().empty());
 }

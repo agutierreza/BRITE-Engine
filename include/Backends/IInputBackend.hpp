@@ -2,6 +2,8 @@
 
 #include "Core/InputEvents.hpp"
 
+#include <string>
+
 namespace BRITE {
 namespace Backends {
 
@@ -38,6 +40,12 @@ class IInputBackend {
     // does not override it reports no gamepad, which is what it has.
     virtual bool IsGamepadAvailable() {
         return false;
+    }
+    // The attached gamepad's name as the platform reports it, empty when no
+    // gamepad is attached. Not pure, for the same reason as IsGamepadAvailable:
+    // a backend that does not override it names no gamepad.
+    virtual std::string GetGamepadName() {
+        return {};
     }
 };
 
