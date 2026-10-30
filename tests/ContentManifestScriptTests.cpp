@@ -59,9 +59,9 @@ struct Build {
             text += (folder.path / list).generic_string() + "\n";
         folder.Write("work/lists.txt", text);
     }
-    int Run() const {
+    int Run(const std::string& sequence = "4") const {
         return RunScript({"OUTPUT=" + output.generic_string(), "ROOT=" + folder.path.generic_string(), "APP=Tool",
-                          "VERSION_FILE=" + (folder.path / "work/version.txt").generic_string(), "SEQUENCE=4",
+                          "VERSION_FILE=" + (folder.path / "work/version.txt").generic_string(), "SEQUENCE=" + sequence,
                           "PROPERTIES_FILE=" + (folder.path / "work/properties.txt").generic_string(),
                           "LISTS_FILE=" + lists.generic_string()});
     }
@@ -164,4 +164,49 @@ TEST(ContentManifestScript, APropertyGivenTwiceOrHoldingAnAtSignStopsTheBuild) {
         EXPECT_NE(build.Run(), 0) << properties;
         EXPECT_FALSE(std::filesystem::exists(build.output)) << properties;
     }
+}
+
+TEST(ContentManifestScript, ASequenceWithALeadingZeroStopsTheBuild) {
+    // JSON writes no number with a leading zero: "sequence": 007 is no JSON, and Manifest::Parse refuses it. The
+    // script refuses it instead of writing it; "0" alone, and a number that starts with any other digit, are whole.
+    // MUTATION: the script's old check, "^[0-9]+$" -> "007" and "00" written, exit 0, red.
+    for (const char* sequence : {"007", "00", "01"}) {
+        Build build;
+        EXPECT_NE(build.Run(sequence), 0) << sequence;
+        EXPECT_FALSE(std::filesystem::exists(build.output)) << sequence;
+    }
+    for (const char* sequence : {"0", "10", "1007"}) {
+        Build build;
+        ASSERT_EQ(build.Run(sequence), 0) << sequence;
+        const std::string written = BRITE::Test::ReadText(build.output);
+        EXPECT_NE(written.find(std::string("  \"sequence\": ") + sequence + ",\n"), std::string::npos) << written;
+        std::string error;
+        EXPECT_TRUE(BRITE::Content::Manifest::Parse(written, error).has_value()) << sequence << ": " << error;
+    }
+}
+
+TEST(ContentManifestScript, AValueHoldingCmakedefineStopsTheBuild) {
+    // file(CONFIGURE), which writes the manifest, turns any line holding "#cmakedefine NAME" or "#cmakedefine01 NAME"
+    // into a #define or an "/* #undef NAME */" -- the line's key and quotes with it -- so such a value in a property,
+    // a property's key or the version is refused rather than written wrong.
+    // MUTATION: the "#cmakedefine" refusal removed -> exit 0 and a manifest that is no JSON, red.
+    for (const char* properties : {"a=#cmakedefine NAME\n", "a=x # cmakedefine01 NAME\n", "#cmakedefine NAME=1\n"}) {
+        Build build;
+        build.folder.Write("work/properties.txt", properties);
+        EXPECT_NE(build.Run(), 0) << properties;
+        EXPECT_FALSE(std::filesystem::exists(build.output)) << properties;
+    }
+    Build build;
+    build.folder.Write("work/version.txt", "#cmakedefine VERSION\n");
+    EXPECT_NE(build.Run(), 0);
+    EXPECT_FALSE(std::filesystem::exists(build.output));
+
+    Build hash; // a '#' alone is no directive, and is written
+    hash.folder.Write("work/properties.txt", "a=#1 cmake define\n");
+    ASSERT_EQ(hash.Run(), 0);
+    std::string error;
+    const std::optional<BRITE::Content::Manifest> parsed =
+        BRITE::Content::Manifest::Parse(BRITE::Test::ReadText(hash.output), error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+    EXPECT_NE(BRITE::Test::ReadText(hash.output).find("\"a\": \"#1 cmake define\""), std::string::npos);
 }

@@ -70,8 +70,9 @@ class InputManager {
     static bool IsGamepadAvailable();
     // The available gamepad's name as its backend reports it, from the same
     // frame as IsGamepadAvailable. Empty when none is available, and when the
-    // backend names no gamepad.
-    static const std::string& GetGamepadName();
+    // backend names no gamepad. A copy, like every getter here: the next tick
+    // replaces the name it was read from.
+    static std::string GetGamepadName();
 
     static float GetMouseX();
     static float GetMouseY();

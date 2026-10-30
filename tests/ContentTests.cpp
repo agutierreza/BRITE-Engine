@@ -286,6 +286,21 @@ TEST(ContentRoot, FromFolderReadsItsManifestAndABrokenOneRefusesEverything) {
     EXPECT_NE(error.find("App.manifest.json"), std::string::npos) << error;
 }
 
+TEST(ContentRoot, FromFolderRefusesEverythingWhenItCannotTellWhetherTheManifestIsThere) {
+    // A check that fails says neither "there" nor "not there", so the root is not left loose. A name of 40,000
+    // characters makes the check itself fail on every platform -- Windows' paths stop at 32,767 characters, POSIX's
+    // at PATH_MAX -- where a merely missing manifest, or one under a file, reads plainly as "not there".
+    // MUTATION: an error from the check read as "no manifest" -> a loose root that serves a.txt, red.
+    ScratchFolder folder("content_from_folder_unchecked");
+    folder.Write("a.txt", "abc");
+    std::string error;
+    const ContentRoot unchecked = ContentRoot::FromFolder(folder.path, std::string(40000, 'm'), &error);
+    EXPECT_TRUE(unchecked.IsStrict());
+    EXPECT_FALSE(unchecked.Read("a.txt").has_value());
+    EXPECT_NE(error.find("could not be checked"), std::string::npos)
+        << error.substr(error.size() > 200 ? error.size() - 200 : 0);
+}
+
 TEST(ContentRoot, NameOfMapsAPathInsideTheFolderBackToItsNameAndNothingElse) {
     ScratchFolder folder("content_name_of");
     folder.Write("models/a.glb", "abc");

@@ -423,6 +423,27 @@ TEST_F(InputManagerDevices, AGamepadsNameComesFromTheSameFrameAsItsAvailability)
     EXPECT_TRUE(InputManager::GetGamepadName().empty()) << "no pad, no name";
 }
 
+TEST_F(InputManagerDevices, AGamepadsNameReadBeforeATickKeepsItsValueAfterIt) {
+    // A caller holds the name it read across the next tick, which replaces the
+    // name the manager keeps. `const auto&` binds what the getter returns: a
+    // copy, kept alive by the binding, or -- if the getter handed out the
+    // manager's own string -- that string, which the tick then rewrites.
+    // MUTATION: GetGamepadName returning `const std::string&` again -- the held
+    // name reads "Pad Two" after the tick; red.
+    m_backend.padAvailable = true;
+    m_backend.padName = "Pad One";
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    const auto& held = InputManager::GetGamepadName();
+    ASSERT_EQ(held, "Pad One");
+
+    m_backend.padName = "Pad Two";
+    InputManager::PollVariable(m_dispatcher);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_EQ(InputManager::GetGamepadName(), "Pad Two");
+    EXPECT_EQ(held, "Pad One") << "the name a caller holds is its own, not the manager's";
+}
+
 TEST_F(InputManagerDevices, TheLastFramePolledBeforeATickDecidesWhetherAGamepadIsAvailable) {
     // Two frames drawn in one tick: the pad was there for the first and gone by
     // the second. The tick reads the second.

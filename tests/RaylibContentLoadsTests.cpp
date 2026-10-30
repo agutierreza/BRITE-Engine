@@ -142,3 +142,50 @@ TEST(RaylibContentLoads, AScopeInsideAnotherPutsBackTheOuterRoutingWhenItEnds) {
     EXPECT_EQ(BRITE::Raylib::CurrentFileLoadRouting().refuseOutsideRoot, true);
     EXPECT_FALSE(RaylibData(fixture.folder.path / "extra.txt").has_value());
 }
+
+TEST(RaylibContentLoads, AnObjMaterialLibraryIsReadAroundTheRouting) {
+    // The header's NOT ROUTED, pinned: tinyobj opens a .mtl with fopen, so a strict root whose manifest lacks it does
+    // not refuse it, and `outside` is not told. A material library with no texture needs no window to load.
+    // BY HAND: "Kd 1 0.5 0" is a diffuse colour of (1 * 255, 0.5 * 255, 0 * 255) = (255, 127, 0) -- raylib truncates
+    // 127.5 to 127.
+    // If raylib ever reads the .mtl through LoadFileText, this goes red: the library is then routed, and the header's
+    // paragraph is to be rewritten, not this case loosened.
+    Fixture fixture;
+    const std::filesystem::path library = fixture.folder.Write("models/box.mtl", "newmtl orange\nKd 1 0.5 0\n");
+    ScopedFileLoadRouting routing(fixture.Routing(true));
+    ASSERT_FALSE(RaylibText(library).has_value()) << "routed, the strict root refuses the library: not in its manifest";
+
+    int count = 0;
+    Material* materials = LoadMaterials(library.generic_string().c_str(), &count);
+    ASSERT_EQ(count, 1);
+    ASSERT_NE(materials, nullptr);
+    const Color diffuse = materials[0].maps[MATERIAL_MAP_DIFFUSE].color;
+    EXPECT_EQ(diffuse.r, 255);
+    EXPECT_EQ(diffuse.g, 127);
+    EXPECT_EQ(diffuse.b, 0);
+    UnloadMaterial(materials[0]);
+    MemFree(materials);
+    EXPECT_TRUE(fixture.outside.empty()) << "the library was read where the routing never saw it";
+}
+
+TEST(RaylibContentLoads, ARelativeNameIsAContentNameWhateverTheWorkingDirectory) {
+    // raylib asks for an OBJ's textures by bare name after changing the working directory into the model's folder.
+    // The routing does not resolve such a name against the working directory (the header says why): from inside the
+    // root's "models" folder, "a.txt" is still the root's top-level "a.txt" -- not shipped, so refused -- and
+    // "models/a.txt" is still the shipped file.
+    // MUTATION: a relative name resolved against the working directory when that lies inside the root -> "a.txt" reads
+    // the shipped "models/a.txt" and "models/a.txt" finds nothing at models/models/a.txt; red.
+    Fixture fixture;
+    struct RestoreWorkingDirectory {
+        std::filesystem::path was = std::filesystem::current_path();
+        ~RestoreWorkingDirectory() {
+            std::error_code ignored;
+            std::filesystem::current_path(was, ignored);
+        }
+    } restore;
+    std::filesystem::current_path(fixture.folder.path / "models");
+    ScopedFileLoadRouting routing(fixture.Routing(true));
+    EXPECT_FALSE(RaylibData("a.txt").has_value());
+    EXPECT_EQ(RaylibData("models/a.txt"), std::optional<std::string>("abc"));
+    EXPECT_TRUE(fixture.outside.empty());
+}

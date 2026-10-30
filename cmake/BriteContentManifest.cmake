@@ -8,7 +8,7 @@
 #   APP             the application's name
 #   VERSION         the version string, or
 #   VERSION_FILE    a file whose first line is the version (wins over VERSION when given)
-#   SEQUENCE        a whole number, 0 if not given
+#   SEQUENCE        a whole number written without leading zeros (JSON allows none), 0 if not given
 #   PROPERTIES_FILE a file of `key=value` lines (optional)
 #   LISTS_FILE      a file naming, one per line, the files that list the paths (each relative to ROOT, one per line)
 #
@@ -28,13 +28,18 @@ foreach(required OUTPUT ROOT APP LISTS_FILE)
 endforeach()
 
 # One JSON string: quotes and backslashes escaped; anything but printable ASCII is refused rather than escaped, and so
-# is '@', which the file(CONFIGURE ... @ONLY) that writes the manifest would read as a variable to substitute.
+# is what the file(CONFIGURE ... @ONLY) that writes the manifest would rewrite: an '@', read as a variable to
+# substitute, and "#cmakedefine" (or "#cmakedefine01"), which turns the whole line it is on into a #define or an
+# "/* #undef */" wherever on the line it stands.
 function(brite_json_string text out)
     if(text MATCHES "[^ -~]")
         message(FATAL_ERROR "BriteContentManifest.cmake: a character that is not printable ASCII in \"${text}\"")
     endif()
     if(text MATCHES "@")
         message(FATAL_ERROR "BriteContentManifest.cmake: an '@' in \"${text}\"")
+    endif()
+    if(text MATCHES "#[ \t]*cmakedefine")
+        message(FATAL_ERROR "BriteContentManifest.cmake: a \"#cmakedefine\" in \"${text}\"")
     endif()
     string(REPLACE "\\" "\\\\" text "${text}")
     string(REPLACE "\"" "\\\"" text "${text}")
@@ -53,8 +58,8 @@ endif()
 if(NOT DEFINED SEQUENCE OR SEQUENCE STREQUAL "")
     set(SEQUENCE 0)
 endif()
-if(NOT SEQUENCE MATCHES "^[0-9]+$")
-    message(FATAL_ERROR "BriteContentManifest.cmake: SEQUENCE is not a whole number: ${SEQUENCE}")
+if(NOT SEQUENCE MATCHES "^(0|[1-9][0-9]*)$")
+    message(FATAL_ERROR "BriteContentManifest.cmake: SEQUENCE is not a whole number without leading zeros: ${SEQUENCE}")
 endif()
 
 # The paths: every list, deduplicated, each a content name, none twice ignoring case.
@@ -162,5 +167,5 @@ endif()
 
 # Written only when it changed (file(CONFIGURE) compares first), so an unchanged build leaves the file -- and its
 # time -- alone; with LF line ends on every platform, as ToJson writes them (file(WRITE) writes CRLF on Windows).
-# @ONLY: the text holds no @, so nothing in it is substituted.
+# @ONLY: the text holds no @ and no #cmakedefine, so nothing in it is substituted.
 file(CONFIGURE OUTPUT "${OUTPUT}" CONTENT "${json}" @ONLY NEWLINE_STYLE UNIX)

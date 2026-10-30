@@ -94,8 +94,9 @@ class ContentRoot {
     explicit ContentRoot(std::shared_ptr<const IContentSource> source, std::optional<Manifest> manifest = std::nullopt);
 
     /// The folder `folder` as a root, with the manifest file `manifestName` inside it if there is one. A manifest file
-    /// that is there but cannot be parsed is an error, never silently ignored: the root is then strict over an EMPTY
-    /// manifest, so every name is refused, and `error` says why.
+    /// that is there but cannot be read or parsed is an error, never silently ignored -- and so is one whose presence
+    /// cannot be checked: the root is then strict over an EMPTY manifest, so every name is refused, and `error` says
+    /// why. Only a manifest file that is plainly not there leaves the root loose.
     static ContentRoot FromFolder(const std::filesystem::path& folder, std::string_view manifestName,
                                   std::string* error = nullptr);
 

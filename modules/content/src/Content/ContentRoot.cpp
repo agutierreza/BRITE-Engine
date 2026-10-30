@@ -60,8 +60,17 @@ ContentRoot ContentRoot::FromFolder(const std::filesystem::path& folder, std::st
                                     std::string* error) {
     auto source = std::make_shared<FolderSource>(folder);
     const std::filesystem::path manifestFile = source->Folder() / std::filesystem::path(std::string(manifestName));
+    if (manifestName.empty())
+        return ContentRoot(source);
     std::error_code ec;
-    if (manifestName.empty() || !std::filesystem::exists(manifestFile, ec))
+    const bool there = std::filesystem::exists(manifestFile, ec);
+    if (ec) {
+        // Neither there nor not there: the manifest may be, so the root is not left loose.
+        if (error)
+            *error = Utf8(manifestFile) + ": could not be checked: " + ec.message();
+        return ContentRoot(source, Manifest{});
+    }
+    if (!there)
         return ContentRoot(source);
     std::string why;
     const std::optional<std::vector<std::uint8_t>> bytes = ReadWholeFile(manifestFile);

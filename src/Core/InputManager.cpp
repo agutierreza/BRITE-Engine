@@ -269,7 +269,7 @@ bool InputManager::IsGamepadAvailable() {
     return s_gamepadAvailable;
 }
 
-const std::string& InputManager::GetGamepadName() {
+std::string InputManager::GetGamepadName() {
     return s_gamepadName;
 }
 
