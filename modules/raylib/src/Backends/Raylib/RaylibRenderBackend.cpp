@@ -169,12 +169,15 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         }
     }
 
-    // THE ORDER A PASS IS DRAWN IN (RenderPass.hpp says it too): the opaque primitives and models first, then the
-    // translucent draws, farthest first. raylib draws a model the moment it is asked but holds primitives in a batch
-    // that is drawn later, so left alone every model reaches the screen before every primitive whatever the pass
-    // lists: a translucent model then blends with the clear colour, and the primitive behind it fails the depth test
-    // against the depth the model wrote. So the opaque stage ends by drawing the batch, and every translucent draw --
-    // primitive, model mesh or line -- is drawn after it, one at a time, writing no depth.
+    // THE ORDER A PASS IS DRAWN IN (RenderPass.hpp says it too): the opaque draws first, then the translucent draws.
+    // raylib draws a model the moment it is asked but holds primitives and lines in a batch that is drawn later, so
+    // left alone every model reaches the screen before every primitive whatever the pass lists: a translucent model
+    // then blends with the clear colour, and the primitive behind it fails the depth test against the depth the model
+    // wrote. So the opaque stage ends by drawing the batch, and every translucent draw -- primitive, model mesh or line
+    // -- is drawn after it, writing no depth. The opaque stage itself is as it always was: the opaque models reach the
+    // screen first, as they are asked for, then the batched primitives and lines when the batch is drawn; at equal
+    // depth the later wins (GL_LEQUAL), so a primitive or a line beats a model there. That is kept, not changed: it is
+    // what every pass drew before, and a line resolving in front of the model it lies on depends on it.
     auto drawPrimitive = [&](const BRITE::Primitive3DDrawCommand& cmd) {
         ::Color rlTint = {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a};
 
@@ -379,7 +382,9 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     // primitives, then models, then lines.
     //
     // A model draw that sets DepthWrite off is a LAYER, which asks for the order it was submitted in (see
-    // PBRMaterial::DepthWrite): its translucent meshes are drawn after every sorted draw, in submission order.
+    // PBRMaterial::DepthWrite): its translucent meshes are drawn BEFORE every sorted draw, in submission order. Before,
+    // because a layer was always drawn ahead of the batch of translucent primitives and lines, and a layer under them
+    // keeps what it looked like.
     struct TranslucentDraw {
         enum class Kind { Primitive, ModelMesh, Line } kind;
         float depth;
@@ -455,26 +460,25 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         ::rlDrawRenderBatchActive();
         std::stable_sort(sorted.begin(), sorted.end(),
                          [](const TranslucentDraw& a, const TranslucentDraw& b) { return a.depth > b.depth; });
-        sorted.insert(sorted.end(), layers.begin(), layers.end());
-        for (const TranslucentDraw& draw : sorted) {
-            switch (draw.kind) {
-            case TranslucentDraw::Kind::Primitive:
-                // The batch is drawn at the flush, so the writes are off across it.
-                ::rlDisableDepthMask();
-                drawPrimitive(pass.Primitive3DCommands[draw.index]);
-                ::rlDrawRenderBatchActive();
-                ::rlEnableDepthMask();
-                break;
-            case TranslucentDraw::Kind::ModelMesh:
-                drawModel(pass.ModelCommands[draw.index], true, draw.mesh);
-                break;
-            case TranslucentDraw::Kind::Line:
-                ::rlDisableDepthMask();
-                drawLine(pass.Line3DCommands[draw.index]);
-                ::rlDrawRenderBatchActive();
-                ::rlEnableDepthMask();
-                break;
+        std::vector<TranslucentDraw> order = layers;
+        order.insert(order.end(), sorted.begin(), sorted.end());
+        for (std::size_t i = 0; i < order.size();) {
+            if (order[i].kind == TranslucentDraw::Kind::ModelMesh) {
+                drawModel(pass.ModelCommands[order[i].index], true, order[i].mesh);
+                ++i;
+                continue;
             }
+            // A run of primitives and lines shares one change of the depth writes and one flush: the batch is drawn at
+            // the flush, so the writes are off across it, in the order the run lists them.
+            ::rlDisableDepthMask();
+            for (; i < order.size() && order[i].kind != TranslucentDraw::Kind::ModelMesh; ++i) {
+                if (order[i].kind == TranslucentDraw::Kind::Primitive)
+                    drawPrimitive(pass.Primitive3DCommands[order[i].index]);
+                else
+                    drawLine(pass.Line3DCommands[order[i].index]);
+            }
+            ::rlDrawRenderBatchActive();
+            ::rlEnableDepthMask();
         }
     }
 

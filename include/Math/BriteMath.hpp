@@ -318,7 +318,7 @@ struct PBRMaterial {
     //
     // A TRANSLUCENT draw (RenderPass says what that is) writes no depth whatever this says, and is drawn after every
     // opaque draw of its pass. With this on it is sorted back to front with the other translucent draws; with this
-    // off it is a layer, drawn after the sorted ones in the order submitted, as above. On an opaque draw, off still
+    // off it is a layer, drawn before the sorted ones in the order submitted, as above. On an opaque draw, off still
     // means depth-tested but not depth-written, and the draw keeps its place among the opaque ones.
     bool DepthWrite = true;
 };

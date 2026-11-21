@@ -51,6 +51,7 @@ std::string Show(BRITE::Color c) {
 constexpr BRITE::Color SOLID_RED{255, 0, 0, 255};
 constexpr BRITE::Color SOLID_GREEN{0, 255, 0, 255};
 constexpr BRITE::Color SOLID_BLUE{0, 0, 255, 255};
+constexpr BRITE::Color SOLID_WHITE{255, 255, 255, 255};
 constexpr BRITE::Color SEE_THROUGH_RED{255, 0, 0, 128};
 constexpr BRITE::Color SEE_THROUGH_GREEN{0, 255, 0, 128};
 constexpr BRITE::Color SEE_THROUGH_BLUE{0, 0, 255, 128};
@@ -157,8 +158,10 @@ class TranslucentDrawOrderTest : public ::testing::Test {
 // What used to happen: the sheet is drawn at once, over the black clear colour, (0, 0, 128), and writes its depth; the
 // box, drawn when the batch is flushed, fails the depth test behind it and the pixel stays (0, 0, 128).
 //
-// Mutations: the primitive batch not flushed before the translucent draws -> (0, 0, 128); the translucent meshes
-// drawn with the opaque ones, as before -> (0, 0, 128).
+// Mutations: the primitive batch not flushed before the translucent draws -> the sheet blends with the clear colour,
+// (0, 0, 128), writes no depth, and the box, drawn later at the batch's flush, passes its depth test and covers it:
+// (255, 0, 0); the translucent meshes drawn with the opaque ones, as before -> the sheet writes its depth and the box
+// fails behind it: (0, 0, 128).
 TEST_F(TranslucentDrawOrderTest, ATranslucentModelInFrontOfAPrimitiveShowsThePrimitiveThroughIt) {
     BRITE::RenderPass pass;
     pass.Primitive3DCommands.push_back(Box(0.0f, 0.0f, 0.0f, 4.0f, 4.0f, SOLID_RED));
@@ -244,20 +247,120 @@ TEST_F(TranslucentDrawOrderTest, ATranslucentDrawWritesNoDepth) {
     EXPECT_TRUE(Near(both, 63, 128, 64)) << Show(both);
 }
 
-// A layer -- a draw that sets DepthWrite off -- keeps the order it was submitted in, after the sorted draws. A blue
-// layer at z = 0.2 is listed FIRST, a see-through red model at z = 0.5 second. The sorted red draws first: (128, 0, 0);
-// the layer after it: red = 128 x 0.49804 = 64, blue = 128 -> (64, 0, 128). A layer sorted with the others would be the
-// farther, drawn first: (0, 0, 128), then red over it: (128, 0, 64).
+// A layer -- a draw that sets DepthWrite off -- keeps the order it was submitted in, and is drawn BEFORE the sorted
+// draws, so every sorted translucent draw -- a model, a primitive, a line -- is drawn over it, as a layer was always
+// under the primitives and lines. A blue layer at z = 0.5, the NEARER, is listed first; a see-through red model at
+// z = 0.2 second. The layer first: blue over the black clear colour is (0, 0, 128); the red over it: red = 255 x
+// 0.50196 = 128, blue = 128 x 0.49804 = 63.75 -> 64: (128, 0, 64). A layer sorted with the others would be drawn after
+// the farther red, (128, 0, 0) then blue over it: (64, 0, 128); a layer drawn last, the same.
 //
-// Mutation: layers sorted with the rest -> (128, 0, 64).
-TEST_F(TranslucentDrawOrderTest, ALayerIsDrawnAfterTheSortedDrawsInTheOrderSubmitted) {
+// Mutations: layers sorted with the rest -> (64, 0, 128); layers drawn after the sorted draws -> (64, 0, 128).
+TEST_F(TranslucentDrawOrderTest, ALayerIsDrawnBeforeTheSortedDrawsInTheOrderSubmitted) {
     BRITE::RenderPass pass;
-    pass.ModelCommands.push_back(Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.2f), SEE_THROUGH_BLUE, false));
-    pass.ModelCommands.push_back(Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.5f), SEE_THROUGH_RED));
+    pass.ModelCommands.push_back(Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.5f), SEE_THROUGH_BLUE, false));
+    pass.ModelCommands.push_back(Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.2f), SEE_THROUGH_RED));
+    const std::vector<BRITE::Color> pixels = Picture(pass);
+
+    const BRITE::Color both = pixels[At(0.0f, 0.0f)];
+    EXPECT_TRUE(Near(both, 128, 0, 64)) << Show(both);
+}
+
+// The sort key is the depth of the draw AS PLACED -- the mesh's box centre carried by the draw's Position, Rotation and
+// Scale -- not the mesh's own. Each case lists the NEARER draw first and expects the farther one drawn first: red, then
+// blue over it, (64, 0, 128), worked out in TwoTranslucentModelsListedNearestFirst... Listed order would give
+// (128, 0, 64).
+//
+// Position: ONE quad at mesh z = 0, drawn twice: blue at Position.z = 0.6, then red at Position.z = 0.2.
+//
+// Mutation: the placement left out of the key (the mesh's own centre) -> every key is 0, the order is the list's:
+// (128, 0, 64).
+TEST_F(TranslucentDrawOrderTest, TheSortKeyCarriesTheDrawsPosition) {
+    const BRITE::ModelHandle sheet = Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.0f);
+    BRITE::ModelDrawCommand near = Draw(sheet, SEE_THROUGH_BLUE);
+    near.Position.z = 0.6f;
+    BRITE::ModelDrawCommand far = Draw(sheet, SEE_THROUGH_RED);
+    far.Position.z = 0.2f;
+    BRITE::RenderPass pass;
+    pass.ModelCommands = {near, far};
     const std::vector<BRITE::Color> pixels = Picture(pass);
 
     const BRITE::Color both = pixels[At(0.0f, 0.0f)];
     EXPECT_TRUE(Near(both, 64, 0, 128)) << Show(both);
+}
+
+// Scale: a red quad at mesh z = 1.0 scaled by 0.2 in z sits at z = 0.2, FARTHER than the blue quad at mesh z = 0.5,
+// though its mesh is the nearer. Blue is listed first.
+//
+// Mutation: the scale left out of the key (the mesh's centre, translated and rotated) -> red's key is 1.0, the nearer,
+// and it is drawn last: (128, 0, 64).
+TEST_F(TranslucentDrawOrderTest, TheSortKeyCarriesTheDrawsScale) {
+    BRITE::ModelDrawCommand near = Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.5f), SEE_THROUGH_BLUE);
+    BRITE::ModelDrawCommand far = Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 1.0f), SEE_THROUGH_RED);
+    far.Scale = {1.0f, 1.0f, 0.2f};
+    BRITE::RenderPass pass;
+    pass.ModelCommands = {near, far};
+    const std::vector<BRITE::Color> pixels = Picture(pass);
+
+    const BRITE::Color both = pixels[At(0.0f, 0.0f)];
+    EXPECT_TRUE(Near(both, 64, 0, 128)) << Show(both);
+}
+
+// Rotation: a red quad at mesh z = 0.6 turned half a turn about +y (the quaternion (0, 1, 0, 0)) sits at z = -0.6, far
+// behind the blue quad at mesh z = 0.2, though its mesh is the nearer. Blue is listed first.
+//
+// Mutation: the rotation left out of the key -> red's key is 0.6, the nearer, and it is drawn last: (128, 0, 64).
+TEST_F(TranslucentDrawOrderTest, TheSortKeyCarriesTheDrawsRotation) {
+    BRITE::ModelDrawCommand near = Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.2f), SEE_THROUGH_BLUE);
+    BRITE::ModelDrawCommand far = Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.6f), SEE_THROUGH_RED);
+    far.Rotation = {0.0f, 1.0f, 0.0f, 0.0f};
+    BRITE::RenderPass pass;
+    pass.ModelCommands = {near, far};
+    const std::vector<BRITE::Color> pixels = Picture(pass);
+
+    const BRITE::Color both = pixels[At(0.0f, 0.0f)];
+    EXPECT_TRUE(Near(both, 64, 0, 128)) << Show(both);
+}
+
+// The key is the depth along the VIEW direction, not the straight-line distance from the camera, and the two disagree
+// off the axis. The camera is at (0, 0, 5) looking down -z. A blue sheet over x 1..2 at z = 0.5 has its centre at (1.5,
+// 0, 0.5): view depth 4.5 from the camera, the nearer; straight-line distance sqrt(1.5^2 + 4.5^2) = 4.743. A red sheet
+// over the whole width at z = 0.3 has its centre at (0, 0, 0.3): view depth 4.7, straight-line distance 4.7, the nearer
+// by that measure. Blue is listed first. By view depth red is farther and goes first, and over x 1..2 red then blue is
+// (64, 0, 128); by distance blue would go first and the pixel is (128, 0, 64).
+//
+// Mutation: the key a straight-line distance from the camera -> (128, 0, 64).
+TEST_F(TranslucentDrawOrderTest, TheSortKeyIsDepthAlongTheViewNotDistanceFromTheCamera) {
+    BRITE::RenderPass pass;
+    pass.ModelCommands.push_back(Draw(Quad(1.0f, -2.0f, 2.0f, 2.0f, 0.5f), SEE_THROUGH_BLUE));
+    pass.ModelCommands.push_back(Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.3f), SEE_THROUGH_RED));
+    const std::vector<BRITE::Color> pixels = Picture(pass);
+
+    const BRITE::Color overlap = pixels[At(1.5f, 0.0f)];
+    EXPECT_TRUE(Near(overlap, 64, 0, 128)) << Show(overlap);
+}
+
+// The depth writes are back after a pass with a translucent primitive, and after one with a translucent line: the next
+// pass's opaque boxes -- a white one at z = 0.6, then a green one over the whole picture behind it at z = 0.3 -- keep
+// the white where it is in front, as DepthWrite's case 3 has it: (255, 255, 255) at (0, 0).
+//
+// Mutations: the writes not switched back on after the translucent run (the one place that restores them, whether
+// the run held primitives, lines or both) -> the next pass's boxes write none and the green covers the white.
+TEST_F(TranslucentDrawOrderTest, TheDepthWritesComeBackAfterATranslucentPrimitiveOrLine) {
+    for (const bool line : {false, true}) {
+        BRITE::RenderPass first;
+        if (line)
+            first.Line3DCommands.push_back({{-1.0f, 0.0f, 0.5f}, {1.0f, 0.0f, 0.5f}, SEE_THROUGH_RED});
+        else
+            first.Primitive3DCommands.push_back(Box(0.0f, 0.0f, 0.5f, 1.0f, 1.0f, SEE_THROUGH_RED));
+        Picture(first);
+
+        BRITE::RenderPass next;
+        next.Primitive3DCommands = {Box(0.0f, 0.0f, 0.6f, 2.0f, 4.0f, SOLID_WHITE),
+                                    Box(0.0f, 0.0f, 0.3f, 4.0f, 4.0f, SOLID_GREEN)};
+        const std::vector<BRITE::Color> pixels = Picture(next);
+        const BRITE::Color white = pixels[At(0.0f, 0.0f)];
+        EXPECT_TRUE(Near(white, 255, 255, 255)) << (line ? "after a line: " : "after a primitive: ") << Show(white);
+    }
 }
 
 // An opaque scene is drawn as it always was: the depth test decides, whatever the order. A green model covers the
