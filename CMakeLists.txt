@@ -488,3 +488,22 @@ if(BRITE_BUILD_TESTS)
     include(GoogleTest)
     gtest_discover_tests(BRITETests)
 endif()
+
+# ---------------------------------------------------------
+# The examples
+# ---------------------------------------------------------
+# examples/hello is the smallest application that draws something that moves, and the README quotes it. It is built with
+# the engine so that it cannot go stale -- and only when BRITE is the project being configured, as the tests are: a
+# project that adds BRITE with add_subdirectory (a client) never gets the example's target. BRITE_BUILD_EXAMPLES turns
+# it on there too. It is not run by ctest: it opens a visible window, and the profiler (on by default) makes a new
+# program ask Windows for network access.
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    set(BRITE_BUILD_EXAMPLES_DEFAULT ON)
+else()
+    set(BRITE_BUILD_EXAMPLES_DEFAULT OFF)
+endif()
+option(BRITE_BUILD_EXAMPLES "Build examples/hello (default: only when BRITE is the top-level project; needs the raylib module)"
+       ${BRITE_BUILD_EXAMPLES_DEFAULT})
+if(BRITE_BUILD_EXAMPLES AND BRITE_BUILD_RAYLIB)
+    add_subdirectory(examples/hello)
+endif()
