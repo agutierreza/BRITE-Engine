@@ -85,8 +85,6 @@ if(NOT TARGET BRITE::Raylib)
     set(BRITE_BUILD_PERSISTENCE OFF)
     set(BRITE_BUILD_CONTENT OFF)
     set(BRITE_BUILD_DEBUG_UI OFF)
-    # The profiler listens on the network, and Windows asks before letting a new program do that.
-    set(BRITE_ENABLE_PROFILER OFF)
 
     add_subdirectory("${BRITE_DIR}" brite)
 endif()
@@ -235,7 +233,7 @@ All are ON by default. A module's dependencies are fetched only when it is on.
 | `BRITE_BUILD_PERSISTENCE` | `BRITE::Persistence` | packed assets and a saved game state | PhysicsFS (one pinned commit), nlohmann_json |
 | `BRITE_BUILD_CONTENT` | `BRITE::Content` | shipped files read through one root, and a manifest | nlohmann_json |
 | `BRITE_BUILD_DEBUG_UI` | `BRITE::DebugUI` | rlImGui on the include path (nothing calls it yet; needs raylib) | rlImGui (the `main` archive) |
-| `BRITE_ENABLE_PROFILER` | *(in the core)* | the Tracy profiler (below) | Tracy v0.10 |
+| `BRITE_ENABLE_PROFILER` | *(in the core)* | the Tracy profiler (below); **OFF by default** | Tracy v0.10, when on |
 | `BRITE_ENABLE_SANITIZERS` | | ASan and UBSan; default ON for Debug builds only | |
 | `BRITE_BUILD_TESTS` | `BRITETests` | BRITE's own suite; default ON only at the top level | GoogleTest v1.14.0 |
 | `BRITE_BUILD_EXAMPLES` | `hello` | `examples/hello`; default ON only at the top level; needs raylib | |
@@ -306,16 +304,13 @@ move on every frame. `hello` does not use it: its cube moves at the tick rate.
 
 ## The profiler, and the firewall prompt
 
-**The Tracy profiler is on by default** (`BRITE_ENABLE_PROFILER`), the `Application` starts it, and **it listens on the
-network**. On Windows the first run of any program built with it raises a firewall prompt ("allow public and private
-networks"), and every program built from a clone of BRITE gets its own. If you do not mean to profile, turn it off:
-
-```
--DBRITE_ENABLE_PROFILER=OFF
-```
-
-(`examples/hello` does, as above.) It is on by default for the projects that already depend on it, so the default is the
-engine owner's decision and has not been changed here.
+**The Tracy profiler is off by default** (`BRITE_ENABLE_PROFILER`). When it is on the `Application` starts it, and **it
+listens on the network**: on Windows the first run of any program built with it raises a firewall prompt ("allow public
+and private networks"), and every program built from a clone of BRITE gets its own. To profile, put
+`set(BRITE_ENABLE_PROFILER ON)` in your `CMakeLists.txt` before `add_subdirectory`, or configure with
+`-DBRITE_ENABLE_PROFILER=ON`. Tracy v0.10 is then downloaded and linked into the core, and a Tracy viewer can connect
+to the running program. BRITE's `ProfilerLifetimeTests` are built only with it on, so a test build that should check
+the profiler's lifetime configures with `-DBRITE_ENABLE_PROFILER=ON`.
 
 ## Licence
 

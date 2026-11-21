@@ -34,7 +34,11 @@ option(BRITE_BUILD_AUDIO "Build the audio module: SoLoud, and the sounds a scene
 option(BRITE_BUILD_PERSISTENCE "Build the persistence module: PhysicsFS, packed assets and a saved game state" ON)
 option(BRITE_BUILD_CONTENT "Build the content module: shipped files named once, read through one root, and a manifest" ON)
 option(BRITE_BUILD_DEBUG_UI "Fetch rlImGui and put it on the include path (a debug UI's raylib binding; needs raylib)" ON)
-option(BRITE_ENABLE_PROFILER "Build the Tracy profiler into the core (started and stopped by the Application)" ON)
+# The Tracy profiler is OFF by default. Tracy LISTENS ON THE NETWORK: a program built with it opens a port, and the first
+# run on Windows asks the person at the keyboard for firewall access. A consumer that wants to profile sets this ON before
+# add_subdirectory(). BRITE's ProfilerLifetimeTests are built only when it is ON, so a build that checks the profiler's
+# lifetime configures with -DBRITE_ENABLE_PROFILER=ON.
+option(BRITE_ENABLE_PROFILER "Build the Tracy profiler into the core (started and stopped by the Application). It listens on the network" OFF)
 
 if(BRITE_BUILD_DEBUG_UI AND NOT BRITE_BUILD_RAYLIB)
     message(FATAL_ERROR "BRITE_BUILD_DEBUG_UI binds a debug UI to raylib: it needs BRITE_BUILD_RAYLIB")

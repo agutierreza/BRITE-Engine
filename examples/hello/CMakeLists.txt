@@ -18,8 +18,6 @@ if(NOT TARGET BRITE::Raylib)
     set(BRITE_BUILD_PERSISTENCE OFF)
     set(BRITE_BUILD_CONTENT OFF)
     set(BRITE_BUILD_DEBUG_UI OFF)
-    # The profiler listens on the network, and Windows asks before letting a new program do that.
-    set(BRITE_ENABLE_PROFILER OFF)
 
     add_subdirectory("${BRITE_DIR}" brite)
 endif()
