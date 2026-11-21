@@ -169,7 +169,13 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         }
     }
 
-    for (const auto& cmd : pass.Primitive3DCommands) {
+    // THE ORDER A PASS IS DRAWN IN (RenderPass.hpp says it too): the opaque primitives and models first, then the
+    // translucent draws, farthest first. raylib draws a model the moment it is asked but holds primitives in a batch
+    // that is drawn later, so left alone every model reaches the screen before every primitive whatever the pass
+    // lists: a translucent model then blends with the clear colour, and the primitive behind it fails the depth test
+    // against the depth the model wrote. So the opaque stage ends by drawing the batch, and every translucent draw --
+    // primitive, model mesh or line -- is drawn after it, one at a time, writing no depth.
+    auto drawPrimitive = [&](const BRITE::Primitive3DDrawCommand& cmd) {
         ::Color rlTint = {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a};
 
         ::rlPushMatrix();
@@ -202,6 +208,15 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         }
 
         ::rlPopMatrix();
+    };
+
+    // A primitive is translucent when its tint is: a grid takes no tint and is always opaque.
+    auto primitiveTranslucent = [](const BRITE::Primitive3DDrawCommand& cmd) {
+        return cmd.Type != BRITE::Primitive3DType::Grid && cmd.Tint.a < 255;
+    };
+    for (const auto& cmd : pass.Primitive3DCommands) {
+        if (!primitiveTranslucent(cmd))
+            drawPrimitive(cmd);
     }
 
     if (!pass.ModelCommands.empty()) {
@@ -209,14 +224,35 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         ApplyPassLighting(pass);
     }
 
-    for (const auto& cmd : pass.ModelCommands) {
+    // Whether one mesh of a model draw is translucent: its colour's alpha -- the model's own times the draw's tint, as
+    // the shader multiplies them -- is below 255, or its file says BLEND. A cut-out is not: a masked fragment is
+    // drawn solid or not at all. A texture's alpha makes a BLEND mesh translucent only through the file's say-so; an
+    // OPAQUE material ignores it, as glTF says, and so does a vertex colour's alpha here, which costs a scan of the
+    // mesh to read.
+    auto meshTranslucent = [&](const BRITE::ModelDrawCommand& cmd, const ::Model& rlModel, int m) {
+        const int slot = rlModel.meshMaterial[m];
+        const BRITE::GltfMaterialInfo* file = FileMaterial(cmd.Model, slot);
+        if (cmd.Material.AlphaMask || (file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Mask))
+            return false;
+        if (file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Blend)
+            return true;
+        return (static_cast<int>(rlModel.materials[slot].maps[MATERIAL_MAP_DIFFUSE].color.a) *
+                static_cast<int>(cmd.Material.AlbedoTint.a)) /
+                   255 <
+               255;
+    };
+
+    // One model draw's meshes: the opaque ones in the opaque stage, or in the translucent stage the one mesh
+    // `onlyMesh` names, which writes no depth.
+    auto drawModel = [&](const BRITE::ModelDrawCommand& cmd, bool translucentStage, int onlyMesh) {
         if (cmd.Model == BRITE::NullModelHandle)
-            continue;
+            return;
         auto it = m_models.find(cmd.Model);
         if (it == m_models.end())
-            continue;
+            return;
 
         const ::Model* rlModel = static_cast<::Model*>(it->second);
+        const bool writesDepth = !translucentStage && cmd.Material.DepthWrite;
         const ::Shader& pbrShader = *static_cast<::Shader*>(m_shaders[m_pbrShader]);
 
         // A texture the draw command names, or nothing when it names none or the
@@ -260,6 +296,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         // textures replace the model's own for this draw only, and a slot the
         // command leaves empty keeps what the model brought.
         for (int m = 0; m < rlModel->meshCount; ++m) {
+            if ((onlyMesh >= 0 && m != onlyMesh) || meshTranslucent(cmd, *rlModel, m) != translucentStage)
+                continue;
             const ::Material& own = rlModel->materials[rlModel->meshMaterial[m]];
             ::MaterialMap maps[MATERIAL_MAPS_PER_MATERIAL];
             std::memcpy(maps, own.maps, sizeof(maps));
@@ -302,29 +340,146 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             // Culling off for this mesh alone, and back on before the next.
             if (bothSides)
                 ::rlDisableBackfaceCulling();
-            // Depth writes off for this mesh alone, and back on before anything
-            // else: the next mesh, and the primitives, which rlgl batches and
-            // draws later, as the 3D mode ends.
-            if (!cmd.Material.DepthWrite)
+            // Depth writes off for this mesh alone -- the draw's own DepthWrite, and
+            // every translucent mesh -- and back on before anything else: the next
+            // mesh, and the primitives, which rlgl batches and draws later.
+            if (!writesDepth)
                 ::rlDisableDepthMask();
             ::DrawMesh(rlModel->meshes[m], material, transform);
-            if (!cmd.Material.DepthWrite)
+            if (!writesDepth)
                 ::rlEnableDepthMask();
             if (bothSides)
                 ::rlEnableBackfaceCulling();
         }
-    }
+    };
 
+    for (const auto& cmd : pass.ModelCommands)
+        drawModel(cmd, false, -1);
+
+    auto drawLine = [](const BRITE::Line3DDrawCommand& cmd) {
+        ::DrawLine3D({cmd.Start.x, cmd.Start.y, cmd.Start.z}, {cmd.End.x, cmd.End.y, cmd.End.z},
+                     {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a});
+    };
     if (pass.Camera3DPtr) {
-        // After the models, so a segment sharing their depth resolves in front of
+        // After the opaque models, so a segment sharing their depth resolves in front of
         // them rather than behind.
         for (const auto& cmd : pass.Line3DCommands) {
-            ::DrawLine3D({cmd.Start.x, cmd.Start.y, cmd.Start.z}, {cmd.End.x, cmd.End.y, cmd.End.z},
-                         {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a});
+            if (cmd.Tint.a == 255)
+                drawLine(cmd);
         }
-
-        ::EndMode3D();
     }
+
+    // THE TRANSLUCENT STAGE. Everything above is drawn (the batch is flushed below), so a translucent draw blends
+    // with what is really behind it. Each one is depth-TESTED against that and writes no depth, and they are drawn
+    // farthest first by the depth of the centre of the box around the draw -- a primitive's position, a line's
+    // midpoint, a model mesh's bounding box -- along the camera's view direction, the same measure the depth buffer
+    // uses, which is right for an orthographic camera too. One draw is not split: two meshes that interpenetrate, or
+    // one mesh with translucent triangles in front of each other, come out in the order the mesh lists them.
+    // Draws of equal depth, and every draw when the pass has no 3D camera, keep the order the pass lists them in:
+    // primitives, then models, then lines.
+    //
+    // A model draw that sets DepthWrite off is a LAYER, which asks for the order it was submitted in (see
+    // PBRMaterial::DepthWrite): its translucent meshes are drawn after every sorted draw, in submission order.
+    struct TranslucentDraw {
+        enum class Kind { Primitive, ModelMesh, Line } kind;
+        float depth;
+        std::size_t index;
+        int mesh;
+    };
+    std::vector<TranslucentDraw> sorted;
+    std::vector<TranslucentDraw> layers;
+    ::Vector3 eye = {0.0f, 0.0f, 0.0f};
+    ::Vector3 forward = {0.0f, 0.0f, 0.0f};
+    if (pass.Camera3DPtr) {
+        eye = {pass.Camera3DPtr->position.x, pass.Camera3DPtr->position.y, pass.Camera3DPtr->position.z};
+        forward = ::Vector3Normalize(::Vector3Subtract(
+            {pass.Camera3DPtr->target.x, pass.Camera3DPtr->target.y, pass.Camera3DPtr->target.z}, eye));
+    }
+    auto viewDepth = [&](const ::Vector3& point) {
+        return pass.Camera3DPtr ? ::Vector3DotProduct(::Vector3Subtract(point, eye), forward) : 0.0f;
+    };
+
+    for (std::size_t i = 0; i < pass.Primitive3DCommands.size(); ++i) {
+        const auto& cmd = pass.Primitive3DCommands[i];
+        if (primitiveTranslucent(cmd))
+            sorted.push_back(
+                {TranslucentDraw::Kind::Primitive, viewDepth({cmd.Position.x, cmd.Position.y, cmd.Position.z}), i, 0});
+    }
+    for (std::size_t i = 0; i < pass.ModelCommands.size(); ++i) {
+        const auto& cmd = pass.ModelCommands[i];
+        auto it = m_models.find(cmd.Model);
+        if (cmd.Model == BRITE::NullModelHandle || it == m_models.end())
+            continue;
+        const ::Model* rlModel = static_cast<::Model*>(it->second);
+        for (int m = 0; m < rlModel->meshCount; ++m) {
+            if (!meshTranslucent(cmd, *rlModel, m))
+                continue;
+            // The centre of the mesh's own bounding box, in model space, found once: a scan of the mesh.
+            std::vector<BRITE::Vector3>& centres = m_meshCentres[cmd.Model];
+            if (centres.size() != static_cast<std::size_t>(rlModel->meshCount)) {
+                centres.clear();
+                for (int k = 0; k < rlModel->meshCount; ++k) {
+                    const ::BoundingBox box = ::GetMeshBoundingBox(rlModel->meshes[k]);
+                    centres.push_back({(box.min.x + box.max.x) * 0.5f, (box.min.y + box.max.y) * 0.5f,
+                                       (box.min.z + box.max.z) * 0.5f});
+                }
+            }
+            // Placed as the draw below places the model: its own transform, then scale, rotation, translation.
+            ::Vector3 axis;
+            float angle;
+            const ::Quaternion rotation = {cmd.Rotation.x, cmd.Rotation.y, cmd.Rotation.z, cmd.Rotation.w};
+            ::QuaternionToAxisAngle(rotation, &axis, &angle);
+            const ::Matrix placement = ::MatrixMultiply(
+                ::MatrixMultiply(::MatrixScale(cmd.Scale.x, cmd.Scale.y, cmd.Scale.z), ::MatrixRotate(axis, angle)),
+                ::MatrixTranslate(cmd.Position.x, cmd.Position.y, cmd.Position.z));
+            const BRITE::Vector3 centre = centres[static_cast<std::size_t>(m)];
+            const ::Vector3 world =
+                ::Vector3Transform(::Vector3Transform({centre.x, centre.y, centre.z}, rlModel->transform), placement);
+            (cmd.Material.DepthWrite ? sorted : layers)
+                .push_back({TranslucentDraw::Kind::ModelMesh, viewDepth(world), i, m});
+        }
+    }
+    if (pass.Camera3DPtr) {
+        for (std::size_t i = 0; i < pass.Line3DCommands.size(); ++i) {
+            const auto& cmd = pass.Line3DCommands[i];
+            if (cmd.Tint.a < 255)
+                sorted.push_back({TranslucentDraw::Kind::Line,
+                                  viewDepth({(cmd.Start.x + cmd.End.x) * 0.5f, (cmd.Start.y + cmd.End.y) * 0.5f,
+                                             (cmd.Start.z + cmd.End.z) * 0.5f}),
+                                  i, 0});
+        }
+    }
+
+    if (!sorted.empty() || !layers.empty()) {
+        // The opaque primitives and lines are still in rlgl's batch.
+        ::rlDrawRenderBatchActive();
+        std::stable_sort(sorted.begin(), sorted.end(),
+                         [](const TranslucentDraw& a, const TranslucentDraw& b) { return a.depth > b.depth; });
+        sorted.insert(sorted.end(), layers.begin(), layers.end());
+        for (const TranslucentDraw& draw : sorted) {
+            switch (draw.kind) {
+            case TranslucentDraw::Kind::Primitive:
+                // The batch is drawn at the flush, so the writes are off across it.
+                ::rlDisableDepthMask();
+                drawPrimitive(pass.Primitive3DCommands[draw.index]);
+                ::rlDrawRenderBatchActive();
+                ::rlEnableDepthMask();
+                break;
+            case TranslucentDraw::Kind::ModelMesh:
+                drawModel(pass.ModelCommands[draw.index], true, draw.mesh);
+                break;
+            case TranslucentDraw::Kind::Line:
+                ::rlDisableDepthMask();
+                drawLine(pass.Line3DCommands[draw.index]);
+                ::rlDrawRenderBatchActive();
+                ::rlEnableDepthMask();
+                break;
+            }
+        }
+    }
+
+    if (pass.Camera3DPtr)
+        ::EndMode3D();
 
     if (pass.Camera) {
         ::Camera2D rlCamera;
@@ -462,6 +617,7 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.unlit = loc("unlit");
     m_pbrLocs.alphaMask = loc("alphaMask");
     m_pbrLocs.alphaCutoff = loc("alphaCutoff");
+    m_pbrLocs.alphaBlend = loc("alphaBlend");
     m_pbrLocs.doubleSided = loc("doubleSided");
     m_pbrLocs.emissiveLight = loc("emissiveLight");
     m_pbrLocs.fogEnabled = loc("fogEnabled");
@@ -599,9 +755,14 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, cons
     ::SetShaderValue(*shader, m_pbrLocs.unlit, &unlit, SHADER_UNIFORM_INT);
 
     // The cut-out: the draw's own if it asks for one, else the file's MASK.
-    // BLEND is read but not yet honoured -- it needs translucent draws sorted,
-    // which nothing does -- so a BLEND material draws as it always has.
+    // BLEND is the file's own: the texture's alpha counts, and the mesh is drawn
+    // in the translucent stage (SubmitRenderPass), sorted, blended and writing no
+    // depth. A cut-out, the draw's or the file's, wins over BLEND.
     const bool fileMasks = fileMaterial != nullptr && fileMaterial->AlphaMode == BRITE::GltfAlphaMode::Mask;
+    const int alphaBlend =
+        (!material.AlphaMask && fileMaterial != nullptr && fileMaterial->AlphaMode == BRITE::GltfAlphaMode::Blend) ? 1
+                                                                                                                   : 0;
+    ::SetShaderValue(*shader, m_pbrLocs.alphaBlend, &alphaBlend, SHADER_UNIFORM_INT);
     const int alphaMask = (material.AlphaMask || fileMasks) ? 1 : 0;
     const float alphaCutoff = material.AlphaMask ? material.AlphaCutoff : fileMasks ? fileMaterial->AlphaCutoff : 0.0f;
     ::SetShaderValue(*shader, m_pbrLocs.alphaMask, &alphaMask, SHADER_UNIFORM_INT);
@@ -985,6 +1146,7 @@ void RaylibRenderBackend::UnloadModel(BRITE::ModelHandle model) {
         delete rlModel;
         m_models.erase(it);
         m_fileMaterials.erase(model);
+        m_meshCentres.erase(model);
     }
 }
 

@@ -124,6 +124,7 @@ class RaylibRenderBackend : public IRenderBackend {
         int unlit = -1;
         int alphaMask = -1;
         int alphaCutoff = -1;
+        int alphaBlend = -1;
         int doubleSided = -1;
         int emissiveLight = -1;
         int fogEnabled = -1;
@@ -170,6 +171,9 @@ class RaylibRenderBackend : public IRenderBackend {
     // indexed by raylib's material slot: slot 0 is raylib's own default and the
     // file's material i is slot i + 1. Absent for any other model.
     std::unordered_map<BRITE::ModelHandle, std::vector<BRITE::GltfMaterialInfo>> m_fileMaterials;
+    // The centre of each mesh's bounding box in model space, found the first time a mesh is drawn translucent and
+    // read to sort it; absent until then.
+    std::unordered_map<BRITE::ModelHandle, std::vector<BRITE::Vector3>> m_meshCentres;
 };
 
 } // namespace Raylib

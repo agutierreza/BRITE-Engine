@@ -1134,6 +1134,52 @@ TEST_F(ModelMaterialTest, AnOpaqueMaterialIgnoresItsTexturesAlpha) {
     m_backend.UnloadModel(model);
 }
 
+// A BLEND material blends its texture's alpha with what is behind it: over the black clear colour the red half's 0.4 is
+// 0.4 * 186 = 74.4, (74, 0, 0), and the green half's 1.0 stays (0, 186, 0).
+//
+// Mutation: the texture's alpha left out for BLEND (the alphaBlend uniform never set) -> the red half is solid, 186.
+TEST_F(ModelMaterialTest, ABlendMaterialBlendsItsTexturesAlpha) {
+    WriteHalvesPng(m_dir.Path() / "texture.png", SEE_THROUGH_RED, SOLID_GREEN);
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), HalfSeeThroughQuad("BLEND", -1.0f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    const auto pixels = Draw(model);
+    ExpectColour(At(pixels, RED_TEXELS), 74, 0, 0, "BLEND: alpha 0.4 over the clear colour");
+    ExpectColour(At(pixels, GREEN_TEXELS), 0, LIT_FULL, 0, "BLEND: alpha 1.0");
+    m_backend.UnloadModel(model);
+}
+
+// And it is drawn after the opaque primitives, so a primitive BEHIND it shows through: a blue box at z = -0.5, over the
+// whole picture, drawn first (blue is unlit: 255). The red half's lit 186 at alpha 0.4 over blue is
+//   red = 186 x 0.4 = 74.4 -> 74;   blue = 255 x (1 - 0.4) = 153           -> (74, 0, 153),
+// and the green half, solid, hides the box: (0, 186, 0).
+//
+// Mutation: a BLEND mesh drawn in the opaque stage, as before -> it blends with the clear colour and its depth hides
+// the box: (74, 0, 0).
+TEST_F(ModelMaterialTest, ABlendMaterialInFrontOfAPrimitiveShowsThePrimitiveThroughIt) {
+    WriteHalvesPng(m_dir.Path() / "texture.png", SEE_THROUGH_RED, SOLID_GREEN);
+    const BRITE::ModelHandle model =
+        m_backend.LoadModel(WriteGltf(m_dir.Path(), HalfSeeThroughQuad("BLEND", -1.0f)).string().c_str());
+    ASSERT_NE(model, BRITE::NullModelHandle);
+
+    BRITE::RenderPass pass;
+    pass.AmbientColor = {255, 255, 255, 255};
+    pass.AmbientIntensity = 1.0f;
+    BRITE::Primitive3DDrawCommand box;
+    box.Type = BRITE::Primitive3DType::Cube;
+    box.Position = {0.0f, 0.0f, -0.5f};
+    box.Rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+    box.Scale = {1.0f, 1.0f, 1.0f};
+    box.Size = {4.0f, 4.0f, 0.02f};
+    box.Tint = {0, 0, 255, 255};
+    pass.Primitive3DCommands.push_back(box);
+    const auto pixels = DrawPass(pass, {{model, {}}});
+    ExpectColour(At(pixels, RED_TEXELS), 74, 0, 153, "BLEND over a primitive behind it");
+    ExpectColour(At(pixels, GREEN_TEXELS), 0, LIT_FULL, 0, "the opaque half hides the primitive");
+    m_backend.UnloadModel(model);
+}
+
 // A draw can ask for the cut-out on a mesh built in code: masked at 0.5 the red
 // half is not drawn. The next draw does not ask, and is translucent -- a tint
 // alpha of 128 -- so it blends: the lit red, 0.729740, times 128/255 = 0.501961

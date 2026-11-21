@@ -442,6 +442,7 @@ if(BRITE_BUILD_TESTS)
             tests/GltfMaterialsTests.cpp
             tests/WindowModeTests.cpp
             tests/DepthWriteTests.cpp
+            tests/TranslucentDrawOrderTests.cpp
             tests/RaylibSceneAssetsTests.cpp
         )
     endif()

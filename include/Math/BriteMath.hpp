@@ -315,6 +315,11 @@ struct PBRMaterial {
     // which blend over each other instead of fighting for the same depth. A
     // see-through layer's colour then depends on the order the layers are drawn
     // in. On by default: an opaque surface writes its depth.
+    //
+    // A TRANSLUCENT draw (RenderPass says what that is) writes no depth whatever this says, and is drawn after every
+    // opaque draw of its pass. With this on it is sorted back to front with the other translucent draws; with this
+    // off it is a layer, drawn after the sorted ones in the order submitted, as above. On an opaque draw, off still
+    // means depth-tested but not depth-written, and the draw keeps its place among the opaque ones.
     bool DepthWrite = true;
 };
 

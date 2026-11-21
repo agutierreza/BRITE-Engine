@@ -38,13 +38,15 @@ bool Near(BRITE::Color c, int r, int g, int b) {
 }
 
 class DepthWriteTest : public ::testing::Test {
-protected:
+  protected:
     static void SetUpTestSuite() {
         ::SetTraceLogLevel(LOG_WARNING);
         ::SetConfigFlags(FLAG_WINDOW_HIDDEN);
         ::InitWindow(SIZE, SIZE, "BRITE depth write tests");
     }
-    static void TearDownTestSuite() { ::CloseWindow(); }
+    static void TearDownTestSuite() {
+        ::CloseWindow();
+    }
 
     void TearDown() override {
         for (const BRITE::ModelHandle model : m_models)
@@ -107,21 +109,21 @@ constexpr BRITE::Color SEE_THROUGH_BLUE{0, 0, 255, 128};
 
 } // namespace
 
-// Four quads, drawn in this order:
+// Four quads, listed in this order:
 //   a red surface over the whole picture at z = 0;
 //   an opaque yellow column, x 1..2, at z = 0.75 -- the nearest thing;
 //   a see-through blue layer over the top half, y 0..2, at z = 0.5, WRITING NO DEPTH;
 //   an opaque green column, x -2..-1, at z = 0.25 -- BEHIND the blue layer.
-// Read back:
+// A pass draws its opaque draws first (RenderPass.hpp), so the green is drawn BEFORE the blue layer whatever the order
+// above, and the layer lands on top of everything. Read back:
 //   at (0, 1) the blue blends over the red: (127, 0, 128) -- it still blends;
-//   at (-1.5, 1) the green, drawn after the blue and behind it, is tested against what lay behind the blue -- the red
-//     surface at 0 -- and passes, so the pixel is pure green: the blue left no depth to hide it;
-//   at (1.5, 1) the yellow, nearer and drawn before, hides the blue: pure yellow -- the blue is still depth-TESTED;
+//   at (-1.5, 1) the blue blends over the green, which is behind it: green = 255 x (1 - 128/255) = 127, blue = 128:
+//     (0, 127, 128);
+//   at (1.5, 1) the yellow, nearer, hides the blue: pure yellow -- the blue is still depth-TESTED;
 //   at (0, -1), under nothing but the surface, red.
+// That the layer writes no depth is proved by the next case, where a layer is followed by another behind it.
 //
-// Mutations: the backend ignoring DepthWrite (the blue writes depth) -> at (-1.5, 1) the green fails behind the blue
-// and the pixel is the blend, (127, 0, 128); the depth TEST switched off for the draw instead of the writes -> at
-// (1.5, 1) the blue blends over the yellow.
+// Mutation: the depth TEST switched off for the draw -> at (1.5, 1) the blue blends over the yellow.
 TEST_F(DepthWriteTest, ASeeThroughLayerThatWritesNoDepthBlendsHidesNothingAndIsStillHidden) {
     BRITE::RenderPass pass;
     pass.ModelCommands.push_back(Draw(Quad(-2.0f, -2.0f, 2.0f, 2.0f, 0.0f), RED_SURFACE));
@@ -134,11 +136,11 @@ TEST_F(DepthWriteTest, ASeeThroughLayerThatWritesNoDepthBlendsHidesNothingAndIsS
     const BRITE::Color blended = pixels[At(0.0f, 1.0f)];
     EXPECT_TRUE(Near(blended, 127, 0, 128)) << int(blended.r) << " " << int(blended.g) << " " << int(blended.b);
     const BRITE::Color later = pixels[At(-1.5f, 1.0f)];
-    EXPECT_TRUE(Near(later, 0, 255, 0)) << "drawn after the layer, behind it: " << int(later.r) << " " << int(later.g)
-                                        << " " << int(later.b);
+    EXPECT_TRUE(Near(later, 0, 127, 128))
+        << "the layer over the green behind it: " << int(later.r) << " " << int(later.g) << " " << int(later.b);
     const BRITE::Color nearer = pixels[At(1.5f, 1.0f)];
-    EXPECT_TRUE(Near(nearer, 255, 255, 0)) << "nearer and drawn before: " << int(nearer.r) << " " << int(nearer.g)
-                                           << " " << int(nearer.b);
+    EXPECT_TRUE(Near(nearer, 255, 255, 0))
+        << "nearer and drawn before: " << int(nearer.r) << " " << int(nearer.g) << " " << int(nearer.b);
     const BRITE::Color surface = pixels[At(0.0f, -1.0f)];
     EXPECT_TRUE(Near(surface, 255, 0, 0));
 }
@@ -149,8 +151,9 @@ TEST_F(DepthWriteTest, ASeeThroughLayerThatWritesNoDepthBlendsHidesNothingAndIsS
 // 128/255 = 128 red, then blue over it 128 x (1 - 128/255) = 63.8 red and 128 blue: (64, 0, 128), everywhere the two
 // overlap. Every pixel of the overlap is checked, not one.
 //
-// Mutation: the backend ignoring DepthWrite -> the earlier layer writes its depth and the later fails behind it: the
-// overlap stays (128, 0, 0).
+// Mutations: the backend ignoring DepthWrite, so the layers are sorted back to front like any translucent draws -> the
+// blue, the farther by 0.05, is drawn first and the overlap is (128, 0, 64); the layers drawn writing their depth ->
+// the earlier writes its depth and the later fails behind it: the overlap stays (128, 0, 0).
 TEST_F(DepthWriteTest, LayersThatWriteNoDepthBlendInTheOrderDrawnWhateverTheirDepths) {
     BRITE::RenderPass pass;
     pass.ModelCommands.push_back(Draw(Quad(-2.0f, -2.0f, 1.0f, 2.0f, 0.5f), BRITE::Color{255, 0, 0, 128}, false));
@@ -171,15 +174,15 @@ TEST_F(DepthWriteTest, LayersThatWriteNoDepthBlendInTheOrderDrawnWhateverTheirDe
 
 // The writes come back after the draw that turned them off: for the next model, and for the next pass's primitives,
 // which rlgl batches and draws as the 3D mode ends.
-//   This pass: a see-through layer writing no depth; then an opaque white column x -1..1 at z = 0.6; then an opaque
-//   green sheet over everything at z = 0.3, behind the white. At (0, -1) the white wrote its depth, so the green fails
-//   there: white.
+//   This pass: a see-through layer writing no depth, listed first; then an opaque white column x -1..1 at z = 0.6; then
+//   an opaque green sheet over everything at z = 0.3, behind the white. The opaque draws come first and the layer last,
+//   so at (0, -1) the white wrote its depth and the green fails there: white -- whatever the layer does to the writes.
 //   The next pass, primitives only: a white box at z = 0.6 over x -1..1, then a green box over everything at z = 0.3,
 //   behind it. At (0, 0) the white box's depth hides the green: white.
 //
-// Mutation: the depth writes not switched back on after the see-through draw -> the white column writes no depth and
-// the green covers it at (0, -1); and the next pass's boxes write none either, so the green box covers the white at
-// (0, 0).
+// Mutation: the depth writes not switched back on after the see-through draw -> the next pass's boxes write none, so
+// the green box covers the white at (0, 0). (The layer is the last draw of its own pass, so the model half cannot see
+// it.)
 TEST_F(DepthWriteTest, TheWritesComeBackForTheNextModelAndTheNextPassesPrimitives) {
     BRITE::RenderPass models;
     models.ModelCommands.push_back(Draw(Quad(-2.0f, 0.0f, 2.0f, 2.0f, 0.5f), SEE_THROUGH_BLUE, false));
@@ -188,8 +191,8 @@ TEST_F(DepthWriteTest, TheWritesComeBackForTheNextModelAndTheNextPassesPrimitive
     const std::vector<BRITE::Color> modelPixels = Picture(models);
     ASSERT_EQ(modelPixels.size(), static_cast<std::size_t>(SIZE * SIZE));
     const BRITE::Color column = modelPixels[At(0.0f, -1.0f)];
-    EXPECT_TRUE(Near(column, 255, 255, 255)) << "the next model: " << int(column.r) << " " << int(column.g) << " "
-                                             << int(column.b);
+    EXPECT_TRUE(Near(column, 255, 255, 255))
+        << "the next model: " << int(column.r) << " " << int(column.g) << " " << int(column.b);
 
     BRITE::RenderPass boxes;
     BRITE::Primitive3DDrawCommand front;
@@ -207,8 +210,8 @@ TEST_F(DepthWriteTest, TheWritesComeBackForTheNextModelAndTheNextPassesPrimitive
     const std::vector<BRITE::Color> boxPixels = Picture(boxes);
     ASSERT_EQ(boxPixels.size(), static_cast<std::size_t>(SIZE * SIZE));
     const BRITE::Color box = boxPixels[At(0.0f, 0.0f)];
-    EXPECT_TRUE(Near(box, 255, 255, 255)) << "the next pass's primitives: " << int(box.r) << " " << int(box.g) << " "
-                                          << int(box.b);
+    EXPECT_TRUE(Near(box, 255, 255, 255))
+        << "the next pass's primitives: " << int(box.r) << " " << int(box.g) << " " << int(box.b);
 }
 
 // Asked for nothing, a draw writes its depth: nothing that exists changes.

@@ -90,6 +90,27 @@ struct FogSettings {
     float End = 1.0f;
 };
 
+// THE ORDER A PASS IS DRAWN IN, whatever order its command lists hold:
+//   1. the background callbacks;
+//   2. the OPAQUE 3D draws: primitives, then models, then 3D lines, depth-tested and writing depth;
+//   3. the TRANSLUCENT 3D draws, farthest first (below), after everything in 2, blended over what is really there;
+//   4. the 2D draws: sprites, lines, rectangles, and the world and UI callbacks.
+// Within the opaque draws the order does not show: the depth test settles what is in front. Two opaque draws at exactly
+// the same depth are the one case where it does, and the later one wins.
+//
+// A 3D draw is TRANSLUCENT when it blends with what is behind it:
+//   - a primitive or a 3D line whose tint's alpha is below 255 (a grid has no tint and is opaque);
+//   - a mesh of a model draw whose colour's alpha is below 255 -- the model's own times the draw's AlbedoTint -- or
+//     whose glTF material says BLEND, which also counts the albedo texture's alpha. A cut-out (a draw's AlphaMask, a
+//     file's MASK) is never translucent: it is drawn solid or not at all. A vertex colour's alpha is not read.
+// A translucent draw is depth-TESTED, so anything nearer and opaque still hides it, but it writes no depth of its own.
+// The translucent draws are sorted farthest first by the depth, along the camera's view direction, of the centre of the
+// box around each: a primitive's position, a 3D line's midpoint, a model mesh's bounding box. That is one sort key per
+// draw, and per MESH for a model: two meshes of one model are sorted apart, but the triangles of one mesh are drawn
+// in the order the mesh lists them. Draws of equal depth, and every draw of a pass with no 3D camera, keep the order
+// the pass lists them in: primitives, then models, then lines. There is no order-independent transparency.
+// A model draw that sets PBRMaterial::DepthWrite off is a layer and asks for its submission order instead: its
+// translucent meshes come after every sorted draw, in the order submitted.
 struct RenderPass {
     TextureHandle TargetFramebuffer = NullTextureHandle; // NullTextureHandle means default screen
     ShaderHandle Shader = NullShaderHandle;              // NullShaderHandle means no post-processing shader

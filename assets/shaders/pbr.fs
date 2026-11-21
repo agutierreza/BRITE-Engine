@@ -83,6 +83,8 @@ uniform int unlit;
 // 1: alpha is a cut-out at alphaCutoff (glTF's MASK); 0: it blends as the tint
 // and vertex colour say, and the texture's alpha is ignored (glTF's OPAQUE).
 uniform int alphaMask;
+// 1: glTF's BLEND, which counts the albedo texture's alpha too; 0: the texture's alpha is ignored.
+uniform int alphaBlend;
 uniform float alphaCutoff;
 
 // The light a surface gives off, linear RGB, strength included; black is none.
@@ -287,6 +289,10 @@ void main()
         if (useTexAlbedo == 1) alpha *= texture(albedoMap, fragTexCoord*tiling + offset).a;
         if (alpha < alphaCutoff) discard;
         alpha = 1.0;
+    }
+    else if (alphaBlend == 1 && useTexAlbedo == 1)
+    {
+        alpha *= texture(albedoMap, fragTexCoord*tiling + offset).a;
     }
 
     // Unlit: the albedo in the sRGB it was authored in, straight to the target.
