@@ -303,6 +303,18 @@ bool RaylibRenderBackend::PoseModel(BRITE::ModelHandle handle, const BRITE::Mode
         break;
     }
     if (posed) {
+        // raylib's CPU skinner uploads the posed positions to the position buffer, but the posed normals to the buffer
+        // its shader-location enum names (SHADER_LOC_VERTEX_NORMAL, 3), which is the COLOUR buffer: the normal buffer
+        // is attribute location 2 (RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL), where DrawMesh reads normals. So the
+        // posed normals go there too, or a lit posed draw would be shaded with its rest normals. (LoadModel mends the
+        // same mix-up for colours.)
+        for (int m = 0; m < model.meshCount; ++m) {
+            const ::Mesh& mesh = model.meshes[m];
+            if (mesh.vboId == nullptr || mesh.animNormals == nullptr || mesh.normals == nullptr)
+                continue;
+            ::rlUpdateVertexBuffer(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL], mesh.animNormals,
+                                   mesh.vertexCount * 3 * static_cast<int>(sizeof(float)), 0);
+        }
         skin.posed = true;
         return true;
     }
@@ -380,14 +392,16 @@ bool RaylibRenderBackend::ReadModelSkeleton(BRITE::ModelHandle handle, BRITE::Mo
     const Skin& skin = *skinIt->second;
     for (unsigned int i = 0; i < model.skeleton.boneCount; ++i) {
         BRITE::SkeletonBone bone;
-        bone.Name = model.skeleton.bones[i].name;
+        // A loader may fill all 32 bytes of a name and leave no NUL (raylib's IQM loader can): read no further.
+        const char* name = model.skeleton.bones[i].name;
+        bone.Name.assign(name, ::strnlen(name, sizeof(model.skeleton.bones[i].name)));
         bone.Parent = model.skeleton.bones[i].parent;
         bone.Rest = FromRaylib(skin.rest[i]);
         skeleton.Bones.push_back(std::move(bone));
     }
     for (const ::ModelAnimation& clip : skin.clips) {
         BRITE::AnimationClipInfo info;
-        info.Name = clip.name;
+        info.Name.assign(clip.name, ::strnlen(clip.name, sizeof(clip.name)));
         info.Duration = static_cast<float>(std::max(clip.keyframeCount - 1, 0)) / ClipSamplesPerSecond;
         skeleton.Clips.push_back(std::move(info));
     }

@@ -289,7 +289,8 @@ class SkeletalAnimationTest : public ::testing::Test {
     // THE PICTURE: the camera at (0.25, 1, 5) looks down -z at (0.25, 1, 0), +y up, orthographic and 8 world units
     // across, so world x -3.75..4.25 and y -3..5 map onto 64 pixels, 8 a unit: column (x + 3.75) * 8, row (5 - y) * 8
     // from the top. Every draw is unlit white over a black clear.
-    std::vector<BRITE::Color> Picture(const std::vector<BRITE::ModelDrawCommand>& draws) {
+    std::vector<BRITE::Color> Picture(const std::vector<BRITE::ModelDrawCommand>& draws,
+                                      const std::vector<BRITE::Light>& lights = {}) {
         BRITE::Camera3D camera{
             {0.25f, 1.0f, 5.0f}, {0.25f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, 8.0f, BRITE::CameraProjection::Orthographic};
         const BRITE::TextureHandle target = m_backend.LoadRenderTexture(SIZE, SIZE);
@@ -298,6 +299,7 @@ class SkeletalAnimationTest : public ::testing::Test {
         pass.ClearColor = {0, 0, 0, 255};
         pass.Camera3DPtr = &camera;
         pass.ModelCommands = draws;
+        pass.Lights = lights;
         m_backend.SubmitRenderPass(pass);
         int width = 0, height = 0;
         std::vector<BRITE::Color> pixels;
@@ -609,6 +611,75 @@ TEST_F(SkeletalAnimationTest, ADrawWithNoPoseAfterAPosedOneDrawsTheModelAtRest) 
     const std::vector<BRITE::Color> nextPass = Picture({Draw(model, 1.5f)});
     EXPECT_TRUE(Drawn(nextPass, 1.5f, 1.75f)) << "the next pass's draw at rest";
     EXPECT_FALSE(Drawn(nextPass, 2.5f, 1.75f)) << "the next pass's draw did not keep the last pass's slide";
+}
+
+// A LIT posed draw is shaded with its posed normals. Tip turned 60 degrees about +y at its joint, (0, 1, 0) -- the
+// quaternion (0, sin 30, 0, cos 30) = (0, 0.5, 0, 0.866025). The turn takes (x, y, z) to
+// (x cos 60 + z sin 60, y, -x sin 60 + z cos 60) = (0.5 x + 0.866025 z, y, -0.866025 x + 0.5 z), so:
+//
+//   v4 (0.5, 2, 0):  (0.5, 1, 0) from the joint -> (0.25, 1, -0.433013) -> (0.25, 2, -0.433013)
+//   v5 (-0.5, 2, 0): (-0.5, 1, 0) -> (-0.25, 1, 0.433013) -> (-0.25, 2, 0.433013)
+//   v2 (0.5, 1, 0):  root (0.5, 1, 0); tip (0.5, 0, 0) -> (0.25, 0, -0.433013) + (0, 1, 0); half each:
+//                    (0.375, 1, -0.216506)
+//   v3 (-0.5, 1, 0): root (-0.5, 1, 0); tip (-0.25, 1, 0.433013); half each: (-0.375, 1, 0.216506)
+//   v0, v1 stay.
+//   Normals: +z turned is (sin 60, 0, cos 60) = (0.866025, 0, 0.5) for v4 and v5; v2 and v3 take half of +z and half
+//   of that, (0.433013, 0, 0.75), of length sqrt(0.1875 + 0.5625) = 0.866025, so (0.5, 0, 0.866025); v0 and v1 +z.
+//
+// That geometry, built in code with those normals, is the reference: drawn lit at the same place under the same light
+// -- one directional light travelling -x, from the side, and no ambient -- it must shade every pixel as the posed
+// skinned draw does. Read at two points well inside the arm: (0, 1.75) on the upper square, (0, 0.75) on the lower.
+// And the turn must show: the light comes from +x, so a +z normal at rest receives none (cos 90) and the arm at rest is
+// black there, while the turned normal (0.866025, 0, 0.5) receives cos 30 = 0.866025 of it.
+//
+// Mutation: the posed normals left where raylib's skinner puts them (the colour buffer) -> the posed draw is shaded
+// with its rest normals, as dark as the rest draw at (0, 1.75).
+TEST_F(SkeletalAnimationTest, ALitPosedDrawIsShadedWithItsPosedNormals) {
+    const BRITE::ModelHandle model = Arm();
+    BRITE::ModelPose turned = MovedAndTurned();
+    turned.Bones[0].Translation = {0.0f, 0.5f, 0.0f};
+    turned.Bones[1].Rotation = {0.0f, 0.5f, 0.0f, 0.8660254f};
+
+    BRITE::MeshData reference;
+    reference.Positions = {{-0.5f, 0.0f, 0.0f},         {0.5f, 0.0f, 0.0f},         {0.375f, 1.0f, -0.2165064f},
+                           {-0.375f, 1.0f, 0.2165064f}, {0.25f, 2.0f, -0.4330127f}, {-0.25f, 2.0f, 0.4330127f}};
+    reference.Normals = {{0.0f, 0.0f, 1.0f},       {0.0f, 0.0f, 1.0f},       {0.5f, 0.0f, 0.8660254f},
+                         {0.5f, 0.0f, 0.8660254f}, {0.8660254f, 0.0f, 0.5f}, {0.8660254f, 0.0f, 0.5f}};
+    reference.Indices = {0, 1, 2, 0, 2, 3, 3, 2, 4, 3, 4, 5};
+    const BRITE::ModelHandle baked = m_backend.LoadModelFromMesh(reference);
+    ASSERT_NE(baked, BRITE::NullModelHandle);
+    m_models.push_back(baked);
+
+    // The posed geometry is the reference's: the read-back agrees with the hand-worked positions.
+    const std::vector<BRITE::Vector3> posed = Posed(model, turned);
+    for (std::size_t v = 0; v < 6; ++v) {
+        EXPECT_NEAR(posed[v].x, reference.Positions[v].x, EPSILON) << "vertex " << v;
+        EXPECT_NEAR(posed[v].y, reference.Positions[v].y, EPSILON) << "vertex " << v;
+        EXPECT_NEAR(posed[v].z, reference.Positions[v].z, EPSILON) << "vertex " << v;
+    }
+
+    auto lit = [&](BRITE::ModelHandle drawn, BRITE::ModelPose pose) {
+        BRITE::ModelDrawCommand draw = Draw(drawn, 0.0f, std::move(pose));
+        draw.Material.Unlit = false;
+        BRITE::Light light;
+        light.Type = BRITE::LightType::Directional;
+        light.Direction = {-1.0f, 0.0f, 0.0f};
+        return Picture({draw}, {light});
+    };
+    const std::vector<BRITE::Color> skinned = lit(model, turned);
+    const std::vector<BRITE::Color> expected = lit(baked, {});
+    const std::vector<BRITE::Color> rest = lit(model, {});
+
+    auto red = [](const std::vector<BRITE::Color>& pixels, float x, float y) {
+        const int column = static_cast<int>(std::floor((x + 3.75f) * 8.0f));
+        const int row = static_cast<int>(std::floor((5.0f - y) * 8.0f));
+        return static_cast<int>(pixels.at(static_cast<std::size_t>(row * SIZE + column)).r);
+    };
+    EXPECT_GT(red(expected, 0.0f, 1.75f), 0) << "the reference is drawn and lit";
+    EXPECT_GT(red(expected, 0.0f, 1.75f), red(rest, 0.0f, 1.75f) + 60)
+        << "the turn faces the upper square to the light";
+    EXPECT_NEAR(red(skinned, 0.0f, 1.75f), red(expected, 0.0f, 1.75f), 2) << "upper square: the posed normals";
+    EXPECT_NEAR(red(skinned, 0.0f, 0.75f), red(expected, 0.0f, 0.75f), 2) << "lower square: the posed normals";
 }
 
 // A model with no skin has no bones and no clips, ignores any pose, and draws exactly as it did before poses

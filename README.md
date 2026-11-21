@@ -286,7 +286,7 @@ draws first (models as they are drawn, then the batched primitives and lines; at
 so a line beats a primitive beats a model); then the translucent 3D draws -- a tint or a material with alpha, a glTF
 `BLEND` material -- depth-tested and writing no depth, in two groups: *layers* (a model draw with `DepthWrite` off, in the
 order submitted), then the rest, farthest first; then the 2D draws. Order-independent transparency is not done: one sort
-key per draw (per mesh, for a model).
+key per draw (per mesh, for a model; a skinned mesh is sorted by its box at rest, whatever its pose).
 
 **Skinned models.** A model loaded from a glTF or GLB file with a skin keeps its bones, and the clips in its file load
 with it (`AddModelClips` adds those of another file made for the same skeleton). `ReadModelSkeleton` lists the bones --

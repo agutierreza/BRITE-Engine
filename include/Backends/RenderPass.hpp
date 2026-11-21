@@ -118,8 +118,9 @@ struct FogSettings {
 // The sort key is the depth, along the camera's view direction, of the centre of the box around each draw: a
 // primitive's position, a 3D line's midpoint, a model mesh's bounding box as placed. That is one key per draw, and per
 // MESH for a model: two meshes of one model are sorted apart, but the triangles of one mesh are drawn in the order the
-// mesh lists them. Draws of equal depth, and every draw of a pass with no 3D camera, keep the order the pass lists
-// them in: primitives, then models, then lines. There is no order-independent transparency.
+// mesh lists them. A skinned model's mesh is sorted by its box at rest, whatever pose the draw puts it in. Draws of
+// equal depth, and every draw of a pass with no 3D camera, keep the order the pass lists them in: primitives, then
+// models, then lines. There is no order-independent transparency.
 struct RenderPass {
     TextureHandle TargetFramebuffer = NullTextureHandle; // NullTextureHandle means default screen
     ShaderHandle Shader = NullShaderHandle;              // NullShaderHandle means no post-processing shader
