@@ -3,6 +3,8 @@
 #include "Backends/GltfMaterials.hpp"
 #include "Backends/IRenderBackend.hpp"
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -51,6 +53,33 @@ class RaylibRenderBackend : public IRenderBackend {
     BRITE::ModelHandle LoadModelFromMesh(const BRITE::MeshData& mesh) override;
     void UnloadModel(BRITE::ModelHandle model) override;
     bool ReadModelMeshes(BRITE::ModelHandle model, std::vector<BRITE::MeshData>& meshes) override;
+
+    // SKELETAL ANIMATION, as raylib does it (ModelPose.hpp for the contract).
+    //
+    // CPU SKINNING: a posed draw transforms every vertex of the model by each of its up to four bones, and uploads the
+    // posed positions and normals into the model's own vertex buffers just before its meshes are drawn. So a pass
+    // pays vertices x posed draws in skinning and upload -- two draws of one model in one pass each pose and upload
+    // in turn, and each draws its own pose -- and a draw at rest after a posed one uploads the rest geometry once.
+    // A model with no skin costs nothing. Tangents stay as they were bound, so a normal map on a strongly bent part
+    // reads slightly off.
+    //
+    // Clips are read from glTF and GLB files, which raylib samples at ClipSamplesPerSecond. A skinned IQM or M3D
+    // model loads its bones and takes a pose from code, but no clips: raylib keeps their keyframes and not their
+    // rate, so a time in seconds could not be honoured. raylib applies a skinned mesh's own node transform to its
+    // vertices, which glTF says to ignore: export skinned meshes with an identity node, as exporters do by default.
+    bool ReadModelSkeleton(BRITE::ModelHandle model, BRITE::ModelSkeleton& skeleton) override;
+    int AddModelClips(BRITE::ModelHandle model, const char* fileName) override;
+    bool ReadPosedModelMeshes(BRITE::ModelHandle model, const BRITE::ModelPose& pose,
+                              std::vector<BRITE::MeshData>& meshes) override;
+
+    // raylib samples every glTF clip at this many keyframes a second (GLTF_FRAMERATE in its rmodels.c, which no
+    // header exports).
+    static constexpr float ClipSamplesPerSecond = 60.0f;
+    // The keyframe, fractional, that a time names on a clip of `keyframeCount` keyframes: the time in seconds times
+    // the sample rate, held to the first and the last keyframe. Not a number is the first.
+    static float ClipFrame(float seconds, int keyframeCount);
+    // A blend's weight held to 0..1; not a number is 0, clip A alone.
+    static float HeldBlendWeight(float weight);
 
     // One 8-bit colour channel times another, as the lit shader multiplies a
     // material's colour by a vertex colour, stored back in 8 bits: a * b / 255,
@@ -174,6 +203,22 @@ class RaylibRenderBackend : public IRenderBackend {
     // The centre of each mesh's bounding box in model space, found the first time a mesh is drawn translucent and
     // read to sort it; absent until then.
     std::unordered_map<BRITE::ModelHandle, std::vector<BRITE::Vector3>> m_meshCentres;
+
+    // A skinned model's clips, its bones' rest transforms, and whether its vertex buffers hold a pose. Present only
+    // for a model with a skin; defined beside the code that uses it, so this header needs no raylib type.
+    struct Skin;
+    std::unordered_map<BRITE::ModelHandle, std::shared_ptr<Skin>> m_skins;
+    // Puts the model's vertex buffers in the pose, or back at rest when it cannot take the pose (or none is set) and
+    // they hold another. Returns whether they now hold the pose. Every posed draw and posed read-back goes through it.
+    bool PoseModel(BRITE::ModelHandle model, const BRITE::ModelPose& pose);
+    // PoseModel for the draw of pass.ModelCommands[command], unless its pose is in the buffers already: a draw whose
+    // meshes are drawn apart -- its opaque ones, then each translucent one in its place in the sort -- is skinned once
+    // for them all, and again only if another draw of the model came between.
+    void PoseForDraw(BRITE::ModelHandle model, const BRITE::ModelPose& pose, std::size_t command);
+    // Counts the passes submitted, so a pose a draw left is never taken for one of a later pass.
+    std::uint64_t m_passSerial = 0;
+    // Appends the clips of a glTF file to a skinned model's; -1, and nothing added, when it cannot.
+    int AddClips(BRITE::ModelHandle model, const char* fileName);
 };
 
 } // namespace Raylib

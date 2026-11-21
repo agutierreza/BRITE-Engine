@@ -97,9 +97,319 @@ void ApplySampling(::Texture2D& texture, const TextureSampling& sampling) {
     ::rlTextureParameters(texture.id, RL_TEXTURE_WRAP_S, wrap);
     ::rlTextureParameters(texture.id, RL_TEXTURE_WRAP_T, wrap);
 }
+
+// A bone placed by its parent, as raylib composes a clip's keyframes (BuildPoseFromParentJoints in rmodels.c): the
+// child's scale times the parent's, the child's rotation after the parent's, and the child's translation scaled,
+// rotated and moved by the parent.
+::Transform Placed(const ::Transform& parent, const ::Transform& local) {
+    ::Transform out;
+    out.rotation = ::QuaternionMultiply(parent.rotation, local.rotation);
+    out.scale = ::Vector3Multiply(local.scale, parent.scale);
+    out.translation =
+        ::Vector3Add(::Vector3RotateByQuaternion(::Vector3Multiply(local.translation, parent.scale), parent.rotation),
+                     parent.translation);
+    return out;
+}
+
+// Placed's inverse: the transform relative to its parent that puts a bone at `placed`.
+::Transform RelativeTo(const ::Transform& parent, const ::Transform& placed) {
+    const ::Quaternion unrotate = ::QuaternionInvert(parent.rotation);
+    ::Transform out;
+    out.rotation = ::QuaternionMultiply(unrotate, placed.rotation);
+    out.scale = ::Vector3Divide(placed.scale, parent.scale);
+    out.translation = ::Vector3Divide(
+        ::Vector3RotateByQuaternion(::Vector3Subtract(placed.translation, parent.translation), unrotate), parent.scale);
+    return out;
+}
+
+::Transform ToRaylib(const BRITE::BoneTransform& t) {
+    return {{t.Translation.x, t.Translation.y, t.Translation.z},
+            {t.Rotation.x, t.Rotation.y, t.Rotation.z, t.Rotation.w},
+            {t.Scale.x, t.Scale.y, t.Scale.z}};
+}
+
+BRITE::BoneTransform FromRaylib(const ::Transform& t) {
+    return {{t.translation.x, t.translation.y, t.translation.z},
+            {t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w},
+            {t.scale.x, t.scale.y, t.scale.z}};
+}
+
+// Every bone placed in the model from transforms relative to each bone's parent, parents first whatever order the
+// file listed them in. A parent index out of range, or a loop of parents, places the bone as if it had none.
+std::vector<::Transform> PlacedInModel(const ::BoneInfo* bones, int boneCount, const std::vector<::Transform>& local) {
+    std::vector<::Transform> placed(static_cast<std::size_t>(boneCount));
+    std::vector<int> state(static_cast<std::size_t>(boneCount), 0); // 0 not placed, 1 being placed, 2 placed
+    auto place = [&](auto&& self, int i) -> void {
+        const std::size_t at = static_cast<std::size_t>(i);
+        if (state[at] == 2)
+            return;
+        state[at] = 1;
+        const int parent = bones[i].parent;
+        const bool hasParent = parent >= 0 && parent < boneCount && state[static_cast<std::size_t>(parent)] != 1;
+        if (hasParent) {
+            self(self, parent);
+            placed[at] = Placed(placed[static_cast<std::size_t>(parent)], local[at]);
+        } else {
+            placed[at] = local[at];
+        }
+        state[at] = 2;
+    };
+    for (int i = 0; i < boneCount; ++i)
+        place(place, i);
+    return placed;
+}
+
+// Copies a mesh's arrays into a MeshData -- the posed positions and normals when `posed`, the rest ones otherwise.
+void ReadMesh(const ::Model& model, int m, bool posed, BRITE::MeshData& out) {
+    const ::Mesh& mesh = model.meshes[m];
+    if (mesh.vertices == nullptr || mesh.vertexCount <= 0)
+        return; // a mesh whose file held no positions raylib could read
+    const std::size_t vertexCount = static_cast<std::size_t>(mesh.vertexCount);
+    const float* positions = posed && mesh.animVertices != nullptr ? mesh.animVertices : mesh.vertices;
+    const float* normals = posed && mesh.animNormals != nullptr ? mesh.animNormals : mesh.normals;
+
+    out.Positions.resize(vertexCount);
+    for (std::size_t i = 0; i < vertexCount; ++i)
+        out.Positions[i] = {positions[i * 3 + 0], positions[i * 3 + 1], positions[i * 3 + 2]};
+
+    // A node's scale reaches the normals through the inverse-transpose, which raylib does not renormalise
+    // afterwards, and neither does its skinning; the shader does, so the model draws right, but a caller is promised
+    // unit normals.
+    if (mesh.normals != nullptr) {
+        out.Normals.resize(vertexCount);
+        for (std::size_t i = 0; i < vertexCount; ++i) {
+            const BRITE::Vector3 n = {normals[i * 3 + 0], normals[i * 3 + 1], normals[i * 3 + 2]};
+            const float length = BRITE::Math::Length(n);
+            out.Normals[i] = length > 0.0f ? BRITE::Vector3{n.x / length, n.y / length, n.z / length} : n;
+        }
+    }
+
+    // The draw multiplies the material's colour by the vertex colour; the read-back folds that product into the
+    // vertex colour, so a plain white material draws it the same.
+    const ::Color base = model.materials[model.meshMaterial[m]].maps[MATERIAL_MAP_DIFFUSE].color;
+    out.Colors.resize(vertexCount);
+    for (std::size_t i = 0; i < vertexCount; ++i) {
+        const unsigned char* vertex = mesh.colors != nullptr ? &mesh.colors[i * 4] : nullptr;
+        auto channel = [&](int c, unsigned char own) {
+            return RaylibRenderBackend::ModulateChannel(vertex != nullptr ? vertex[c] : 255, own);
+        };
+        out.Colors[i] = {channel(0, base.r), channel(1, base.g), channel(2, base.b), channel(3, base.a)};
+    }
+
+    // The first set of texture coordinates, when the mesh has one. A second set (glTF's TEXCOORD_1) has no place in
+    // MeshData and is left behind.
+    if (mesh.texcoords != nullptr) {
+        out.TexCoords.resize(vertexCount);
+        for (std::size_t i = 0; i < vertexCount; ++i)
+            out.TexCoords[i] = {mesh.texcoords[i * 2 + 0], mesh.texcoords[i * 2 + 1]};
+    }
+
+    // Without an index list raylib draws the vertices in order, three to a triangle; a trailing one or two make no
+    // triangle and are not drawn.
+    const std::size_t indexCount =
+        mesh.indices != nullptr ? static_cast<std::size_t>(mesh.triangleCount) * 3 : vertexCount / 3 * 3;
+    out.Indices.resize(indexCount);
+    for (std::size_t i = 0; i < indexCount; ++i)
+        out.Indices[i] = mesh.indices != nullptr ? mesh.indices[i] : static_cast<std::uint32_t>(i);
+}
 } // namespace
 
+struct RaylibRenderBackend::Skin {
+    // Each array raylib loaded, freed with it when the model is unloaded, and every clip in them in order.
+    std::vector<std::pair<::ModelAnimation*, int>> loaded;
+    std::vector<::ModelAnimation> clips;
+    // Each bone's rest transform relative to its parent, from raylib's bind pose (which it keeps placed in the model).
+    std::vector<::Transform> rest;
+    // Whether the vertex buffers hold a pose rather than the rest geometry.
+    bool posed = false;
+    // Which draw put them there: the pass (m_passSerial; 0 for none) and the command's index in it.
+    std::uint64_t posedPass = 0;
+    std::size_t posedCommand = 0;
+};
+
+float RaylibRenderBackend::ClipFrame(float seconds, int keyframeCount) {
+    const float last = static_cast<float>(std::max(keyframeCount - 1, 0));
+    float frame = seconds * ClipSamplesPerSecond;
+    if (!(frame > 0.0f)) // before the start, and not a number
+        frame = 0.0f;
+    if (frame > last)
+        frame = last;
+    return frame;
+}
+
+float RaylibRenderBackend::HeldBlendWeight(float weight) {
+    if (!(weight > 0.0f))
+        return 0.0f;
+    return weight > 1.0f ? 1.0f : weight;
+}
+
+bool RaylibRenderBackend::PoseModel(BRITE::ModelHandle handle, const BRITE::ModelPose& pose) {
+    auto skinIt = m_skins.find(handle);
+    auto modelIt = m_models.find(handle);
+    if (skinIt == m_skins.end() || modelIt == m_models.end())
+        return false;
+    Skin& skin = *skinIt->second;
+    skin.posedPass = 0; // whatever is in the buffers now, no draw has put it there
+    const ::Model& model = *static_cast<const ::Model*>(modelIt->second);
+    const int boneCount = static_cast<int>(model.skeleton.boneCount);
+
+    // A clip the model has, whose every keyframe moves every bone.
+    auto clip = [&](int index) -> const ::ModelAnimation* {
+        if (index < 0 || index >= static_cast<int>(skin.clips.size()))
+            return nullptr;
+        const ::ModelAnimation& c = skin.clips[static_cast<std::size_t>(index)];
+        if (c.keyframeCount <= 0 || c.keyframePoses == nullptr || static_cast<int>(c.boneCount) != boneCount)
+            return nullptr;
+        return &c;
+    };
+
+    bool posed = false;
+    switch (pose.Kind) {
+    case BRITE::PoseKind::Rest:
+        break;
+    case BRITE::PoseKind::Clip:
+        if (const ::ModelAnimation* a = clip(pose.A.Clip)) {
+            ::UpdateModelAnimation(model, *a, ClipFrame(pose.A.Seconds, a->keyframeCount));
+            posed = true;
+        }
+        break;
+    case BRITE::PoseKind::Blend: {
+        const ::ModelAnimation* a = clip(pose.A.Clip);
+        const ::ModelAnimation* b = clip(pose.B.Clip);
+        if (a && b) {
+            ::UpdateModelAnimationEx(model, *a, ClipFrame(pose.A.Seconds, a->keyframeCount), *b,
+                                     ClipFrame(pose.B.Seconds, b->keyframeCount), HeldBlendWeight(pose.Weight));
+            posed = true;
+        }
+        break;
+    }
+    case BRITE::PoseKind::Bones:
+        if (static_cast<int>(pose.Bones.size()) == boneCount) {
+            // The bones placed in the model, handed to raylib as a clip of one keyframe: frame 0 and the "next" one
+            // are both that keyframe, so it is drawn exactly.
+            std::vector<::Transform> local;
+            local.reserve(pose.Bones.size());
+            for (const BRITE::BoneTransform& bone : pose.Bones)
+                local.push_back(ToRaylib(bone));
+            std::vector<::Transform> placed = PlacedInModel(model.skeleton.bones, boneCount, local);
+            ::Transform* keyframe = placed.data();
+            ::ModelAnimation once = {};
+            once.boneCount = model.skeleton.boneCount;
+            once.keyframeCount = 1;
+            once.keyframePoses = &keyframe;
+            ::UpdateModelAnimation(model, once, 0.0f);
+            posed = true;
+        }
+        break;
+    }
+    if (posed) {
+        skin.posed = true;
+        return true;
+    }
+
+    // At rest: the bound geometry back in the buffers, if a pose is in them.
+    if (skin.posed) {
+        for (int m = 0; m < model.meshCount; ++m) {
+            const ::Mesh& mesh = model.meshes[m];
+            if (mesh.vboId == nullptr || mesh.vertices == nullptr)
+                continue;
+            const int bytes = mesh.vertexCount * 3 * static_cast<int>(sizeof(float));
+            ::rlUpdateVertexBuffer(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION], mesh.vertices, bytes, 0);
+            if (mesh.normals != nullptr)
+                ::rlUpdateVertexBuffer(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL], mesh.normals, bytes, 0);
+        }
+        skin.posed = false;
+    }
+    return false;
+}
+
+void RaylibRenderBackend::PoseForDraw(BRITE::ModelHandle handle, const BRITE::ModelPose& pose, std::size_t command) {
+    auto skinIt = m_skins.find(handle);
+    if (skinIt == m_skins.end())
+        return;
+    // The buffers already hold this very command's pose: its earlier meshes in this pass were drawn in it, and no
+    // other draw or read-back has posed the model since.
+    Skin& skin = *skinIt->second;
+    if (skin.posedPass == m_passSerial && skin.posedCommand == command)
+        return;
+    PoseModel(handle, pose);
+    skin.posedPass = m_passSerial;
+    skin.posedCommand = command;
+}
+
+int RaylibRenderBackend::AddClips(BRITE::ModelHandle handle, const char* fileName) {
+    auto skinIt = m_skins.find(handle);
+    auto modelIt = m_models.find(handle);
+    if (skinIt == m_skins.end() || modelIt == m_models.end() || fileName == nullptr)
+        return -1;
+    if (!::IsFileExtension(fileName, ".gltf") && !::IsFileExtension(fileName, ".glb"))
+        return -1;
+    const ::Model& model = *static_cast<const ::Model*>(modelIt->second);
+    int count = 0;
+    ::ModelAnimation* clips = ::LoadModelAnimations(fileName, &count);
+    if (clips == nullptr)
+        return -1;
+    // raylib's own check of a clip against a model is the bone count; nothing finer is kept in a clip.
+    bool fits = count > 0;
+    for (int i = 0; i < count && fits; ++i)
+        fits = clips[i].boneCount == model.skeleton.boneCount;
+    if (!fits) {
+        ::UnloadModelAnimations(clips, count);
+        return -1;
+    }
+    Skin& skin = *skinIt->second;
+    skin.loaded.emplace_back(clips, count);
+    for (int i = 0; i < count; ++i)
+        skin.clips.push_back(clips[i]);
+    return count;
+}
+
+int RaylibRenderBackend::AddModelClips(BRITE::ModelHandle model, const char* fileName) {
+    return AddClips(model, fileName);
+}
+
+bool RaylibRenderBackend::ReadModelSkeleton(BRITE::ModelHandle handle, BRITE::ModelSkeleton& skeleton) {
+    skeleton = {};
+    auto modelIt = m_models.find(handle);
+    if (modelIt == m_models.end())
+        return false;
+    auto skinIt = m_skins.find(handle);
+    if (skinIt == m_skins.end())
+        return true; // no skin: no bones and no clips
+    const ::Model& model = *static_cast<const ::Model*>(modelIt->second);
+    const Skin& skin = *skinIt->second;
+    for (unsigned int i = 0; i < model.skeleton.boneCount; ++i) {
+        BRITE::SkeletonBone bone;
+        bone.Name = model.skeleton.bones[i].name;
+        bone.Parent = model.skeleton.bones[i].parent;
+        bone.Rest = FromRaylib(skin.rest[i]);
+        skeleton.Bones.push_back(std::move(bone));
+    }
+    for (const ::ModelAnimation& clip : skin.clips) {
+        BRITE::AnimationClipInfo info;
+        info.Name = clip.name;
+        info.Duration = static_cast<float>(std::max(clip.keyframeCount - 1, 0)) / ClipSamplesPerSecond;
+        skeleton.Clips.push_back(std::move(info));
+    }
+    return true;
+}
+
+bool RaylibRenderBackend::ReadPosedModelMeshes(BRITE::ModelHandle handle, const BRITE::ModelPose& pose,
+                                               std::vector<BRITE::MeshData>& meshes) {
+    meshes.clear();
+    auto it = m_models.find(handle);
+    if (it == m_models.end())
+        return false;
+    const bool posed = PoseModel(handle, pose);
+    const ::Model& model = *static_cast<const ::Model*>(it->second);
+    meshes.resize(static_cast<std::size_t>(model.meshCount));
+    for (int m = 0; m < model.meshCount; ++m)
+        ReadMesh(model, m, posed, meshes[static_cast<std::size_t>(m)]);
+    return true;
+}
+
 void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
+    ++m_passSerial;
     if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
         auto it = m_textures.find(pass.TargetFramebuffer);
         if (it != m_textures.end() && it->second.isRenderTexture) {
@@ -292,6 +602,11 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         const ::Color tint = {cmd.Material.AlbedoTint.r, cmd.Material.AlbedoTint.g, cmd.Material.AlbedoTint.b,
                               cmd.Material.AlbedoTint.a};
 
+        // This draw's pose goes into the model's vertex buffers before the first of its meshes this call draws -- the
+        // opaque stage draws a command's opaque meshes, the translucent stage one mesh at a time, interleaved with
+        // other draws -- so every mesh is drawn in its own command's pose, and two draws in one pass never share one.
+        bool posed = false;
+
         // Mesh by mesh, each with ITS OWN material: a model loaded from a file
         // keeps its materials in slots 1..n (raylib reserves slot 0 for a
         // default), and every one of them is drawn lit. The material is copied,
@@ -301,6 +616,10 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         for (int m = 0; m < rlModel->meshCount; ++m) {
             if ((onlyMesh >= 0 && m != onlyMesh) || meshTranslucent(cmd, *rlModel, m) != translucentStage)
                 continue;
+            if (!posed) {
+                PoseForDraw(cmd.Model, cmd.Pose, static_cast<std::size_t>(&cmd - pass.ModelCommands.data()));
+                posed = true;
+            }
             const ::Material& own = rlModel->materials[rlModel->meshMaterial[m]];
             ::MaterialMap maps[MATERIAL_MAPS_PER_MATERIAL];
             std::memcpy(maps, own.maps, sizeof(maps));
@@ -419,7 +738,9 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         for (int m = 0; m < rlModel->meshCount; ++m) {
             if (!meshTranslucent(cmd, *rlModel, m))
                 continue;
-            // The centre of the mesh's own bounding box, in model space, found once: a scan of the mesh.
+            // The centre of the mesh's own bounding box, in model space, found once: a scan of the mesh. A skinned
+            // model's is its rest geometry's: a pose moves the mesh within reach of its bones, and is not applied to
+            // find the key.
             std::vector<BRITE::Vector3>& centres = m_meshCentres[cmd.Model];
             if (centres.size() != static_cast<std::size_t>(rlModel->meshCount)) {
                 centres.clear();
@@ -1007,6 +1328,23 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
     for (int m = 0; m < model->meshCount; ++m)
         GenerateTangents(model->meshes[m]);
 
+    // A skin: its bones' rest transforms relative to their parents, from the bind pose raylib keeps placed in the
+    // model, and the clips of the same file. A model with no skin is loaded exactly as before.
+    if (model->skeleton.boneCount > 0 && model->skeleton.bones != nullptr && model->skeleton.bindPose != nullptr &&
+        model->boneMatrices != nullptr) {
+        auto skin = std::make_shared<Skin>();
+        const int boneCount = static_cast<int>(model->skeleton.boneCount);
+        skin->rest.resize(static_cast<std::size_t>(boneCount));
+        for (int i = 0; i < boneCount; ++i) {
+            const int parent = model->skeleton.bones[i].parent;
+            const ::Transform& placed = model->skeleton.bindPose[i];
+            skin->rest[static_cast<std::size_t>(i)] =
+                parent >= 0 && parent < boneCount ? RelativeTo(model->skeleton.bindPose[parent], placed) : placed;
+        }
+        m_skins[handle] = std::move(skin);
+        AddClips(handle, fileName); // none is not a failure: a body posed from code needs no clip
+    }
+
     // raylib's glTF loader reads a material's base colour and textures and
     // nothing else, so the rest is read from the file here: the file's material
     // i is raylib's slot i + 1, and slot 0 is raylib's own default. Read the
@@ -1151,6 +1489,12 @@ void RaylibRenderBackend::UnloadModel(BRITE::ModelHandle model) {
         m_models.erase(it);
         m_fileMaterials.erase(model);
         m_meshCentres.erase(model);
+        // Its clips go with it.
+        if (auto skinIt = m_skins.find(model); skinIt != m_skins.end()) {
+            for (const auto& [clips, count] : skinIt->second->loaded)
+                ::UnloadModelAnimations(clips, count);
+            m_skins.erase(skinIt);
+        }
     }
 }
 
@@ -1169,60 +1513,11 @@ bool RaylibRenderBackend::ReadModelMeshes(BRITE::ModelHandle model, std::vector<
     // file loaders have already applied every node's transform to them. Both
     // LoadModel and LoadModelFromMesh set the model's own transform to the
     // identity, and nothing in this backend changes it, so the arrays are in
-    // the model's space as they stand.
+    // the model's space as they stand. A skinned model's are its rest geometry,
+    // whatever pose its last draw left in its vertex buffers.
     meshes.resize(static_cast<std::size_t>(rlModel->meshCount));
-    for (int m = 0; m < rlModel->meshCount; ++m) {
-        const ::Mesh& mesh = rlModel->meshes[m];
-        BRITE::MeshData& out = meshes[static_cast<std::size_t>(m)];
-        if (mesh.vertices == nullptr || mesh.vertexCount <= 0)
-            continue; // a mesh whose file held no positions raylib could read
-        const std::size_t vertexCount = static_cast<std::size_t>(mesh.vertexCount);
-
-        out.Positions.resize(vertexCount);
-        for (std::size_t i = 0; i < vertexCount; ++i)
-            out.Positions[i] = {mesh.vertices[i * 3 + 0], mesh.vertices[i * 3 + 1], mesh.vertices[i * 3 + 2]};
-
-        // A node's scale reaches the normals through the inverse-transpose,
-        // which raylib does not renormalise afterwards; the shader does, so
-        // the model draws right, but a caller is promised unit normals.
-        if (mesh.normals != nullptr) {
-            out.Normals.resize(vertexCount);
-            for (std::size_t i = 0; i < vertexCount; ++i) {
-                const BRITE::Vector3 n = {mesh.normals[i * 3 + 0], mesh.normals[i * 3 + 1], mesh.normals[i * 3 + 2]};
-                const float length = BRITE::Math::Length(n);
-                out.Normals[i] = length > 0.0f ? BRITE::Vector3{n.x / length, n.y / length, n.z / length} : n;
-            }
-        }
-
-        // The draw multiplies the material's colour by the vertex colour; the
-        // read-back folds that product into the vertex colour, so a plain white
-        // material draws it the same.
-        const ::Color base = rlModel->materials[rlModel->meshMaterial[m]].maps[MATERIAL_MAP_DIFFUSE].color;
-        out.Colors.resize(vertexCount);
-        for (std::size_t i = 0; i < vertexCount; ++i) {
-            const unsigned char* vertex = mesh.colors != nullptr ? &mesh.colors[i * 4] : nullptr;
-            auto channel = [&](int c, unsigned char own) {
-                return ModulateChannel(vertex != nullptr ? vertex[c] : 255, own);
-            };
-            out.Colors[i] = {channel(0, base.r), channel(1, base.g), channel(2, base.b), channel(3, base.a)};
-        }
-
-        // The first set of texture coordinates, when the mesh has one. A second
-        // set (glTF's TEXCOORD_1) has no place in MeshData and is left behind.
-        if (mesh.texcoords != nullptr) {
-            out.TexCoords.resize(vertexCount);
-            for (std::size_t i = 0; i < vertexCount; ++i)
-                out.TexCoords[i] = {mesh.texcoords[i * 2 + 0], mesh.texcoords[i * 2 + 1]};
-        }
-
-        // Without an index list raylib draws the vertices in order, three to a
-        // triangle; a trailing one or two make no triangle and are not drawn.
-        const std::size_t indexCount =
-            mesh.indices != nullptr ? static_cast<std::size_t>(mesh.triangleCount) * 3 : vertexCount / 3 * 3;
-        out.Indices.resize(indexCount);
-        for (std::size_t i = 0; i < indexCount; ++i)
-            out.Indices[i] = mesh.indices != nullptr ? mesh.indices[i] : static_cast<std::uint32_t>(i);
-    }
+    for (int m = 0; m < rlModel->meshCount; ++m)
+        ReadMesh(*rlModel, m, false, meshes[static_cast<std::size_t>(m)]);
     return true;
 }
 

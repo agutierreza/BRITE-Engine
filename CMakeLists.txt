@@ -438,6 +438,7 @@ if(BRITE_BUILD_TESTS)
             tests/MeshDataTests.cpp
             tests/ModelMaterialTests.cpp
             tests/ModelReadbackTests.cpp
+            tests/SkeletalAnimationTests.cpp
             tests/MultisampleTests.cpp
             tests/GltfMaterialsTests.cpp
             tests/WindowModeTests.cpp

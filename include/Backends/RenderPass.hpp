@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Math/BriteMath.hpp"
+#include "ModelPose.hpp"
 #include <cstddef>
 #include <functional>
 #include <vector>
@@ -24,6 +25,9 @@ struct ModelDrawCommand {
     Vector3 Position;
     Quaternion Rotation;
     Vector3 Scale;
+    // A skinned model's pose for this draw alone (ModelPose.hpp): at rest unless set, and ignored by a model with no
+    // skin. Two draws of one model in one pass each draw their own pose.
+    ModelPose Pose;
 };
 
 struct SpriteDrawCommand {

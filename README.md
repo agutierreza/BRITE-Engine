@@ -288,6 +288,17 @@ so a line beats a primitive beats a model); then the translucent 3D draws -- a t
 order submitted), then the rest, farthest first; then the 2D draws. Order-independent transparency is not done: one sort
 key per draw (per mesh, for a model).
 
+**Skinned models.** A model loaded from a glTF or GLB file with a skin keeps its bones, and the clips in its file load
+with it (`AddModelClips` adds those of another file made for the same skeleton). `ReadModelSkeleton` lists the bones --
+each with its parent and its rest transform -- and the clips, with their names and lengths; `FindBone` and `FindClip`
+turn a name into the index a pose uses. A draw poses the model with `ModelDrawCommand::Pose`
+(`include/Backends/ModelPose.hpp`): `ModelPose::FromClip(clip, seconds)` for one clip, `FromBlend({a, secondsA},
+{b, secondsB}, weight)` for two blended (0 is clip A alone, 1 is clip B), or `FromBones(...)` for a pose from code, one
+transform a bone relative to its parent. Times are the caller's, never the wall clock, and are held to the clip's ends;
+a draw with no pose draws the model as it was bound, and a model with no skin ignores a pose. Skinning is on the CPU, per
+posed draw -- vertices times posed draws a pass -- so two draws of one model in one pass each show their own pose;
+`ReadPosedModelMeshes` reads the posed geometry back.
+
 **`TickFraction()`.** A frame that falls between two ticks draws the same state as the last, so what moves at one tick a
 step moves in steps. `Application::TickFraction()` is how far the clock has advanced into the next tick, in `[0, 1)`,
 valid during `OnRender`; keep the previous tick's state and draw `previous + (current - previous) * TickFraction()` to

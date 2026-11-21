@@ -2,6 +2,7 @@
 
 #include "Math/BriteMath.hpp"
 #include "MeshData.hpp"
+#include "ModelPose.hpp"
 #include "RenderPass.hpp"
 #include <vector>
 
@@ -119,6 +120,33 @@ class IRenderBackend {
     // does, so that an implementation written before it existed still builds.
     virtual bool ReadModelMeshes(BRITE::ModelHandle model, std::vector<BRITE::MeshData>& meshes) {
         (void)model;
+        meshes.clear();
+        return false;
+    }
+
+    // SKELETAL ANIMATION (ModelPose.hpp). A model's bones and clips: empty for a model with no skin. Returns false,
+    // with the skeleton empty, when the handle names no model -- or when the backend cannot animate, which is what
+    // these defaults do, so that an implementation written before they existed still builds.
+    virtual bool ReadModelSkeleton(BRITE::ModelHandle model, BRITE::ModelSkeleton& skeleton) {
+        (void)model;
+        skeleton = {};
+        return false;
+    }
+    // Adds the clips of another file made for the same skeleton -- a walk exported apart from the body -- after the
+    // ones the model has, and returns how many it added. Refused, with -1 and nothing added, when the handle names no
+    // skinned model, the file holds no clips, or its clips move a different number of bones.
+    virtual int AddModelClips(BRITE::ModelHandle model, const char* fileName) {
+        (void)model;
+        (void)fileName;
+        return -1;
+    }
+    // ReadModelMeshes under a pose: the geometry a draw with that pose puts on screen, in the model's own space -- for
+    // a posed body's bounds or collision, or baking one frame. Positions and normals are posed; everything else
+    // reads back as ReadModelMeshes reads it. A model with no skin, or a pose it cannot take, reads back at rest.
+    virtual bool ReadPosedModelMeshes(BRITE::ModelHandle model, const BRITE::ModelPose& pose,
+                                      std::vector<BRITE::MeshData>& meshes) {
+        (void)model;
+        (void)pose;
         meshes.clear();
         return false;
     }
