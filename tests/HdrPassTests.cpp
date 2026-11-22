@@ -284,6 +284,89 @@ TEST_F(HdrPass, PassesAtTwoSizesEachKeepTheirOwnTargets) {
     m_backend.UnloadRenderTexture(half);
 }
 
+// A SET NO PASS DRAWS INTO IS FREED, so a resize or a change of full screen does not keep the old size's targets for
+// the application's life. A full-size and a half-size HDR pass make two sets. Then the half-size one is not drawn
+// again: for IdlePasses + 10 rounds, a plain (not HDR) pass and the full-size HDR pass. Counted by hand: the half set
+// was last used on pass 2; the rounds are passes 3 to 2 + 2 (IdlePasses + 10), so by the last round it has stood unused
+// for 2 (IdlePasses + 10) passes, more than IdlePasses: freed. The full set is drawn into every second pass, never idle
+// for more than one: kept, and never remade (two targets made in all). A half-size pass after that makes a third.
+// Mutation: ForgetIdle not called -> two sets held, red. Mutation: a set freed after any pass it was not drawn in
+// (IdlePasses 0) -> the full set is remade every round, far more than two targets made, red.
+TEST_F(HdrPass, ASetNoPassDrawsIntoIsFreed) {
+    const BRITE::TextureHandle half = m_backend.LoadRenderTexture(HiddenWindow::SIZE / 2, HiddenWindow::SIZE / 2);
+    BRITE::RenderPass full = Hdr();
+    full.ClearColor = SKY;
+    Picture(full);
+    BRITE::RenderPass small = Hdr();
+    small.ClearColor = {200, 120, 40, 255};
+    Picture(small, half);
+    EXPECT_EQ(m_backend.HdrTargetSetsHeld(), 2);
+    const std::uint64_t rounds = BRITE::Backends::Raylib::RaylibRenderBackend::HdrIdlePasses() + 10;
+    for (std::uint64_t round = 0; round < rounds; ++round) {
+        BRITE::RenderPass plain;
+        plain.TargetFramebuffer = half;
+        m_backend.SubmitRenderPass(plain);
+        BRITE::RenderPass again = Hdr();
+        again.ClearColor = SKY;
+        Picture(again);
+    }
+    EXPECT_EQ(m_backend.HdrTargetSetsHeld(), 1) << "the half-size set, idle, is freed; the full-size set is kept";
+    EXPECT_EQ(m_backend.HdrSceneTargetsMade(), 2) << "the full-size set, drawn into every second pass, is never remade";
+    BRITE::RenderPass back = Hdr();
+    back.ClearColor = {200, 120, 40, 255};
+    const std::vector<BRITE::Color> pixels = Picture(back, half);
+    EXPECT_TRUE(Within(pixels[0], 200, 120, 40, 1)) << "the half size draws again, into a set made anew";
+    EXPECT_EQ(m_backend.HdrSceneTargetsMade(), 3);
+    EXPECT_EQ(m_backend.HdrTargetSetsHeld(), 2);
+    m_backend.UnloadRenderTexture(half);
+}
+
+// A TRANSLUCENT LAYER IN A PASS THAT DOES NOT CLEAR LIES OVER THE TARGET BY ITS OWN ALPHA, under HDR and under the
+// display-referred bloom alike: the chain's target is premultiplied (RenderPass.hpp, PostSettings). The target is
+// cleared to grey (128, 128, 128) by an 8-bit pass; then a chained pass that does not clear draws one white unlit layer
+// at alpha 26 (a = 26/255 = 0.101961) and nothing else. Worked by hand:
+//   the chain's target: colour 1 x a = 0.101961 and, as coverage, alpha a + 0 x (1 - a) = 0.101961;
+//   the composite: the colour divided by the coverage is white, through the curve white again (or screened with no
+//   bloom, white), written as white x a; blended ONE, ONE_MINUS_SRC_ALPHA over the grey 128/255 = 0.501961:
+//   0.101961 + 0.501961 x 0.898039 = 0.552741, 140.95 of 255: 141 -- what an 8-bit pass gives, 128 + 127 a = 140.95.
+// Mutation: the chain's alpha blended as raylib blends it (SRC_ALPHA, ONE_MINUS_SRC_ALPHA on the alpha too) -> the
+// coverage is a x a = 0.010396, and the composite 0.101961 x 0.010396 + 0.501961 x 0.989604 = 0.4978: 127, red.
+// Mutation: the composite laid over by SRC_ALPHA again (the review's old path) -> 0.101961 x 0.101961 + 0.501961 x
+// 0.898039 = 0.4612: 118, red.
+TEST_F(HdrPass, ALayerInAPassThatDoesNotClearLiesOverTheTargetByItsAlpha) {
+    for (bool hdr : {true, false}) {
+        const BRITE::TextureHandle target = m_backend.LoadRenderTexture(HiddenWindow::SIZE, HiddenWindow::SIZE);
+        BRITE::RenderPass grey;
+        grey.ClearColor = {128, 128, 128, 255};
+        Picture(grey, target);
+        BRITE::RenderPass pass = Hdr();
+        pass.Post.Hdr = hdr;
+        if (!hdr) {
+            pass.Post.Bloom.Enabled = true; // the display-referred road through the chain
+            pass.Post.Bloom.Intensity = 0.0f;
+        }
+        pass.ShouldClear = false;
+        pass.ModelCommands.push_back(Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.0f), {255, 255, 255, 26}));
+        const BRITE::Color c = Picture(pass, target)[At(0.0f, 0.0f)];
+        EXPECT_TRUE(Within(c, 141, 141, 141, 1))
+            << (hdr ? "hdr " : "display ") << int(c.r) << " " << int(c.g) << " " << int(c.b);
+        m_backend.UnloadRenderTexture(target);
+    }
+}
+
+// A CLEAR COLOUR WITH ALPHA BELOW 1 KEEPS ITS COLOUR: the chain's target is premultiplied, so the clear is stored as
+// light x alpha and divided by it again in the tone map; the picture replaces the target with the colour as authored
+// and the alpha as authored. SKY at alpha 128 reads back (51, 102, 204) within the dither's step, alpha 128 exactly.
+// Mutation: the clear stored straight (not times its alpha) -> the tone map divides the light by 0.502 and shows it
+// twice as bright, far from (51, 102, 204): red.
+TEST_F(HdrPass, AClearColourWithAlphaBelowOneKeepsItsColour) {
+    BRITE::RenderPass pass = Hdr();
+    pass.ClearColor = {51, 102, 204, 128};
+    const BRITE::Color c = Picture(pass)[At(0.0f, 0.0f)];
+    EXPECT_TRUE(Within(c, 51, 102, 204, 1)) << int(c.r) << " " << int(c.g) << " " << int(c.b);
+    EXPECT_EQ(int(c.a), 128);
+}
+
 // A TRANSLUCENT LAYER UNDER HDR BLENDS AS LIGHT, and this pins how far it is from the 8-bit pass (PostSettings says
 // so). A white unlit layer at alpha 26 (a = 0.101961) over an unlit dark (20, 30, 60), at exposure 1:
 //   red: 20/255 = 0.078431, ^2.2 = 0.0036966, InverseAcesFit = (-0.027819 + sqrt(0.00077390 + 0.0051773)) / 5.002034

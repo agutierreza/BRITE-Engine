@@ -299,7 +299,8 @@ bool PostChain::Ready() {
     return m_ready;
 }
 
-bool PostChain::BeginScene(int width, int height, int samples, bool clear, const float linearClear[4]) {
+bool PostChain::BeginScene(int width, int height, int samples, bool clear, const float linearClear[4],
+                           std::uint64_t pass) {
     const int wanted = std::max(1, std::min(samples, MostSamples()));
     if (m_scene.framebuffer == 0 || m_scene.width != width || m_scene.height != height || m_scene.samples != wanted) {
         const std::array<int, 3> size = {width, height, wanted};
@@ -308,7 +309,7 @@ bool PostChain::BeginScene(int width, int height, int samples, bool clear, const
         // The set in use is parked, and one parked at this size is taken back; the least recently used beyond
         // MaxParked is freed.
         if (m_scene.framebuffer != 0) {
-            m_parked.push_back({m_scene, m_levels});
+            m_parked.push_back({m_scene, m_levels, m_sceneUsed});
             m_scene = {};
             m_levels.clear();
         }
@@ -341,6 +342,7 @@ bool PostChain::BeginScene(int width, int height, int samples, bool clear, const
             return false;
         }
     }
+    m_sceneUsed = pass;
     ::RenderTexture2D surface{};
     surface.id = m_scene.msFramebuffer != 0 ? m_scene.msFramebuffer : m_scene.framebuffer;
     surface.texture.id = m_scene.colour;
@@ -349,8 +351,10 @@ bool PostChain::BeginScene(int width, int height, int samples, bool clear, const
     surface.texture.mipmaps = 1;
     surface.texture.format = PIXELFORMAT_UNCOMPRESSED_R16G16B16A16;
     ::BeginTextureMode(surface);
+    // Premultiplied, as the scene is kept: a clear colour with alpha below 1 is stored as colour x alpha.
     if (clear)
-        glClearColor(linearClear[0], linearClear[1], linearClear[2], linearClear[3]);
+        glClearColor(linearClear[0] * linearClear[3], linearClear[1] * linearClear[3], linearClear[2] * linearClear[3],
+                     linearClear[3]);
     else
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glDepthMask(GL_TRUE);
@@ -372,6 +376,25 @@ void PostChain::CopySceneDepth(unsigned int framebuffer) const {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
     glBlitFramebuffer(0, 0, m_scene.width, m_scene.height, 0, 0, m_scene.width, m_scene.height, GL_DEPTH_BUFFER_BIT,
                       GL_NEAREST);
+}
+
+void PostChain::ForgetIdle(std::uint64_t pass) {
+    const auto idle = [&](std::uint64_t used) { return pass > used && pass - used > IdlePasses; };
+    for (auto it = m_parked.begin(); it != m_parked.end();) {
+        if (!idle(it->used)) {
+            ++it;
+            continue;
+        }
+        DestroyTarget(it->scene);
+        for (TargetObjects& level : it->levels)
+            DestroyTarget(level);
+        it = m_parked.erase(it);
+    }
+    if (m_scene.framebuffer != 0 && idle(m_sceneUsed)) {
+        DestroyTarget(m_scene);
+        m_scene = {};
+        FreeLevels();
+    }
 }
 
 void PostChain::FreeLevels() {
@@ -457,9 +480,12 @@ void PostChain::Composite(float exposure, const BloomSettings& settings, bool re
     (void)settings;
     ::rlDrawRenderBatchActive();
     const FullScreenState was = BeginFullScreen(m_vao);
+    // Laid over the target, the tone map's output is premultiplied (its colour already times the scene's coverage), so
+    // it blends ONE, ONE_MINUS_SRC_ALPHA: where the world drew nothing the target shows through unchanged, and a layer
+    // of alpha a lies over it by a, as in an 8-bit pass. Replacing, the output is straight colour and alpha.
     if (!replace) {
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     }
     glUseProgram(m_tonemap);
     glUniform1i(Uniform(m_tonemap, "scene"), 0);
@@ -468,6 +494,7 @@ void PostChain::Composite(float exposure, const BloomSettings& settings, bool re
     glUniform1f(Uniform(m_tonemap, "bloomScale"), bloom ? m_bloomScale : 0.0f);
     glUniform1f(Uniform(m_tonemap, "exposure"), exposure);
     glUniform1i(Uniform(m_tonemap, "displayReferred"), displayReferred ? 1 : 0);
+    glUniform1i(Uniform(m_tonemap, "overlay"), replace ? 0 : 1);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, bloom ? m_levels.front().colour : m_scene.colour);
     glActiveTexture(GL_TEXTURE0);

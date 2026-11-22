@@ -288,3 +288,50 @@ TEST_F(SunShadow, TheNormalBiasKeepsAGrazingSunFromShadowingItsOwnReceiver) {
     const float bare = patchMean(unshadowed);
     EXPECT_NEAR(patchMean(Pass(Lit(Flat(-0.5f, -0.5f, 0.5f, 0.5f, 1.0f)))), bare, 0.01f);
 }
+
+// THE NORMAL BIAS DECIDES, where the filter reaches farther than the depth pass's offset covers: the same grazing sun
+// under ShadowFilter::Poisson, whose sixteen taps reach 2.5 texels from the point (pbr.fs), at 10 and at 5 degrees. A
+// tap 2.5 texels across a receiver the light meets at angle t sits 2.5 x tan(90 - t) texels deeper in the map: at 10
+// degrees 2.5 x 5.67 = 14.2 texels of depth slope, where the polygon offset (1.5 x slope + 2 units) covers about 8.5
+// -- so without the normal bias the bare ground shadows itself. The default NormalBias (1.5 texels, more where the
+// light grazes) pushes the point off its surface far enough.
+// JUDGED AS A SHARE OF THE SUN'S OWN TERM, since at a grazing sun that term is small: the bare ground takes the ambient
+// 0.25 (SHADOWED) and the sun's diffuse (1 - 0.04) / pi x sin t -- at 10 degrees 0.3056 x 0.1736 = 0.0531, at 5 degrees
+// 0.0266 -- so the sun's term is what the patch reads above 0.25, and acne is how much of it is lost. At each angle:
+//   with the default bias at most a twentieth of the sun's term is lost;
+//   with NormalBias 0 more than a tenth is -- the witness that this setup has acne to keep away, so the first check
+//   cannot pass for want of any. (Measured on this machine, 22 Nov: a fifth lost at both angles with no bias.)
+// Mutation: the normal bias dropped from pbr.fs -> the default loses what NormalBias 0 loses: red.
+TEST_F(SunShadow, TheNormalBiasKeepsAPoissonFilteredGrazingSunFromShadowingItsOwnReceiver) {
+    for (const float degrees : {10.0f, 5.0f}) {
+        auto patchMean = [&](BRITE::RenderPass pass) {
+            pass.Lights.front().Direction = {std::cos(degrees * BRITE::Deg2Rad), -std::sin(degrees * BRITE::Deg2Rad),
+                                             0.0f};
+            pass.Shadows.DepthBias = 0.0f;
+            pass.Shadows.Filter = BRITE::ShadowFilter::Poisson;
+            const std::vector<float> linear = Draw(pass);
+            float sum = 0.0f;
+            for (int row = 40; row < 56; ++row)
+                for (int column = 4; column < 20; ++column)
+                    sum += linear[static_cast<std::size_t>((SIZE - 1 - row) * SIZE + column) * 4];
+            return sum / 256.0f;
+        };
+        BRITE::RenderPass unshadowed = Pass(Lit(Flat(-0.5f, -0.5f, 0.5f, 0.5f, 1.0f)));
+        unshadowed.Shadows.Enabled = false;
+        const float bare = patchMean(unshadowed);
+        const float biased = patchMean(Pass(Lit(Flat(-0.5f, -0.5f, 0.5f, 0.5f, 1.0f))));
+        BRITE::RenderPass unbiased = Pass(Lit(Flat(-0.5f, -0.5f, 0.5f, 0.5f, 1.0f)));
+        unbiased.Shadows.NormalBias = 0.0f;
+        const float acne = patchMean(unbiased);
+        const float sun = bare - SHADOWED;
+        ASSERT_GT(sun, 0.01f) << degrees << " degrees: the sun reaches the bare ground (" << bare << ")";
+        const float lostBiased = (bare - biased) / sun;
+        const float lostUnbiased = (bare - acne) / sun;
+        EXPECT_LT(lostBiased, 0.05f) << degrees << " degrees: the default bias keeps the bare ground clean (bare "
+                                     << bare << ", biased " << biased << ", " << lostBiased * 100.0f
+                                     << "% of the sun lost)";
+        EXPECT_GT(lostUnbiased, 0.10f) << degrees << " degrees: with no normal bias the ground shadows itself (bare "
+                                       << bare << ", unbiased " << acne << ", " << lostUnbiased * 100.0f
+                                       << "% of the sun lost)";
+    }
+}

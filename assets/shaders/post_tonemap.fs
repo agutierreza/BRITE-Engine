@@ -19,6 +19,20 @@ uniform float exposure;
 // SCREENED over them -- 1 - (1 - scene)(1 - bloom), a painter's glow layer -- with no curve and no dither, so a colour
 // the bloom does not reach comes out exactly as it went in.
 uniform int displayReferred;
+// 1: the picture is laid OVER the pass's target (the pass did not clear), and is written premultiplied -- its colour times
+// the scene's coverage -- for the chain's ONE, ONE_MINUS_SRC_ALPHA blend; 0: it replaces the target, straight.
+uniform int overlay;
+
+// THE SCENE IS PREMULTIPLIED (RaylibRenderBackend.cpp: every draw into it keeps its alpha as coverage), so its colour is
+// divided by its alpha before the curve or the screen -- the curve is not linear, and must see the light itself -- and
+// multiplied back after, when laid over. Below this alpha the scene holds only added light -- an additive draw over
+// nothing, or the bloom's spill past the world's edge -- which covers nothing: taken as it is and, laid over, ADDED.
+const float LEAST_COVERAGE = 1.0/512.0;
+
+vec4 Out(vec3 colour, float coverage)
+{
+    return overlay == 1 ? vec4(colour*coverage, coverage) : vec4(colour, coverage);
+}
 
 // Jimenez's interleaved gradient noise: a dither pattern with no visible structure, 0..1.
 float InterleavedGradientNoise(vec2 p)
@@ -28,16 +42,23 @@ float InterleavedGradientNoise(vec2 p)
 
 void main()
 {
-    vec4 linear = texture(scene, uv);
+    vec4 held = texture(scene, uv);
+    // The scene's alpha: the clear colour's where the pass cleared, and where it did not, how much the 3D world drew.
+    float coverage = clamp(held.a, 0.0, 1.0);
+    bool covered = coverage >= LEAST_COVERAGE;
+    vec3 linear = covered ? held.rgb/coverage : held.rgb;
     if (displayReferred == 1)
     {
         vec3 glow = min(bloomScale*texture(bloom, uv).rgb, vec3(1.0));
-        o = vec4(1.0 - (1.0 - clamp(linear.rgb, 0.0, 1.0))*(1.0 - glow), clamp(linear.a, 0.0, 1.0));
+        vec3 shown = 1.0 - (1.0 - clamp(linear, 0.0, 1.0))*(1.0 - glow);
+        o = covered ? Out(shown, coverage) : vec4(shown, coverage);
         return;
     }
-    vec3 c = linear.rgb + bloomScale*texture(bloom, uv).rgb;
+    vec3 c = linear + bloomScale*texture(bloom, uv).rgb;
     c = ToneMap(c, exposure);
-    c += (InterleavedGradientNoise(gl_FragCoord.xy) - 0.5)/255.0;
-    // The scene's alpha: the clear colour's where the pass cleared, and where it did not, how much the 3D world drew.
-    o = vec4(c, clamp(linear.a, 0.0, 1.0));
+    // Dithered wherever the picture is written; not where an overlay adds only light over nothing, so a pixel the world
+    // left empty adds exactly nothing to the target (ToneMap(0) is 0).
+    if (covered || overlay == 0)
+        c += (InterleavedGradientNoise(gl_FragCoord.xy) - 0.5)/255.0;
+    o = covered ? Out(c, coverage) : vec4(c, coverage);
 }

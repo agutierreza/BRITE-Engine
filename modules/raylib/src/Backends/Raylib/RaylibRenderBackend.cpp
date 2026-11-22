@@ -489,6 +489,21 @@ bool RaylibRenderBackend::ReadPosedModelMeshes(BRITE::ModelHandle handle, const 
     return true;
 }
 
+void RaylibRenderBackend::UseBlend(bool additive) const {
+    if (!m_premultipliedScene) {
+        ::rlSetBlendMode(additive ? RL_BLEND_ADDITIVE : RL_BLEND_ALPHA);
+        return;
+    }
+    // Into the premultiplied scene: the colour as ever (times its alpha, over or added), and the alpha as coverage --
+    // over: a + dst (1 - a); added light covers nothing, so the alpha is left as it was.
+    if (additive)
+        ::rlSetBlendFactorsSeparate(RL_SRC_ALPHA, RL_ONE, RL_ZERO, RL_ONE, RL_FUNC_ADD, RL_FUNC_ADD);
+    else
+        ::rlSetBlendFactorsSeparate(RL_SRC_ALPHA, RL_ONE_MINUS_SRC_ALPHA, RL_ONE, RL_ONE_MINUS_SRC_ALPHA, RL_FUNC_ADD,
+                                    RL_FUNC_ADD);
+    ::rlSetBlendMode(RL_BLEND_CUSTOM_SEPARATE);
+}
+
 void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     ++m_passSerial;
     // The pass's own target, and its size: a render texture's, or the window's drawing surface.
@@ -514,6 +529,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     // follow. A device that cannot run the chain draws the pass as if Hdr were off.
     // A DISPLAY-REFERRED BLOOM (PostSettings: Bloom with Hdr off) takes the same road through the chain's target, in
     // the colours the screen shows: the 3D world as an 8-bit pass draws it, bloomed, and the bloom screened over it.
+    if (m_post)
+        m_post->ForgetIdle(m_passSerial);
     const bool canChain = pass.Camera3DPtr != nullptr && targetWidth > 0 && targetHeight > 0;
     bool hdr = pass.Post.Hdr && canChain;
     bool displayBloom = !pass.Post.Hdr && pass.Post.Bloom.Enabled && canChain;
@@ -532,17 +549,26 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         };
         const float clear[4] = {shown(pass.ClearColor.r), shown(pass.ClearColor.g), shown(pass.ClearColor.b),
                                 pass.ClearColor.a / 255.0f};
-        const bool began = m_post->BeginScene(targetWidth, targetHeight, pass.Post.Samples, pass.ShouldClear, clear);
+        const bool began =
+            m_post->BeginScene(targetWidth, targetHeight, pass.Post.Samples, pass.ShouldClear, clear, m_passSerial);
         hdr = hdr && began;
         displayBloom = displayBloom && began;
     }
     const bool chained = hdr || displayBloom;
     if (chained) {
+        // The chain's scene is premultiplied: the colour blends as ever, and the alpha builds as coverage -- a layer of
+        // alpha a over nothing leaves alpha a, not a x a -- so a pass that does not clear lies over its target as an
+        // 8-bit pass would (RaylibPostChain.cpp, Composite).
+        m_premultipliedScene = true;
+        UseBlend(false);
         for (auto& cb : pass.BackgroundDrawCallbacks) {
             if (cb)
                 cb();
         }
         Draw3D(pass, hdr);
+        ::rlDrawRenderBatchActive();
+        m_premultipliedScene = false;
+        UseBlend(false);
         m_post->EndScene();
         m_post->Bloom(pass.Post.Bloom);
     }
@@ -917,10 +943,10 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
             // before anything else is drawn.
             const bool additive = cmd.Material.Blend == BRITE::BlendMode::Additive;
             if (additive)
-                ::rlSetBlendMode(RL_BLEND_ADDITIVE);
+                UseBlend(true);
             ::DrawMesh(rlModel->meshes[m], material, transform);
             if (additive)
-                ::rlSetBlendMode(RL_BLEND_ALPHA);
+                UseBlend(false);
             if (!writesDepth)
                 ::rlEnableDepthMask();
             if (bothSides)
@@ -1093,11 +1119,13 @@ bool RaylibRenderBackend::RenderShadows(const BRITE::RenderPass& pass, int targe
         m_shadowDepthAlphaMask = ::GetShaderLocation(*depth, "alphaMask");
         m_shadowDepthAlphaCutoff = ::GetShaderLocation(*depth, "alphaCutoff");
     }
-    if (!m_shadowDepthWorks || m_shadowVariantRefused)
-        return false; // a pass could not draw these shadows: none is drawn
-
     // The atlas: one tile per cascade, two across once there are two, two down once there are three.
     const int cascades = std::clamp(settings.Cascades, 1, Cascades::MaxCascades);
+    const int refusedKey = ShadowVariantKey(cascades, static_cast<int>(settings.Filter));
+    if (!m_shadowDepthWorks || std::find(m_shadowVariantsRefused.begin(), m_shadowVariantsRefused.end(), refusedKey) !=
+                                   m_shadowVariantsRefused.end())
+        return false; // a pass could not draw these shadows: none is drawn
+
     const int tilesAcross = cascades == 1 ? 1 : 2;
     const int tilesDown = cascades <= 2 ? 1 : 2;
     const int mapSize = std::max(settings.MapSize, 16);
@@ -1247,8 +1275,9 @@ bool RaylibRenderBackend::RenderShadows(const BRITE::RenderPass& pass, int targe
         m_shadowReport.push_back(report);
     }
 
-    // The depth pass, caster by caster with the cascades inside, so each draw is posed once for the whole pass: a
-    // skinned draw is skinned on the CPU, and its pose stays in its buffers for its own draw after (PoseForDraw).
+    // The depth pass, caster by caster with the cascades inside, so each draw is posed once for all its cascades -- and
+    // once more for its own lit draw after, unless that draw is the one posed last (PoseForDraw keeps only the newest
+    // pose): about two poses a skinned draw a pass, not one.
     ::rlDrawRenderBatchActive();
     const ::Matrix savedProjection = ::rlGetMatrixProjection();
     const ::Matrix savedModelview = ::rlGetMatrixModelview();
@@ -1349,7 +1378,7 @@ void RaylibRenderBackend::EnsurePbrShader(const PbrVariant& variant) {
         spdlog::error("BRITE: the lit shader with {} shadow cascades failed to compile; the pass is drawn without "
                       "shadows",
                       variant.shadowCascades);
-        m_shadowVariantRefused = true;
+        m_shadowVariantsRefused.push_back(ShadowVariantKey(variant.shadowCascades, variant.shadowFilter));
         PbrVariant without = variant;
         without.shadowCascades = 0;
         EnsurePbrShader(without);
@@ -1751,6 +1780,14 @@ bool RaylibRenderBackend::ReadLastHdrScene(int& width, int& height, std::vector<
 
 int RaylibRenderBackend::HdrSceneTargetsMade() const {
     return m_post ? m_post->SceneTargetsMade() : 0;
+}
+
+int RaylibRenderBackend::HdrTargetSetsHeld() const {
+    return m_post ? m_post->SetsHeld() : 0;
+}
+
+std::uint64_t RaylibRenderBackend::HdrIdlePasses() {
+    return PostChain::IdlePasses;
 }
 
 bool RaylibRenderBackend::ReadLastBloom(int& width, int& height, std::vector<float>& rgba) const {

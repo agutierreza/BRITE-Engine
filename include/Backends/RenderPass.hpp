@@ -143,12 +143,16 @@ struct FogSettings {
 // TWO WAYS TO BLOOM, by PostSettings::Hdr:
 //   - HDR on: light above Threshold, in linear light (below), is spread and ADDED before the tone curve. A sun, a lamp,
 //     a spark past white glows; an authored colour blooms only if it is very bright.
-//   - HDR off, Enabled on (a DISPLAY-REFERRED bloom): the 3D world is drawn exactly as an 8-bit pass draws it -- every
-//     colour, translucent layers included, blended as a painter's canvas blends them -- into the backend's own target;
+//   - HDR off, Enabled on (a DISPLAY-REFERRED bloom): the 3D world is drawn as an 8-bit pass draws it -- every colour,
+//     translucent layers included, blended as a painter's canvas blends them -- into the backend's own target;
 //     what is brighter than Threshold, now in the colours the screen shows (0..1), is spread, and SCREENED over the
 //     picture: 1 - (1 - picture)(1 - Intensity x the bloom). No curve, no dither: a pixel the bloom does not reach
-//     comes out exactly as it would without bloom. For a 2D or unlit game, the cheapest glow there is. Threshold must
-//     then be below 1 (0.7 to 0.9 is usual); at the default 1 nothing blooms.
+//     comes out exactly as it would without bloom. For a 2D or unlit game, the cheapest glow there is. Threshold should
+//     then be below 1 (0.7 to 0.9 is usual): at the default 1 only the knee's soft start blooms, from 1 - Knee (128 of
+//     255 at the default Knee) up. "As an 8-bit pass draws it" holds for every 3D draw, opaque or translucent, cleared
+//     or not; it does not reach PostSettings::Samples (the backend's own target is multisampled as asked, not as the
+//     pass's target is), the pass's Shader (applied to the 2D draws only, as under HDR), or the 2D draws, which come
+//     after and never bloom.
 struct BloomSettings {
     bool Enabled = false;
     // How many half-size copies, each half the last: 1 to 8. Each adds a halo twice as wide as the one before and costs
@@ -242,7 +246,12 @@ struct ShadowSettings {
 //   - The pass's Shader is applied to its 2D draws only, after the tone map -- the client post-processing passes of an
 //     Application keep working on the 8-bit picture -- and not to the 3D world.
 //   - With ShouldClear off, the float target starts empty and the tone-mapped picture is laid over what the pass's
-//     target held, where the 3D world drew; the target shows through elsewhere.
+//     target held, where the 3D world drew; the target shows through elsewhere. The backend's target holds
+//     PREMULTIPLIED colour, its alpha the coverage the 3D world built -- a layer of alpha a over nothing leaves alpha a
+//     -- so a translucent layer lies over the pass's target by its own alpha, as in an 8-bit pass: white at alpha 0.1
+//     over a grey of 0.5 shows 0.55 (HdrPassTests). Light that covers nothing -- an additive draw over nothing, the
+//     bloom's spill past the world's edge -- is ADDED to what the target held. The same holds with Hdr off and Bloom
+//     on.
 // Without a 3D camera there is no 3D world to draw, and Hdr changes nothing.
 //
 // TRANSLUCENT LAYERS UNDER HDR blend in linear light, as light does: a 0.1 haze over a dark sky lifts it more than the

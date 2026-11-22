@@ -8,6 +8,7 @@
 #include "Backends/RenderPass.hpp"
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -57,8 +58,16 @@ class PostChain {
 
     // Binds the float scene target, sized and multisampled as asked, and clears it -- to `linearClear` (RGB linear
     // light, alpha as authored) when `clear`, else to nothing (transparent). False, logged once, when the device
-    // cannot make the target; nothing is then bound.
-    bool BeginScene(int width, int height, int samples, bool clear, const float linearClear[4]);
+    // cannot make the target; nothing is then bound. `pass` is the backend's pass serial: the set drawn into is
+    // stamped with it, for ForgetIdle.
+    bool BeginScene(int width, int height, int samples, bool clear, const float linearClear[4], std::uint64_t pass);
+    // Frees every set of targets -- parked or in use -- that no pass has drawn into for more than IdlePasses passes,
+    // so a resize or a change of full screen does not keep the old sizes' targets for the application's life (at
+    // 1080p a set is about 33 MB, at 4K about 130 MB). Called on every pass, with the backend's pass serial.
+    void ForgetIdle(std::uint64_t pass);
+    // Passes a set may stand unused before it is freed. Every pass counts, HDR or not, so this is about a second at
+    // 144 frames a second with two passes a frame; a set a client draws into every frame is never idle that long.
+    static constexpr std::uint64_t IdlePasses = 240;
     // Ends drawing into the scene target and resolves it.
     void EndScene();
     // The scene's depth -- the depth the pass's 3D world left -- copied into a framebuffer of the same size whose depth
@@ -82,6 +91,10 @@ class PostChain {
     int BloomLevelsBuilt() const {
         return static_cast<int>(m_levels.size());
     }
+    // How many sets of targets the chain holds now: the one in use, if any, and the parked ones.
+    int SetsHeld() const {
+        return (m_scene.framebuffer != 0 ? 1 : 0) + static_cast<int>(m_parked.size());
+    }
     // The bloom's first level after the last Bloom: every level's light summed (BloomLevelsBuilt() of them).
     bool ReadBloomFloats(std::vector<float>& rgba, int& width, int& height) const;
 
@@ -99,9 +112,11 @@ class PostChain {
     // at different sizes each keep their own rather than remaking one set every pass.
     TargetObjects m_scene;
     std::vector<TargetObjects> m_levels;
+    std::uint64_t m_sceneUsed = 0; // the pass that last drew into m_scene
     struct Parked {
         TargetObjects scene;
         std::vector<TargetObjects> levels;
+        std::uint64_t used = 0; // the pass that last drew into it
     };
     std::vector<Parked> m_parked; // most recently used last
     static constexpr std::size_t MaxParked = 3;

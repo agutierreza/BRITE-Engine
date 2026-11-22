@@ -44,6 +44,10 @@ class RaylibRenderBackend : public IRenderBackend {
     bool ReadLastBloom(int& width, int& height, std::vector<float>& rgba) const;
     // How many float scene targets the chain has made: passes at sizes it already holds make none. For tests.
     int HdrSceneTargetsMade() const;
+    // How many sets of the chain's targets (a scene target and its bloom levels, one size each) are held now, and how
+    // many passes a set may stand unused before it is freed. For tests.
+    int HdrTargetSetsHeld() const;
+    static std::uint64_t HdrIdlePasses();
 
     // What the last pass with shadows drew, one entry per cascade, nearest first; empty when the last pass drew none.
     // For tests and tools: the cascade's square in the light's view (its centre, snapped to whole texels, and its
@@ -167,6 +171,9 @@ class RaylibRenderBackend : public IRenderBackend {
     void ApplyPassLighting(const BRITE::RenderPass& pass);
     // The pass's 3D world, into whatever is bound; `hdr` for an HDR pass's float target (SubmitRenderPass).
     void Draw3D(const BRITE::RenderPass& pass, bool hdr);
+    // The blend of the draw that follows: alpha (over) or additive -- into the chain's premultiplied scene with the
+    // alpha kept as coverage (m_premultipliedScene), elsewhere raylib's own two modes.
+    void UseBlend(bool additive) const;
     // The shader primitives and 3D lines are drawn through under an HDR pass, compiled on first use; false when the
     // device refused it.
     bool EnsureAuthoredColourShader();
@@ -254,8 +261,12 @@ class RaylibRenderBackend : public IRenderBackend {
     std::shared_ptr<ShadowAtlas> m_shadowAtlas;
     BRITE::ShaderHandle m_shadowDepthShader = BRITE::NullShaderHandle;
     bool m_shadowDepthWorks = false;
-    // The device refused the lit shader with shadows once: no later pass draws a shadow map it cannot read.
-    bool m_shadowVariantRefused = false;
+    // The shadow features (cascade count and filter, ShadowVariantKey) the device refused the lit shader with: no later
+    // pass asking for one of them draws a shadow map it cannot read. Another count or filter is still tried.
+    std::vector<int> m_shadowVariantsRefused;
+    static int ShadowVariantKey(int cascades, int filter) {
+        return cascades | (filter << 3);
+    }
     int m_shadowDepthAlphaMask = -1;
     int m_shadowDepthAlphaCutoff = -1;
     struct MeshSphere {
@@ -288,6 +299,10 @@ class RaylibRenderBackend : public IRenderBackend {
 
     // The HDR chain (RaylibPostChain.hpp), made on the first HDR pass; defined beside the code that uses it.
     std::shared_ptr<PostChain> m_post;
+    // While a pass draws into the chain's scene target, which holds PREMULTIPLIED colour (RaylibPostChain.hpp): every
+    // blend then keeps the target's alpha as the coverage it is, so the picture lies over a target that was not cleared
+    // as an 8-bit pass would lay it.
+    bool m_premultipliedScene = false;
     BRITE::ShaderHandle m_authoredColourShader = BRITE::NullShaderHandle;
     bool m_authoredColourWorks = false;
     int m_authoredColourExposure = -1;
