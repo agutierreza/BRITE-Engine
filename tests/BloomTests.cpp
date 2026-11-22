@@ -104,3 +104,52 @@ TEST_F(Bloom, ABrightPointSpreadsIntoAHalo) {
             EXPECT_EQ(away.r, 0);
     }
 }
+
+// THE DISPLAY-REFERRED BLOOM (Hdr off, Bloom on): the world drawn as an 8-bit pass draws it, and the bloom SCREENED
+// over it. A uniform grey of 204 (0.8 exactly), Threshold 0.5, Knee 0.5 (0.25 of display), Intensity 0.5, three levels:
+// 0.8 is past the knee's top, 0.75, so each level passes 0.8 - 0.5 = 0.3 and the first holds 0.9; the glow is
+// 0.5 / 3 x 0.9 = 0.15, screened: 1 - (1 - 0.8)(1 - 0.15) = 1 - 0.2 x 0.85 = 0.83, 211.65 of 255.
+// Mutation: the glow added instead of screened -> 0.8 + 0.15 = 0.95, 242, red.
+TEST_F(Bloom, ADisplayReferredBloomScreensItsGlow) {
+    BRITE::RenderPass pass;
+    pass.Post.Samples = 1;
+    pass.Post.Bloom.Enabled = true;
+    pass.Post.Bloom.Levels = 3;
+    pass.Post.Bloom.Threshold = 0.5f;
+    pass.Post.Bloom.Knee = 0.5f;
+    pass.Post.Bloom.Intensity = 0.5f;
+    pass.ModelCommands = {Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.0f), {204, 204, 204, 255})};
+    const std::vector<BRITE::Color> pixels = Picture(pass);
+    EXPECT_TRUE(Within(pixels[At(0.0f, 0.0f)], 212, 212, 212, 1)) << int(pixels[At(0.0f, 0.0f)].r);
+}
+
+// What the display-referred bloom does not reach is exactly what an 8-bit pass draws. A faint white tint at alpha 26
+// (0.102) over a dark (20, 30, 60), blended as a painter's canvas blends it: 20 + 235 x 0.102 = 43.96, 30 + 225 x 0.102
+// = 52.94, 60 + 195 x 0.102 = 79.88 -- 44, 53, 80 -- with bloom on as with it off, away from the one bright patch, a
+// white square in the far corner, where the bloom (two levels, a short reach) lifts its surroundings. Mutation: the
+// display-referred scene drawn through the HDR path (Draw3D with hdr) -> the tint blends in linear light
+//   and the dark lifts far past 44, red.
+TEST_F(Bloom, ADisplayReferredBloomLeavesWhatItDoesNotReachExactly) {
+    const BRITE::ModelHandle dark = Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.0f);
+    const BRITE::ModelHandle tint = Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.5f);
+    const BRITE::ModelHandle bright = Quad(-2.0f, 1.5f, -1.5f, 2.0f, 1.0f);
+    std::vector<BRITE::Color> withBloom, without;
+    for (bool bloom : {true, false}) {
+        BRITE::RenderPass pass;
+        pass.Post.Samples = 1;
+        pass.Post.Bloom.Enabled = bloom;
+        pass.Post.Bloom.Levels = 2;
+        pass.Post.Bloom.Threshold = 0.8f;
+        pass.Post.Bloom.Intensity = 0.5f;
+        pass.ModelCommands = {Unlit(dark, {20, 30, 60, 255}), Unlit(tint, {255, 255, 255, 26}),
+                              Unlit(bright, {255, 255, 255, 255})};
+        (bloom ? withBloom : without) = Picture(pass);
+    }
+    const std::size_t away = At(1.5f, -1.5f);
+    EXPECT_TRUE(Within(without[away], 44, 53, 80, 1));
+    EXPECT_EQ(withBloom[away].r, without[away].r);
+    EXPECT_EQ(withBloom[away].g, without[away].g);
+    EXPECT_EQ(withBloom[away].b, without[away].b);
+    const std::size_t near = At(-1.6f, 1.2f); // beside the bright square
+    EXPECT_GT(withBloom[near].r, without[near].r);
+}

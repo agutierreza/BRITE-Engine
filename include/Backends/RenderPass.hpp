@@ -138,16 +138,26 @@ struct FogSettings {
 // BLOOM: light above Threshold spread over the picture, as a lens and an eye spread a bright light. A chain of
 // half-size copies of the pass's linear light: the first takes only what is above the threshold, each next one is a
 // blurred half of the one before, and they are summed back up, each blurred again on the way, so a bright point gets
-// a tight core and a wide faint halo. Read only by an HDR pass; nothing else carries light above white to spread.
+// a tight core and a wide faint halo.
+//
+// TWO WAYS TO BLOOM, by PostSettings::Hdr:
+//   - HDR on: light above Threshold, in linear light (below), is spread and ADDED before the tone curve. A sun, a lamp,
+//     a spark past white glows; an authored colour blooms only if it is very bright.
+//   - HDR off, Enabled on (a DISPLAY-REFERRED bloom): the 3D world is drawn exactly as an 8-bit pass draws it -- every
+//     colour, translucent layers included, blended as a painter's canvas blends them -- into the backend's own target;
+//     what is brighter than Threshold, now in the colours the screen shows (0..1), is spread, and SCREENED over the
+//     picture: 1 - (1 - picture)(1 - Intensity x the bloom). No curve, no dither: a pixel the bloom does not reach
+//     comes out exactly as it would without bloom. For a 2D or unlit game, the cheapest glow there is. Threshold must
+//     then be below 1 (0.7 to 0.9 is usual); at the default 1 nothing blooms.
 struct BloomSettings {
     bool Enabled = false;
     // How many half-size copies, each half the last: 1 to 8. Each adds a halo twice as wide as the one before and costs
     // two full-screen draws at its size, so the first is most of the cost.
     int Levels = 5;
-    // The linear light where bloom starts. An authored white is about 7.24 (ToneCurve.hpp), so at the default of 1 an
-    // authored channel above about 231 of 255 (the light 1 at exposure 1) blooms a little too, and from about 205 on
-    // the knee's soft start below -- a bright sky round a sun, as the eye sees it. Raise it to keep authored colours
-    // out and let only emission past white bloom.
+    // Where bloom starts: linear light under HDR, a display colour 0..1 without. Under HDR an authored white is
+    // about 7.24 (ToneCurve.hpp), so at the default of 1 an authored channel above about 231 of 255 (the light 1 at
+    // exposure 1) blooms a little too, and from about 205 on the knee's soft start below -- a bright sky round a sun,
+    // as the eye sees it. Raise it to keep authored colours out and let only emission past white bloom.
     float Threshold = 1.0f;
     // A soft start: light from Threshold * (1 - Knee) to Threshold * (1 + Knee) blooms on a curve rather than
     // switching on at the threshold. 0 is a hard edge.
@@ -217,11 +227,16 @@ struct ShadowSettings {
 //     surface's highlight is widened where its normal turns faster than a pixel can show (the geometric specular
 //     anti-aliasing of Kaplanyan et al., 2016, and Tokuyoshi and Kaplanyan, 2019), so a curved or distant glossy
 //     surface gives a highlight, not single-pixel sparkles that bloom would spread.
-//   - WHAT A CALLER AUTHORS AS WHAT THE SCREEN SHOWS STILL SHOWS SO, at any exposure: the clear colour, an unlit
-//     material, the fog's tint at and beyond its End, and the tint of every primitive and 3D line are run backwards
-//     through the curve, ToneCurve::AuthoredToLinear, and show as authored before bloom adds anything. A translucent
-//     colour blends in linear light, so where it lies over another colour it reads a little differently than in an
-//     8-bit pass.
+//   - WHAT A CALLER AUTHORS AS WHAT THE SCREEN SHOWS STILL SHOWS SO -- WHEN IT IS OPAQUE -- at any exposure: the clear
+//     colour, an opaque unlit material, the fog's tint at and beyond its End, and the tint of every opaque primitive
+//     and 3D line are run backwards through the curve, ToneCurve::AuthoredToLinear, and show as authored before bloom
+//     adds anything.
+//   - A TRANSLUCENT DRAW DOES NOT. It blends as LIGHT: its colour, as the light that shows it, mixed by its alpha with
+//     the light behind it, and the mix then goes through the curve. Near white an authored colour is light seven times
+//     brighter than white, so a layer weighs far more than its alpha says: a white layer at alpha 0.1 over a dark
+//     (20, 30, 60) shows as (222, 222, 223), where an 8-bit pass shows (44, 53, 80) (HdrPassTests pins both). That is
+//     right for light and wrong for a picture built of painted layers: a layered 2D picture wants the display-referred
+//     bloom (BloomSettings) with Hdr off, not HDR.
 //   - The background callbacks draw into the float target: what they write is linear light. A callback written for an
 //     8-bit pass shows brighter under the curve.
 //   - The pass's Shader is applied to its 2D draws only, after the tone map -- the client post-processing passes of an
@@ -229,6 +244,14 @@ struct ShadowSettings {
 //   - With ShouldClear off, the float target starts empty and the tone-mapped picture is laid over what the pass's
 //     target held, where the 3D world drew; the target shows through elsewhere.
 // Without a 3D camera there is no 3D world to draw, and Hdr changes nothing.
+//
+// TRANSLUCENT LAYERS UNDER HDR blend in linear light, as light does: a 0.1 haze over a dark sky lifts it more than the
+// same haze blended in display colours, and an authored layer near white weighs nearly as much as light seven times
+// brighter. That is right for light -- glass, smoke, a lamp's halo -- and wrong for a painting built of layers (glows,
+// vignettes, feathered edges), whose author judged each blend on a screen. The engine does not blend some layers one
+// way and some the other within one pass: which layers are "paint" is the author's knowledge, and mixing the two
+// spaces in one target would make every layer's result depend on what was drawn under it. A game drawn as paint wants
+// the display-referred bloom above (Hdr off, Bloom on), which keeps every blend as the author saw it and still glows.
 //
 // A device that cannot draw into a float target, or whose compiler refuses the chain's shaders, draws every HDR pass
 // as if Hdr were off -- the picture it has always drawn -- and logs why once. It never draws a black screen.

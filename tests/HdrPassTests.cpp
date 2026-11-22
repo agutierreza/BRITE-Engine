@@ -250,3 +250,61 @@ TEST_F(HdrPass, AGlossyHighlightIsWidenedWhereTheNormalTurnsFasterThanAPixel) {
     const std::size_t pixel = static_cast<std::size_t>((HiddenWindow::SIZE - 1 - 32) * HiddenWindow::SIZE + 31) * 4;
     EXPECT_NEAR(linear[pixel], 0.6981f, 0.05f);
 }
+
+// THE DEFAULT, MULTISAMPLED HDR PASS (Samples 4) is drawn into the chain's multisampled surface and resolved into the
+// float target before anything reads it. A field of white emission of strength 6 over the whole picture: every sample
+// of every pixel is 6 of light, so the resolve averages four sixes to 6 exactly.
+// Mutation: EndScene resolves nothing -> the float target is never drawn: 0, red.
+TEST_F(HdrPass, TheMultisampledPassIsResolvedBeforeItIsRead) {
+    BRITE::ModelDrawCommand field = Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.0f), {0, 0, 0, 255});
+    field.Material.Emission = {255, 255, 255, 255};
+    field.Material.EmissionStrength = 6.0f;
+    BRITE::RenderPass pass = Hdr();
+    pass.Post.Samples = 4;
+    pass.ModelCommands = {field};
+    Picture(pass);
+    EXPECT_FLOAT_EQ(LinearScene()[AtLinear(0.0f, 0.0f)], 6.0f);
+}
+
+// Two HDR passes a frame at different sizes -- a scene and a half-size view of it -- each keep their own float target:
+// three frames of both make two targets, not one per pass. And each still draws its own picture.
+// Mutation: a set at another size freed instead of parked -> six targets made, red.
+TEST_F(HdrPass, PassesAtTwoSizesEachKeepTheirOwnTargets) {
+    const BRITE::TextureHandle half = m_backend.LoadRenderTexture(HiddenWindow::SIZE / 2, HiddenWindow::SIZE / 2);
+    for (int frame = 0; frame < 3; ++frame) {
+        BRITE::RenderPass full = Hdr();
+        full.ClearColor = SKY;
+        const std::vector<BRITE::Color> big = Picture(full);
+        EXPECT_TRUE(Within(big[At(0.0f, 0.0f)], 51, 102, 204, 1));
+        BRITE::RenderPass small = Hdr();
+        small.ClearColor = {200, 120, 40, 255};
+        Picture(small, half);
+    }
+    EXPECT_EQ(m_backend.HdrSceneTargetsMade(), 2);
+    m_backend.UnloadRenderTexture(half);
+}
+
+// A TRANSLUCENT LAYER UNDER HDR BLENDS AS LIGHT, and this pins how far it is from the 8-bit pass (PostSettings says
+// so). A white unlit layer at alpha 26 (a = 0.101961) over an unlit dark (20, 30, 60), at exposure 1:
+//   red: 20/255 = 0.078431, ^2.2 = 0.0036966, InverseAcesFit = (-0.027819 + sqrt(0.00077390 + 0.0051773)) / 5.002034
+//     = 0.0098610; white is 7.241658; blended 0.0098610 x 0.898039 + 7.241658 x 0.101961 = 0.747222; the fit
+//     1.423850 / 1.937629 = 0.734842, ^(1/2.2) = 0.869317: 221.7.
+//   green: 30/255 -> 0.018110 of light -> blended 0.754629 -> 0.737421 -> 0.870705: 222.0.
+//   blue: 60/255 -> 0.047940 -> blended 0.781418 -> 0.746384 -> 0.875500: 223.3.
+// So (222, 222, 223), where the 8-bit pass blends 20 + 235 a = 43.96, 30 + 225 a = 52.94, 60 + 195 a = 79.88: (44, 53,
+// 80). Mutation: translucent unlit layers blended through the curve as authored (no AuthoredToLinear) -> near (44, 53,
+// 80)
+//   under HDR too, red.
+TEST_F(HdrPass, ATranslucentLayerBlendsAsLightNotAsPaint) {
+    for (bool hdr : {true, false}) {
+        BRITE::RenderPass pass = Hdr();
+        pass.Post.Hdr = hdr;
+        pass.ModelCommands = {Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.0f), {20, 30, 60, 255}),
+                              Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.5f), {255, 255, 255, 26})};
+        const BRITE::Color c = Picture(pass)[At(0.0f, 0.0f)];
+        if (hdr)
+            EXPECT_TRUE(Within(c, 222, 222, 223, 1)) << int(c.r) << " " << int(c.g) << " " << int(c.b);
+        else
+            EXPECT_TRUE(Within(c, 44, 53, 80, 1)) << int(c.r) << " " << int(c.g) << " " << int(c.b);
+    }
+}

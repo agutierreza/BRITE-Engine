@@ -15,6 +15,10 @@ uniform sampler2D bloom;
 // Intensity times their average. 0 when the pass has no bloom.
 uniform float bloomScale;
 uniform float exposure;
+// 1: a DISPLAY-REFERRED pass (bloom with Hdr off): the scene holds the colours the screen shows, 0..1, and the bloom is
+// SCREENED over them -- 1 - (1 - scene)(1 - bloom), a painter's glow layer -- with no curve and no dither, so a colour
+// the bloom does not reach comes out exactly as it went in.
+uniform int displayReferred;
 
 // Jimenez's interleaved gradient noise: a dither pattern with no visible structure, 0..1.
 float InterleavedGradientNoise(vec2 p)
@@ -25,6 +29,12 @@ float InterleavedGradientNoise(vec2 p)
 void main()
 {
     vec4 linear = texture(scene, uv);
+    if (displayReferred == 1)
+    {
+        vec3 glow = min(bloomScale*texture(bloom, uv).rgb, vec3(1.0));
+        o = vec4(1.0 - (1.0 - clamp(linear.rgb, 0.0, 1.0))*(1.0 - glow), clamp(linear.a, 0.0, 1.0));
+        return;
+    }
     vec3 c = linear.rgb + bloomScale*texture(bloom, uv).rgb;
     c = ToneMap(c, exposure);
     c += (InterleavedGradientNoise(gl_FragCoord.xy) - 0.5)/255.0;

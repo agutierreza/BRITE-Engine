@@ -840,3 +840,68 @@ TEST(SkeletalAnimationDefault, ABackendThatCannotAnimateSaysSo) {
     EXPECT_FALSE(backend.ReadPosedModelMeshes(1, BRITE::ModelPose{}, meshes));
     EXPECT_TRUE(meshes.empty());
 }
+
+// A POSED SKINNED CASTER casts the shadow of its pose (RenderPass.hpp, ShadowSettings): the depth pass skins it as its
+// draw does. The arm, posed MovedAndTurned, in front of a lit wall at z = -1, under a sun travelling (0.5, 0, -1) -- so
+// its shadow falls on the wall half a unit to the right of the arm -- draws the same picture, shadow and all, as a
+// plain model of exactly the posed geometry (ReadPosedModelMeshes) drawn the same way; at rest it draws another.
+// Mutation: the depth pass does not pose its casters -> the skinned arm casts its rest shadow, red.
+TEST_F(SkeletalAnimationTest, APosedSkinnedModelCastsTheShadowOfItsPose) {
+    const BRITE::ModelHandle arm = Arm();
+    std::vector<BRITE::MeshData> posed;
+    ASSERT_TRUE(m_backend.ReadPosedModelMeshes(arm, MovedAndTurned(), posed));
+    ASSERT_EQ(posed.size(), 1u);
+    const BRITE::ModelHandle still = m_backend.LoadModelFromMesh(posed[0]);
+    ASSERT_NE(still, BRITE::NullModelHandle);
+    m_models.push_back(still);
+    BRITE::MeshData wallMesh;
+    wallMesh.Positions = {{-6, -4, -1}, {6, -4, -1}, {6, 6, -1}, {-6, 6, -1}};
+    wallMesh.Normals.assign(4, {0, 0, 1});
+    wallMesh.Indices = {0, 1, 2, 0, 2, 3};
+    const BRITE::ModelHandle wall = m_backend.LoadModelFromMesh(wallMesh);
+    m_models.push_back(wall);
+
+    auto shadowed = [&](BRITE::ModelHandle model, const BRITE::ModelPose& pose) {
+        BRITE::Camera3D camera{
+            {0.25f, 1.0f, 5.0f}, {0.25f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, 8.0f, BRITE::CameraProjection::Orthographic};
+        const BRITE::TextureHandle target = m_backend.LoadRenderTexture(SIZE, SIZE);
+        BRITE::RenderPass pass;
+        pass.TargetFramebuffer = target;
+        pass.Camera3DPtr = &camera;
+        BRITE::Light sun;
+        sun.Direction = {0.5f, 0.0f, -1.0f};
+        pass.Lights = {sun};
+        pass.AmbientIntensity = 0.3f;
+        pass.Shadows.Enabled = true;
+        pass.Shadows.MapSize = 1024;
+        pass.Shadows.Distance = 20.0f;
+        BRITE::ModelDrawCommand body{};
+        body.Model = model;
+        body.Material.DoubleSided = true;
+        body.Rotation = {0, 0, 0, 1};
+        body.Scale = {1, 1, 1};
+        body.Pose = pose;
+        BRITE::ModelDrawCommand back = body;
+        back.Model = wall;
+        back.Pose = {};
+        pass.ModelCommands = {back, body};
+        m_backend.SubmitRenderPass(pass);
+        int width = 0, height = 0;
+        std::vector<BRITE::Color> pixels;
+        EXPECT_TRUE(m_backend.ReadRenderTexture(target, width, height, pixels));
+        m_backend.UnloadRenderTexture(target);
+        return pixels;
+    };
+    // At rest first: reading the posed meshes above left the pose in the arm's buffers, and the posed draw must find
+    // them at rest, so only the depth pass's own posing can put the pose there in time for its shadow.
+    const std::vector<BRITE::Color> rest = shadowed(arm, {});
+    const std::vector<BRITE::Color> skinned = shadowed(arm, MovedAndTurned());
+    const std::vector<BRITE::Color> plain = shadowed(still, {});
+    int differing = 0, fromRest = 0;
+    for (std::size_t i = 0; i < skinned.size(); ++i) {
+        differing += std::abs(skinned[i].r - plain[i].r) > 2 ? 1 : 0;
+        fromRest += std::abs(skinned[i].r - rest[i].r) > 2 ? 1 : 0;
+    }
+    EXPECT_EQ(differing, 0);
+    EXPECT_GT(fromRest, 20);
+}

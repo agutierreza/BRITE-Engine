@@ -7,6 +7,7 @@
 #include "Backends/IRenderBackend.hpp"
 #include "Backends/RenderPass.hpp"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -60,15 +61,23 @@ class PostChain {
     bool BeginScene(int width, int height, int samples, bool clear, const float linearClear[4]);
     // Ends drawing into the scene target and resolves it.
     void EndScene();
+    // The scene's depth -- the depth the pass's 3D world left -- copied into a framebuffer of the same size whose depth
+    // is a DEPTH_COMPONENT24 texture: a pass target made with ReadableDepth.
+    void CopySceneDepth(unsigned int framebuffer) const;
     // The bloom chain over the resolved scene, when the settings enable it; otherwise nothing.
     void Bloom(const BloomSettings& settings);
     // The tone map of the scene and its bloom into whatever framebuffer and viewport are bound: replacing what is
-    // there when `replace`, laid over it by the scene's alpha when not.
-    void Composite(float exposure, const BloomSettings& settings, bool replace);
+    // there when `replace`, laid over it by the scene's alpha when not. `displayReferred`: the scene holds display
+    // colours (bloom with Hdr off), and the bloom is screened over them with no curve.
+    void Composite(float exposure, const BloomSettings& settings, bool replace, bool displayReferred);
 
     // For tests: the scene target as it was last drawn (resolved), and how many bloom levels the chain holds.
     const TargetObjects& Scene() const {
         return m_scene;
+    }
+    // How many scene targets the chain has made since it was made: a pass at a size it holds makes none.
+    int SceneTargetsMade() const {
+        return m_sceneTargetsMade;
     }
     int BloomLevelsBuilt() const {
         return static_cast<int>(m_levels.size());
@@ -79,11 +88,23 @@ class PostChain {
   private:
     bool m_tried = false;
     bool m_ready = false;
-    bool m_targetFailureLogged = false;
+    int m_sceneTargetsMade = 0;
+    bool m_sceneFailureLogged = false;
+    bool m_bloomFailureLogged = false;
+    // Sizes (width, height, samples) the device refused a scene target at: not asked again.
+    std::vector<std::array<int, 3>> m_refused;
     unsigned int m_vao = 0;
     unsigned int m_down = 0, m_up = 0, m_tonemap = 0;
+    // The scene target and bloom levels in use, and up to MaxParked others, by size and samples: two passes a frame
+    // at different sizes each keep their own rather than remaking one set every pass.
     TargetObjects m_scene;
     std::vector<TargetObjects> m_levels;
+    struct Parked {
+        TargetObjects scene;
+        std::vector<TargetObjects> levels;
+    };
+    std::vector<Parked> m_parked; // most recently used last
+    static constexpr std::size_t MaxParked = 3;
     bool m_bloomThisPass = false;
     float m_bloomScale = 0.0f;
     void FreeLevels();

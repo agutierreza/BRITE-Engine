@@ -120,26 +120,47 @@ int Uniform(unsigned int program, const char* name) {
     return glGetUniformLocation(program, name);
 }
 
+// The GL state a full-screen draw changes, as it was: put back by EndFullScreen.
+struct FullScreenState {
+    GLboolean depthTest = GL_FALSE, cullFace = GL_TRUE, blend = GL_TRUE;
+    GLint blendSrcRgb = GL_SRC_ALPHA, blendDstRgb = GL_ONE_MINUS_SRC_ALPHA;
+    GLint blendSrcAlpha = GL_SRC_ALPHA, blendDstAlpha = GL_ONE_MINUS_SRC_ALPHA;
+    GLint blendEquationRgb = GL_FUNC_ADD, blendEquationAlpha = GL_FUNC_ADD;
+};
+
 // The GL state a full-screen draw wants: no depth test, no culling, no blending unless asked.
-void BeginFullScreen(unsigned int vao) {
+FullScreenState BeginFullScreen(unsigned int vao) {
+    FullScreenState was;
+    was.depthTest = glIsEnabled(GL_DEPTH_TEST);
+    was.cullFace = glIsEnabled(GL_CULL_FACE);
+    was.blend = glIsEnabled(GL_BLEND);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &was.blendSrcRgb);
+    glGetIntegerv(GL_BLEND_DST_RGB, &was.blendDstRgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &was.blendSrcAlpha);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &was.blendDstAlpha);
+    glGetIntegerv(GL_BLEND_EQUATION_RGB, &was.blendEquationRgb);
+    glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &was.blendEquationAlpha);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
     glBindVertexArray(vao);
     glActiveTexture(GL_TEXTURE0);
+    return was;
 }
 
-// ... and back to rlgl's own state outside a 3D mode.
-void EndFullScreen() {
+// ... and back to the state it found.
+void EndFullScreen(const FullScreenState& was) {
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(0);
     glUseProgram(0);
-    glEnable(GL_BLEND);
-    glBlendEquation(GL_FUNC_ADD);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_CULL_FACE);
-    glDisable(GL_DEPTH_TEST);
+    auto set = [](GLenum capability, GLboolean on) { on ? glEnable(capability) : glDisable(capability); };
+    set(GL_DEPTH_TEST, was.depthTest);
+    set(GL_CULL_FACE, was.cullFace);
+    set(GL_BLEND, was.blend);
+    glBlendFuncSeparate(static_cast<GLenum>(was.blendSrcRgb), static_cast<GLenum>(was.blendDstRgb),
+                        static_cast<GLenum>(was.blendSrcAlpha), static_cast<GLenum>(was.blendDstAlpha));
+    glBlendEquationSeparate(static_cast<GLenum>(was.blendEquationRgb), static_cast<GLenum>(was.blendEquationAlpha));
 }
 
 } // namespace
@@ -252,6 +273,11 @@ PostChain::~PostChain() {
         return;
     DestroyTarget(m_scene);
     FreeLevels();
+    for (Parked& parked : m_parked) {
+        DestroyTarget(parked.scene);
+        for (TargetObjects& level : parked.levels)
+            DestroyTarget(level);
+    }
     for (unsigned int program : {m_down, m_up, m_tonemap})
         if (program != 0)
             glDeleteProgram(program);
@@ -276,16 +302,42 @@ bool PostChain::Ready() {
 bool PostChain::BeginScene(int width, int height, int samples, bool clear, const float linearClear[4]) {
     const int wanted = std::max(1, std::min(samples, MostSamples()));
     if (m_scene.framebuffer == 0 || m_scene.width != width || m_scene.height != height || m_scene.samples != wanted) {
-        DestroyTarget(m_scene);
-        FreeLevels(); // sized from the scene
+        const std::array<int, 3> size = {width, height, wanted};
+        if (std::find(m_refused.begin(), m_refused.end(), size) != m_refused.end())
+            return false; // refused once at this size: not asked again
+        // The set in use is parked, and one parked at this size is taken back; the least recently used beyond
+        // MaxParked is freed.
+        if (m_scene.framebuffer != 0) {
+            m_parked.push_back({m_scene, m_levels});
+            m_scene = {};
+            m_levels.clear();
+        }
+        auto match = std::find_if(m_parked.begin(), m_parked.end(), [&](const Parked& parked) {
+            return parked.scene.width == width && parked.scene.height == height && parked.scene.samples == wanted;
+        });
+        if (match != m_parked.end()) {
+            m_scene = match->scene;
+            m_levels = match->levels;
+            m_parked.erase(match);
+        }
+        while (m_parked.size() > MaxParked) {
+            DestroyTarget(m_parked.front().scene);
+            for (TargetObjects& level : m_parked.front().levels)
+                DestroyTarget(level);
+            m_parked.erase(m_parked.begin());
+        }
+    }
+    if (m_scene.framebuffer == 0) {
         std::string why;
         const RenderTargetDescription description{width, height, RenderTargetFormat::RGBA16F, wanted, false};
+        ++m_sceneTargetsMade;
         if (!CreateTarget(description, m_scene, why)) {
-            if (!m_targetFailureLogged)
-                spdlog::error("BRITE: an HDR pass cannot make its {}x{} float target ({}); it is drawn as if Hdr "
-                              "were off",
+            if (!m_sceneFailureLogged)
+                spdlog::error("BRITE: a pass cannot make its {}x{} float target ({}); it is drawn without HDR or "
+                              "bloom",
                               width, height, why);
-            m_targetFailureLogged = true;
+            m_sceneFailureLogged = true;
+            m_refused.push_back({width, height, wanted});
             return false;
         }
     }
@@ -311,6 +363,17 @@ void PostChain::EndScene() {
     ResolveTarget(m_scene);
 }
 
+void PostChain::CopySceneDepth(unsigned int framebuffer) const {
+    if (m_scene.framebuffer == 0 || framebuffer == 0)
+        return;
+    const SavedBinding saved;
+    // The multisampled surface's depth, resolved by the blit, or the single-sample target's own.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_scene.msFramebuffer != 0 ? m_scene.msFramebuffer : m_scene.framebuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer);
+    glBlitFramebuffer(0, 0, m_scene.width, m_scene.height, 0, 0, m_scene.width, m_scene.height, GL_DEPTH_BUFFER_BIT,
+                      GL_NEAREST);
+}
+
 void PostChain::FreeLevels() {
     for (TargetObjects& level : m_levels)
         DestroyTarget(level);
@@ -332,9 +395,9 @@ void PostChain::Bloom(const BloomSettings& settings) {
             TargetObjects level;
             std::string why;
             if (!CreateTarget({width, height, RenderTargetFormat::R11G11B10F, 1, false}, level, why)) {
-                if (!m_targetFailureLogged)
-                    spdlog::error("BRITE: an HDR pass cannot make its bloom ({}); it is drawn without bloom", why);
-                m_targetFailureLogged = true;
+                if (!m_bloomFailureLogged)
+                    spdlog::error("BRITE: a pass cannot make its bloom ({}); it is drawn without bloom", why);
+                m_bloomFailureLogged = true;
                 FreeLevels();
                 return;
             }
@@ -343,7 +406,7 @@ void PostChain::Bloom(const BloomSettings& settings) {
     }
 
     const SavedBinding saved;
-    BeginFullScreen(m_vao);
+    const FullScreenState was = BeginFullScreen(m_vao);
 
     // Down: the scene into the first level through the threshold, then each level into the next, each half the size.
     glUseProgram(m_down);
@@ -383,17 +446,17 @@ void PostChain::Bloom(const BloomSettings& settings) {
         glBindTexture(GL_TEXTURE_2D, from.colour);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
-    EndFullScreen();
+    EndFullScreen(was);
 
     // The first level holds the sum of `levels` levels' light: Intensity of their average is added back.
     m_bloomThisPass = true;
     m_bloomScale = settings.Intensity / static_cast<float>(levels);
 }
 
-void PostChain::Composite(float exposure, const BloomSettings& settings, bool replace) {
+void PostChain::Composite(float exposure, const BloomSettings& settings, bool replace, bool displayReferred) {
     (void)settings;
     ::rlDrawRenderBatchActive();
-    BeginFullScreen(m_vao);
+    const FullScreenState was = BeginFullScreen(m_vao);
     if (!replace) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -404,6 +467,7 @@ void PostChain::Composite(float exposure, const BloomSettings& settings, bool re
     const bool bloom = m_bloomThisPass && !m_levels.empty();
     glUniform1f(Uniform(m_tonemap, "bloomScale"), bloom ? m_bloomScale : 0.0f);
     glUniform1f(Uniform(m_tonemap, "exposure"), exposure);
+    glUniform1i(Uniform(m_tonemap, "displayReferred"), displayReferred ? 1 : 0);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, bloom ? m_levels.front().colour : m_scene.colour);
     glActiveTexture(GL_TEXTURE0);
@@ -411,7 +475,7 @@ void PostChain::Composite(float exposure, const BloomSettings& settings, bool re
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
-    EndFullScreen();
+    EndFullScreen(was);
 }
 
 bool PostChain::ReadBloomFloats(std::vector<float>& rgba, int& width, int& height) const {

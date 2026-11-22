@@ -34,21 +34,29 @@ vec3 Threshold(vec3 c)
     return c*max(soft, brightness - knee.x)/max(brightness, 0.0001);
 }
 
+// A texel of the source, held to finite light: one pixel that is infinite or not a number must not poison the chain.
+vec3 Sample(vec2 at)
+{
+    vec3 c = texture(source, at).rgb;
+    if (any(isnan(c))) return vec3(0.0);
+    return clamp(c, 0.0, 65000.0);
+}
+
 void main()
 {
-    vec3 a = texture(source, uv + texel*vec2(-2.0, -2.0)).rgb;
-    vec3 b = texture(source, uv + texel*vec2( 0.0, -2.0)).rgb;
-    vec3 c = texture(source, uv + texel*vec2( 2.0, -2.0)).rgb;
-    vec3 d = texture(source, uv + texel*vec2(-2.0,  0.0)).rgb;
-    vec3 e = texture(source, uv).rgb;
-    vec3 f = texture(source, uv + texel*vec2( 2.0,  0.0)).rgb;
-    vec3 g = texture(source, uv + texel*vec2(-2.0,  2.0)).rgb;
-    vec3 h = texture(source, uv + texel*vec2( 0.0,  2.0)).rgb;
-    vec3 i = texture(source, uv + texel*vec2( 2.0,  2.0)).rgb;
-    vec3 j = texture(source, uv + texel*vec2(-1.0, -1.0)).rgb;
-    vec3 k = texture(source, uv + texel*vec2( 1.0, -1.0)).rgb;
-    vec3 l = texture(source, uv + texel*vec2(-1.0,  1.0)).rgb;
-    vec3 m = texture(source, uv + texel*vec2( 1.0,  1.0)).rgb;
+    vec3 a = Sample(uv + texel*vec2(-2.0, -2.0));
+    vec3 b = Sample(uv + texel*vec2( 0.0, -2.0));
+    vec3 c = Sample(uv + texel*vec2( 2.0, -2.0));
+    vec3 d = Sample(uv + texel*vec2(-2.0,  0.0));
+    vec3 e = Sample(uv);
+    vec3 f = Sample(uv + texel*vec2( 2.0,  0.0));
+    vec3 g = Sample(uv + texel*vec2(-2.0,  2.0));
+    vec3 h = Sample(uv + texel*vec2( 0.0,  2.0));
+    vec3 i = Sample(uv + texel*vec2( 2.0,  2.0));
+    vec3 j = Sample(uv + texel*vec2(-1.0, -1.0));
+    vec3 k = Sample(uv + texel*vec2( 1.0, -1.0));
+    vec3 l = Sample(uv + texel*vec2(-1.0,  1.0));
+    vec3 m = Sample(uv + texel*vec2( 1.0,  1.0));
 
     vec3 r;
     if (prefilter == 1)

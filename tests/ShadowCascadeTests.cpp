@@ -5,6 +5,8 @@
 #include <Backends/ShadowCascades.hpp>
 #include <gtest/gtest.h>
 
+#include <utility>
+
 namespace Cascades = BRITE::ShadowCascades;
 
 // Two cascades over 0.1..80 at lambda 0.75: the first edge, f = 1/2, blends the logarithmic 0.1 x 800^(1/2) =
@@ -70,4 +72,18 @@ TEST(ShadowCascade, WhichCastersReachACascade) {
     EXPECT_TRUE(Cascades::CasterReachesCascade({0, 0, 50}, 1.0f, centre, 10.0f));
     EXPECT_FALSE(Cascades::CasterReachesCascade({0, 0, -12}, 1.0f, centre, 10.0f));
     EXPECT_TRUE(Cascades::CasterReachesCascade({0, 0, -10.5f}, 1.0f, centre, 10.0f));
+}
+
+// The sphere's size does not change as the camera turns: the same slice, 1..3 under tan 1 both ways, looked at along
+// -z, along +x and along a diagonal, keeps its radius of 4.375 (worked above), which is what keeps a cascade's texel
+// the same size as the camera yaws. Mutation: the radius taken from the slice's box in world axes -> it grows on the
+// diagonal, red.
+TEST(ShadowCascade, TheSphereKeepsItsSizeAsTheCameraTurns) {
+    const float d = 0.70710678f;
+    const BRITE::Vector3 up{0, 1, 0};
+    for (const auto& [forward, right] : {std::pair{BRITE::Vector3{0, 0, -1}, BRITE::Vector3{1, 0, 0}},
+                                         std::pair{BRITE::Vector3{1, 0, 0}, BRITE::Vector3{0, 0, 1}},
+                                         std::pair{BRITE::Vector3{d, 0, -d}, BRITE::Vector3{d, 0, d}}})
+        EXPECT_FLOAT_EQ(
+            Cascades::SliceSphere({5, 2, -7}, forward, right, up, 1.0f, 3.0f, 1.0f, 0.0f, 1.0f, 0.0f).Radius, 4.375f);
 }

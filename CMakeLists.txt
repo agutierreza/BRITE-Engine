@@ -57,9 +57,10 @@ endif()
 if(BRITE_BUILD_RAYLIB)
     # Raylib, PINNED to one commit of its master branch. It was fetched from master itself, so a fresh configure
     # compiled whatever master held that day, and master has renamed rlgl functions under code that calls them. The
-    # pin is the commit the builds of the day already compiled -- read from the pax header GitHub writes into the
-    # downloaded master.tar.gz -- so it changes no code they built; a build directory whose raylib source is set
-    # (FETCHCONTENT_SOURCE_DIR_RAYLIB) downloads nothing at all. Move it on purpose, and build everything when you do.
+    # pin is the commit most builds of the day compiled -- read from the pax header GitHub writes into a downloaded
+    # master.tar.gz -- though not all: build directories that fetched master on other days hold other commits, and
+    # each compiles raylib once more when it reconfigures onto the pin (a directory that fetched it downloads the
+    # pinned archive). Move it on purpose, and build everything when you do.
     FetchContent_Declare(
         raylib
         URL https://github.com/raysan5/raylib/archive/dad422a430815ec595a5b241d65934ca612e5920.tar.gz

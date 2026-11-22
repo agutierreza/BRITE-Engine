@@ -172,3 +172,34 @@ TEST_F(RenderTarget, TheDepthBelongsToItsTarget) {
     EXPECT_EQ(m_backend.LoadRenderTarget({0, HiddenWindow::SIZE, RenderTargetFormat::RGBA8, 1, false}),
               BRITE::NullTextureHandle);
 }
+
+// An HDR pass draws its world into the chain's own target; a pass target made with ReadableDepth still ends holding the
+// world's depth, copied into it when the pass ends. The quad at depth 0.25 (worked above), drawn by an HDR pass, at 1
+// and 4 samples of the chain.
+// Mutation: the chain's depth not copied -> the readable depth keeps its clear, 1.0, red.
+TEST_F(RenderTarget, AnHdrPassLeavesItsDepthInAReadableTarget) {
+    const BRITE::ModelHandle quad = Quad(-3.0f, -3.0f, 3.0f, 3.0f, -995.0375f);
+    for (int samples : {1, 4}) {
+        const BRITE::TextureHandle target =
+            m_backend.LoadRenderTarget({HiddenWindow::SIZE, HiddenWindow::SIZE, RenderTargetFormat::RGBA8, 1, true});
+        BRITE::RenderPass pass;
+        pass.Post.Hdr = true;
+        pass.Post.Samples = samples;
+        pass.ModelCommands.push_back(Unlit(quad, {255, 255, 255, 255}));
+        Picture(pass, target);
+        const BRITE::TextureHandle reader =
+            m_backend.LoadRenderTarget({HiddenWindow::SIZE, HiddenWindow::SIZE, RenderTargetFormat::RGBA16F, 1, false});
+        BRITE::RenderPass read;
+        read.TargetFramebuffer = reader;
+        BRITE::SpriteDrawCommand sprite{};
+        sprite.Material.AlbedoMap = m_backend.RenderTargetDepth(target);
+        sprite.SourceRect = {0.0f, 0.0f, static_cast<float>(HiddenWindow::SIZE),
+                             static_cast<float>(HiddenWindow::SIZE)};
+        sprite.DestRect = sprite.SourceRect;
+        read.SpriteCommands.push_back(sprite);
+        m_backend.SubmitRenderPass(read);
+        EXPECT_NEAR(Linear(reader)[HiddenWindow::AtLinear(0.0f, 0.0f)], 0.25f, 2e-4f) << samples << " samples";
+        m_backend.UnloadRenderTexture(reader);
+        m_backend.UnloadRenderTexture(target);
+    }
+}

@@ -135,8 +135,9 @@ TEST_F(SunShadow, AnEightBitPassCastsShadowsToo) {
     EXPECT_TRUE(HiddenWindow::Within(shaded, 123, 123, 123, 2)) << int(shaded.r);
 }
 
-// What does not cast: a draw that says so (CastsShadow off), a translucent one, an additive one and a layer (DepthWrite
-// off). Under each the ground at (1, 0) is sunlit.
+// What does not cast: a draw that says so (CastsShadow off), a translucent one, an additive one, a layer (DepthWrite
+// off) and an unlit one (a sky dome would otherwise shade the world). Under each the ground at (1, 0) is sunlit.
+// Mutation: unlit draws cast -> the unlit sheet shades the ground, red.
 // Mutation: CastsShadow not read -> the first is shaded, red.
 TEST_F(SunShadow, WhatDoesNotCast) {
     const BRITE::ModelHandle sheet = Flat(-0.5f, -0.5f, 0.5f, 0.5f, 1.0f);
@@ -147,7 +148,9 @@ TEST_F(SunShadow, WhatDoesNotCast) {
     additive.Material.Blend = BRITE::BlendMode::Additive;
     BRITE::ModelDrawCommand layer = Lit(sheet);
     layer.Material.DepthWrite = false;
-    for (const BRITE::ModelDrawCommand& caster : {off, translucent, additive, layer}) {
+    BRITE::ModelDrawCommand unlit = Lit(sheet);
+    unlit.Material.Unlit = true;
+    for (const BRITE::ModelDrawCommand& caster : {off, translucent, additive, layer, unlit}) {
         BRITE::RenderPass pass = Pass(caster);
         EXPECT_GT(At(Draw(pass), 1.0f, 0.0f), SUNLIT_AT_LEAST);
     }
@@ -246,4 +249,42 @@ TEST_F(SunShadow, APassWithoutShadowsRunsNoShadowCode) {
     const std::size_t variants = m_backend.PbrVariantCount();
     m_backend.PbrVariantHasUniform(false, 2, "shadowMap");
     EXPECT_EQ(m_backend.PbrVariantCount(), variants);
+}
+
+// THE FADE over the last tenth of the distance. The shaded ground is 10 along the view from the camera (straight down).
+// With Distance 10 / 0.95 = 10.5263 the shadow fades by (10.5263 - 10) / (0.1 x 10.5263) = 0.5: half the sun's term
+// reaches it, so it reads halfway between the ambient alone (0.25) and the same ground with no shadow at all.
+// Mutation: the fade dropped (the shadow full to the distance's end) -> 0.25, red.
+TEST_F(SunShadow, TheShadowFadesOverTheLastTenthOfTheDistance) {
+    const BRITE::ModelDrawCommand sheet = Lit(Flat(-0.5f, -0.5f, 0.5f, 0.5f, 1.0f));
+    BRITE::RenderPass unshadowed = Pass(sheet);
+    unshadowed.Shadows.Enabled = false;
+    const float sunlit = At(Draw(unshadowed), 1.0f, 0.0f);
+    BRITE::RenderPass fading = Pass(sheet);
+    fading.Shadows.Distance = 10.0f / 0.95f;
+    EXPECT_NEAR(At(Draw(fading), 1.0f, 0.0f), (SHADOWED + sunlit) / 2.0f, 0.01f);
+}
+
+// THE NORMAL BIAS at a grazing sun. The sun 10 degrees above the horizon, travelling (cos 10, -sin 10, 0), lights the
+// bare ground at N.L = sin 10 = 0.1736 -- a surface the map sees edge on, where a shadow map shadows its own receiver
+// in stripes (acne). With the default NormalBias (1.5 texels) the bare ground reads as it does with no shadow at all;
+// the mean over a patch of 16 x 16 pixels well away from the sheet's shadow is the test.
+// It guards the OUTCOME, not the normal bias alone: the depth pass's slope-scaled polygon offset also keeps this
+// receiver clean, and the mutant that drops the normal bias from pbr.fs SURVIVES this case (run once). Where the normal
+// bias alone decides -- a thin caster close to its receiver -- has no case yet.
+TEST_F(SunShadow, TheNormalBiasKeepsAGrazingSunFromShadowingItsOwnReceiver) {
+    auto patchMean = [&](BRITE::RenderPass pass) {
+        pass.Lights.front().Direction = {std::cos(10.0f * BRITE::Deg2Rad), -std::sin(10.0f * BRITE::Deg2Rad), 0.0f};
+        pass.Shadows.DepthBias = 0.0f;
+        const std::vector<float> linear = Draw(pass);
+        float sum = 0.0f;
+        for (int row = 40; row < 56; ++row)
+            for (int column = 4; column < 20; ++column)
+                sum += linear[static_cast<std::size_t>((SIZE - 1 - row) * SIZE + column) * 4];
+        return sum / 256.0f;
+    };
+    BRITE::RenderPass unshadowed = Pass(Lit(Flat(-0.5f, -0.5f, 0.5f, 0.5f, 1.0f)));
+    unshadowed.Shadows.Enabled = false;
+    const float bare = patchMean(unshadowed);
+    EXPECT_NEAR(patchMean(Pass(Lit(Flat(-0.5f, -0.5f, 0.5f, 0.5f, 1.0f)))), bare, 0.01f);
 }

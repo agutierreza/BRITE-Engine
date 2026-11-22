@@ -290,8 +290,11 @@ struct PBRMaterial {
     // Draw the albedo as authored -- tint times vertex colour times albedo
     // texture -- with no lights, no ambient, no tone mapping and no fog: for a
     // sky, a painted backdrop or a light-emitting sign. The scalars and every
-    // map but the albedo and the emission are ignored. Under an HDR pass it
-    // still shows as authored, and adds its emission (below). A model draw
+    // map but the albedo and the emission are ignored. Under an HDR pass an
+    // OPAQUE unlit surface still shows as authored, and adds its emission
+    // (below); a translucent one blends as light, and over a dark colour
+    // shows far brighter than in an 8-bit pass (RenderPass.hpp, PostSettings:
+    // a layered picture wants the display-referred bloom). A model draw
     // only; sprites and primitives are unlit already.
     bool Unlit = false;
     // Alpha as a cut-out: a fragment whose alpha -- tint times vertex colour
@@ -329,8 +332,9 @@ struct PBRMaterial {
     // is the ordinary blend, and opaque when the colour's alpha is 255.
     // Additive adds its colour, times its alpha, to what is behind it -- for a
     // glow, a spark, a flash or a beam -- and is always translucent: drawn
-    // after every opaque draw, sorted with the translucent ones, writing no
-    // depth (RenderPass says the order). Under an HDR pass it adds linear
+    // after every opaque draw, writing no depth: sorted with the translucent
+    // ones, or with DepthWrite off a layer, in submission order before them
+    // (RenderPass says the order). Under an HDR pass it adds linear
     // light, so overlapping glows build past white and bloom; without HDR they
     // stop at white.
     BlendMode Blend = BlendMode::Alpha;

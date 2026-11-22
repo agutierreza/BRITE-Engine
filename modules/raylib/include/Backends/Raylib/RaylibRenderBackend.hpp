@@ -42,6 +42,8 @@ class RaylibRenderBackend : public IRenderBackend {
     // back the same way. False when no HDR pass (or no bloom) has been drawn. For tests and tools.
     bool ReadLastHdrScene(int& width, int& height, std::vector<float>& rgba) const;
     bool ReadLastBloom(int& width, int& height, std::vector<float>& rgba) const;
+    // How many float scene targets the chain has made: passes at sizes it already holds make none. For tests.
+    int HdrSceneTargetsMade() const;
 
     // What the last pass with shadows drew, one entry per cascade, nearest first; empty when the last pass drew none.
     // For tests and tools: the cascade's square in the light's view (its centre, snapped to whole texels, and its
@@ -162,7 +164,7 @@ class RaylibRenderBackend : public IRenderBackend {
     bool MeshTranslucent(const BRITE::ModelDrawCommand& cmd, int slot, unsigned char ownAlpha) const;
     // Hand the pass's lights, ambient and camera position to the PBR shader.
     // Once per pass, before the model commands.
-    void ApplyPassLighting(const BRITE::RenderPass& pass, bool hdr);
+    void ApplyPassLighting(const BRITE::RenderPass& pass);
     // The pass's 3D world, into whatever is bound; `hdr` for an HDR pass's float target (SubmitRenderPass).
     void Draw3D(const BRITE::RenderPass& pass, bool hdr);
     // The shader primitives and 3D lines are drawn through under an HDR pass, compiled on first use; false when the
@@ -252,6 +254,8 @@ class RaylibRenderBackend : public IRenderBackend {
     std::shared_ptr<ShadowAtlas> m_shadowAtlas;
     BRITE::ShaderHandle m_shadowDepthShader = BRITE::NullShaderHandle;
     bool m_shadowDepthWorks = false;
+    // The device refused the lit shader with shadows once: no later pass draws a shadow map it cannot read.
+    bool m_shadowVariantRefused = false;
     int m_shadowDepthAlphaMask = -1;
     int m_shadowDepthAlphaCutoff = -1;
     struct MeshSphere {
