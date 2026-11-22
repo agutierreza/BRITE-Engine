@@ -40,6 +40,8 @@ void DestroyTarget(TargetObjects& target);
 void ResolveTarget(const TargetObjects& target);
 // The target's colour read back, linear and unclamped, RGBA, bottom row first as OpenGL holds it.
 bool ReadTargetFloats(const TargetObjects& target, std::vector<float>& rgba);
+// Clears whatever framebuffer is bound to this colour, as floats (a float target keeps light above 1), and its depth.
+void ClearBound(float r, float g, float b, float a);
 // The most samples the device can give a render target.
 int MostSamples();
 
@@ -65,8 +67,9 @@ class PostChain {
     // so a resize or a change of full screen does not keep the old sizes' targets for the application's life (at
     // 1080p a set is about 33 MB, at 4K about 130 MB). Called on every pass, with the backend's pass serial.
     void ForgetIdle(std::uint64_t pass);
-    // Passes a set may stand unused before it is freed. Every pass counts, HDR or not, so this is about a second at
-    // 144 frames a second with two passes a frame; a set a client draws into every frame is never idle that long.
+    // Passes a set may stand unused before it is freed. Every pass counts, HDR or not -- a pass that draws a planar
+    // reflection counts two -- so this is about a second at 144 frames a second with two passes a frame; a set a client
+    // draws into every frame is never idle that long.
     static constexpr std::uint64_t IdlePasses = 240;
     // Ends drawing into the scene target and resolves it.
     void EndScene();

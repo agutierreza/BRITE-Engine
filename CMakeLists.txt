@@ -489,6 +489,7 @@ if(BRITE_BUILD_TESTS)
             tests/BloomTests.cpp
             tests/AdditiveBlendTests.cpp
             tests/SunShadowTests.cpp
+            tests/ReflectionTests.cpp
             tests/RaylibSceneAssetsTests.cpp
         )
     endif()

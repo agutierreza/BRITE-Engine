@@ -12,7 +12,10 @@
 
 #include <raylib.h>
 
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <utility>
 #include <vector>
 
 namespace HiddenWindow {
@@ -67,6 +70,29 @@ class Scene : public ::testing::Test {
         else
             mesh.Normals.assign(4, {0.0f, 0.0f, 1.0f});
         mesh.Indices = {0, 1, 2, 0, 2, 3};
+        const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
+        EXPECT_NE(model, BRITE::NullModelHandle);
+        m_models.push_back(model);
+        return model;
+    }
+
+    /// A box of half-size h centred at (x, y, z), each face wound both ways so it shows from either side, its normals
+    /// pointing out.
+    BRITE::ModelHandle Box(float x, float y, float z, float h) {
+        BRITE::MeshData mesh;
+        const BRITE::Vector3 n[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+        for (const BRITE::Vector3& N : n) {
+            const BRITE::Vector3 u = std::fabs(N.y) > 0.5f ? BRITE::Vector3{1, 0, 0} : BRITE::Vector3{0, 1, 0};
+            const BRITE::Vector3 v{N.y * u.z - N.z * u.y, N.z * u.x - N.x * u.z, N.x * u.y - N.y * u.x};
+            const std::uint32_t base = static_cast<std::uint32_t>(mesh.Positions.size());
+            for (auto [a, b] : {std::pair{-1.f, -1.f}, {1.f, -1.f}, {1.f, 1.f}, {-1.f, 1.f}}) {
+                mesh.Positions.push_back({x + (N.x + a * u.x + b * v.x) * h, y + (N.y + a * u.y + b * v.y) * h,
+                                          z + (N.z + a * u.z + b * v.z) * h});
+                mesh.Normals.push_back(N);
+            }
+            mesh.Indices.insert(mesh.Indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3, base, base + 2,
+                                                     base + 1, base, base + 3, base + 2});
+        }
         const BRITE::ModelHandle model = m_backend.LoadModelFromMesh(mesh);
         EXPECT_NE(model, BRITE::NullModelHandle);
         m_models.push_back(model);

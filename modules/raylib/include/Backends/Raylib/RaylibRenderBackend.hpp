@@ -50,6 +50,11 @@ class RaylibRenderBackend : public IRenderBackend {
     // many passes a set may stand unused before it is freed. For tests.
     int HdrTargetSetsHeld() const;
     static std::uint64_t HdrIdlePasses();
+    // The last pass's planar reflection (RenderPass.hpp, ReflectionSettings) read back as floats, bottom row first,
+    // and the size it was drawn at; false when the last pass drew none. And how many planar reflection targets (one a
+    // size) are held now: they are freed after as many unused passes as the chain's sets. For tests and tools.
+    bool ReadLastPlanarReflection(int& width, int& height, std::vector<float>& rgba) const;
+    int PlanarReflectionTargetsHeld() const;
 
     // What the last pass with shadows drew, one entry per cascade, nearest first; empty when the last pass drew none.
     // For tests and tools: the cascade's square in the light's view (its centre, snapped to whole texels, and its
@@ -154,8 +159,9 @@ class RaylibRenderBackend : public IRenderBackend {
         bool hdr = false;
         int shadowCascades = 0; // 0: no shadows
         int shadowFilter = 1;   // ShadowFilter
+        bool reflections = false;
         int Key() const {
-            return (hdr ? 1 : 0) | (shadowCascades << 1) | (shadowFilter << 4);
+            return (hdr ? 1 : 0) | (shadowCascades << 1) | (shadowFilter << 4) | (reflections ? 64 : 0);
         }
     };
     // Compile the variant of the embedded PBR shader on first use, cache its uniform locations, and make it the one
@@ -245,6 +251,12 @@ class RaylibRenderBackend : public IRenderBackend {
         int shadowRect[4] = {-1, -1, -1, -1};
         int cascadeFar[4] = {-1, -1, -1, -1};
         int cascadeTexel[4] = {-1, -1, -1, -1};
+        int reflection = -1;
+        int reflectionF0 = -1;
+        int reflectionDistortion = -1;
+        int skyColor = -1;
+        int planarMap = -1;
+        int planarMatrix = -1;
         struct LightLocations {
             int enabled = -1;
             int type = -1;
@@ -281,6 +293,20 @@ class RaylibRenderBackend : public IRenderBackend {
     struct ShadowFrame;
     std::shared_ptr<ShadowFrame> m_shadowFrame;
     std::vector<ShadowCascadeReport> m_shadowReport;
+
+    // THE PLANAR REFLECTION (ReflectionSettings): its targets, kept by size, and the mirrored camera's view and
+    // projection for the reflecting draws of the pass being drawn. m_planarThisPass: the pass drew one, and its draws
+    // read it.
+    struct PlanarState;
+    std::shared_ptr<PlanarState> m_planar;
+    bool m_planarThisPass = false;
+    // The pass's lit draws have its environment map bound (ApplyPassLighting), to be unbound when they are done.
+    bool m_environmentThisPass = false;
+    // A projection Draw3D puts in place of its camera's own once BeginMode3D has made it: the mirrored camera's, with
+    // its near plane on the reflecting plane.
+    bool m_projectionOverride = false;
+    float m_projection[16] = {};
+    bool RenderPlanarReflection(const BRITE::RenderPass& pass, int targetWidth, int targetHeight, bool hdr);
 
     // To cleanly separate Texture2D vs RenderTexture2D, we store a boolean.
     // Real implementation would just use a wrapper struct allocated on heap.

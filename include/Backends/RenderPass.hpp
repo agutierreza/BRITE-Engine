@@ -219,6 +219,29 @@ struct ShadowSettings {
     float NormalBias = 1.5f;
 };
 
+// REFLECTIONS, for the lit surfaces whose material asks for one (PBRMaterial::Reflection).
+//   - The sky (ReflectionMode::Sky), nearly free: the pass's environment map along the reflected ray when it has one
+//     (light, as the lit shader's ambient reads it), else SkyColor, authored as what the screen shows.
+//   - A planar reflection (ReflectionMode::Planar), with Planar on: the 3D world drawn a second time, seen from the
+//     camera mirrored in the plane y = PlaneHeight, into a target Resolution times the pass's size, and read by each
+//     reflecting fragment where its own point projects into it. A lake, a wet road, a polished floor. Only what lies
+//     above the plane is drawn into it -- the near plane of the mirrored view is the plane itself (Lengyel's oblique
+//     near plane) -- so a lake bed or a bank under the water never shows in it. Translucent draws and layers are in
+//     it; the reflecting draws themselves, the background callbacks and the shadows are not. It costs the 3D world
+//     drawn twice: every draw a second time on the CPU, at Resolution^2 of the pixels on the GPU.
+//     It is drawn as the pass draws: in linear light, in a float target, for an HDR pass; in the colours the screen
+//     shows for any other, display-referred bloom included. Its targets are kept by size, as the HDR chain's are, and
+//     freed once no pass has drawn one for a while. A device that cannot make one (said once in the log), an HDR pass
+//     that falls back to 8 bits after it was drawn, and a camera at or below the plane, which sees its underside,
+//     reflect the sky instead.
+struct ReflectionSettings {
+    Color SkyColor = {128, 170, 220, 255};
+    bool Planar = false;
+    float PlaneHeight = 0.0f;
+    // The reflection's size, a fraction of the pass's target: 0.5 is a quarter of the pixels. Held to 0.05..1.
+    float Resolution = 0.5f;
+};
+
 // HDR: a pass whose 3D world is drawn in linear light and shown through a tone curve, so light can go beyond white --
 // a sun, a lamp, glints on water -- and roll off softly into it instead of clipping. OFF BY DEFAULT: a pass that never
 // touches its Post draws exactly as it always has (the lit shader's own Reinhard curve, into whatever target the pass
@@ -308,6 +331,8 @@ struct RenderPass {
     PostSettings Post;
     // Sun shadows; off unless Shadows.Enabled is set (ShadowSettings).
     ShadowSettings Shadows;
+    // What reflecting surfaces reflect (ReflectionSettings); nothing is drawn for it unless a draw asks.
+    ReflectionSettings Reflections;
 
     std::vector<ModelDrawCommand> ModelCommands;
     std::vector<SpriteDrawCommand> SpriteCommands;

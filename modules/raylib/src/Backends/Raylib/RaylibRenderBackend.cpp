@@ -261,7 +261,115 @@ struct RaylibRenderBackend::ShadowFrame {
     float texel[BRITE::ShadowCascades::MaxCascades];
 };
 
+// The planar reflection's targets and what the reflecting draws read the current one with. Kept by size and format,
+// as the chain keeps its sets (RaylibPostChain.hpp): two reflecting passes a frame at different sizes each keep their
+// own, and a target no pass has drawn into for PostChain::IdlePasses passes is freed, so a resize does not keep the old
+// size's for the application's life.
+struct RaylibRenderBackend::PlanarState {
+    struct Slot {
+        TargetObjects target;
+        std::uint64_t used = 0; // the pass that last drew into it
+    };
+    std::vector<Slot> slots; // most recently used last
+    static constexpr std::size_t MaxSlots = 3;
+    // The slot the current pass drew into (an index into slots), and its mirrored camera's view and projection.
+    std::size_t current = 0;
+    ::Matrix viewProjection = {};
+    // Sizes the device refused, not asked again; one log line for them all.
+    std::vector<std::array<int, 3>> refused;
+    bool failureLogged = false;
+
+    PlanarState() = default;
+    PlanarState(const PlanarState&) = delete;
+    PlanarState& operator=(const PlanarState&) = delete;
+    ~PlanarState() {
+        // As the chain's and the atlas's: no GL call once the window, and its context, are gone.
+        if (!::IsWindowReady())
+            return;
+        for (Slot& slot : slots)
+            DestroyTarget(slot.target);
+    }
+    const TargetObjects& Current() const {
+        return slots[current].target;
+    }
+    // The target of this size and format, kept or made, stamped with `pass`; null when the device cannot make it.
+    TargetObjects* Acquire(int width, int height, RenderTargetFormat format, std::uint64_t pass) {
+        for (std::size_t i = 0; i < slots.size(); ++i) {
+            const TargetObjects& t = slots[i].target;
+            if (t.width == width && t.height == height && t.format == format) {
+                std::rotate(slots.begin() + static_cast<std::ptrdiff_t>(i),
+                            slots.begin() + static_cast<std::ptrdiff_t>(i) + 1, slots.end());
+                current = slots.size() - 1;
+                slots[current].used = pass;
+                return &slots[current].target;
+            }
+        }
+        const std::array<int, 3> key = {width, height, static_cast<int>(format)};
+        if (std::find(refused.begin(), refused.end(), key) != refused.end())
+            return nullptr;
+        Slot slot;
+        std::string why;
+        if (!CreateTarget({width, height, format, 1, false}, slot.target, why)) {
+            refused.push_back(key);
+            if (!failureLogged)
+                spdlog::error("BRITE: a {}x{} planar reflection could not be made ({}); the sky is reflected instead",
+                              width, height, why);
+            failureLogged = true;
+            return nullptr;
+        }
+        if (slots.size() >= MaxSlots) { // the least recently used goes
+            DestroyTarget(slots.front().target);
+            slots.erase(slots.begin());
+        }
+        slot.used = pass;
+        slots.push_back(slot);
+        current = slots.size() - 1;
+        return &slots[current].target;
+    }
+    // Frees every target no pass has drawn into for more than PostChain::IdlePasses passes.
+    void ForgetIdle(std::uint64_t pass) {
+        for (std::size_t i = 0; i < slots.size();) {
+            if (pass > slots[i].used && pass - slots[i].used > PostChain::IdlePasses) {
+                DestroyTarget(slots[i].target);
+                slots.erase(slots.begin() + static_cast<std::ptrdiff_t>(i));
+            } else {
+                ++i;
+            }
+        }
+        current = 0;
+    }
+};
+
 namespace {
+// The texture unit the planar reflection is bound to for a pass's lit draws, beside the shadow atlas's.
+constexpr int PlanarTextureUnit = 13;
+// The texture units the pass's environment map is bound to for its lit draws, as the 2D panorama pbr.fs samples:
+// irradiance and prefilter. raylib's DrawMesh binds a material's irradiance and prefilter slots as CUBEMAPS, which a
+// panorama is not -- the bind fails and the shader reads black -- so the backend binds them itself, beside the maps.
+constexpr int IrradianceTextureUnit = 12;
+constexpr int PrefilterTextureUnit = 15;
+
+// LENGYEL'S OBLIQUE NEAR PLANE ("Oblique View Frustum Depth Projection and Clipping", 2005): the projection with its
+// near plane moved onto `plane` (in view space, ax + by + cz + d, the kept side positive), its far plane tilted to
+// match and nothing else changed -- x and y project exactly as before. The frustum's corner opposite the plane, q, is
+// found in view space through the inverse projection; the plane, scaled so q lands on the far plane, replaces the
+// projection's third row less its fourth.
+::Matrix ObliqueNearPlane(::Matrix projection, ::Vector4 plane) {
+    const ::Matrix inverse = ::MatrixInvert(projection);
+    auto sign = [](float v) { return v > 0.0f ? 1.0f : v < 0.0f ? -1.0f : 0.0f; };
+    const float cx = sign(plane.x), cy = sign(plane.y);
+    const ::Vector4 q = {inverse.m0 * cx + inverse.m4 * cy + inverse.m8 + inverse.m12,
+                         inverse.m1 * cx + inverse.m5 * cy + inverse.m9 + inverse.m13,
+                         inverse.m2 * cx + inverse.m6 * cy + inverse.m10 + inverse.m14,
+                         inverse.m3 * cx + inverse.m7 * cy + inverse.m11 + inverse.m15};
+    const float scale = 2.0f / (plane.x * q.x + plane.y * q.y + plane.z * q.z + plane.w * q.w);
+    projection.m2 = plane.x * scale - projection.m3;
+    projection.m6 = plane.y * scale - projection.m7;
+    projection.m10 = plane.z * scale - projection.m11;
+    projection.m14 = plane.w * scale - projection.m15;
+    return projection;
+}
+
 // The texture unit the shadow atlas is bound to for a pass's lit draws: one no material map reaches (raylib binds a
 // material's twelve maps to units 0 to 11).
 constexpr int ShadowTextureUnit = 14;
@@ -540,6 +648,14 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         hdr = hdr && m_post->Ready() && EnsureAuthoredColourShader();
         displayBloom = displayBloom && m_post->Ready();
     }
+    // A PLANAR REFLECTION (ReflectionSettings) is the world drawn a second time, into its own target, before the scene
+    // binds the chain's: in linear light for an HDR pass, in the colours the screen shows for any other.
+    m_planarThisPass = false;
+    if (m_planar)
+        m_planar->ForgetIdle(m_passSerial);
+    const bool planarHdr = hdr;
+    RenderPlanarReflection(pass, targetWidth, targetHeight, planarHdr);
+
     if (hdr || displayBloom) {
         // The clear colour is authored as what the screen shows: under HDR the light that shows it; in a display pass
         // the colour itself. Alpha as authored.
@@ -554,6 +670,10 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         hdr = hdr && began;
         displayBloom = displayBloom && began;
     }
+    // A pass that fell back from HDR after its reflection was drawn in linear light would mix light as colour: it
+    // reflects the sky instead.
+    if (planarHdr && !hdr)
+        m_planarThisPass = false;
     const bool chained = hdr || displayBloom;
     if (chained) {
         // The chain's scene is premultiplied: the colour blends as ever, and the alpha builds as coverage -- a layer of
@@ -728,6 +848,11 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
                                     ? CAMERA_PERSPECTIVE
                                     : CAMERA_ORTHOGRAPHIC;
         ::BeginMode3D(rlCamera3D);
+        if (m_projectionOverride) {
+            ::Matrix projection;
+            std::memcpy(&projection, m_projection, sizeof(projection));
+            ::rlSetMatrixProjection(projection);
+        }
 
         // Draw Skybox if requested
         if (pass.DrawSkybox && pass.Environment.Cubemap != BRITE::NullTextureHandle) {
@@ -815,6 +940,8 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
         // The variant of the lit shader for what this pass uses, and no more (pbr.fs, THE VARIANTS).
         PbrVariant variant;
         variant.hdr = hdr;
+        for (const BRITE::ModelDrawCommand& cmd : pass.ModelCommands)
+            variant.reflections = variant.reflections || cmd.Material.Reflection != BRITE::ReflectionMode::None;
         if (m_shadowFrame && m_shadowFrame->cascades > 0) {
             variant.shadowCascades = m_shadowFrame->cascades;
             variant.shadowFilter = static_cast<int>(pass.Shadows.Filter);
@@ -857,9 +984,6 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
             {cmd.Material.RoughnessMap, MATERIAL_MAP_ROUGHNESS}, {cmd.Material.MetallicMap, MATERIAL_MAP_METALNESS},
             {cmd.Material.EmissionMap, MATERIAL_MAP_EMISSION},   {cmd.Material.AOMap, MATERIAL_MAP_OCCLUSION},
         };
-        const ::Texture2D* irradiance = commandTexture(pass.Environment.IrradianceMap);
-        const ::Texture2D* prefilter = commandTexture(pass.Environment.PrefilterMap);
-
         // The model's placement, built exactly as DrawModelEx builds it (scale,
         // then rotation, then translation, after the model's own transform), so
         // a model lands where it always has.
@@ -919,9 +1043,10 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
                 if (const ::Texture2D* texture = commandTexture(handle))
                     maps[mapIndex].texture = *texture;
             }
-            // The environment belongs to the pass, never to the model.
-            maps[MATERIAL_MAP_IRRADIANCE].texture = irradiance ? *irradiance : ::Texture2D{0};
-            maps[MATERIAL_MAP_PREFILTER].texture = prefilter ? *prefilter : ::Texture2D{0};
+            // The environment belongs to the pass, never to the model: bound by ApplyPassLighting as the 2D panorama it
+            // is, so these slots, which DrawMesh would bind as cubemaps, are left empty.
+            maps[MATERIAL_MAP_IRRADIANCE].texture = ::Texture2D{0};
+            maps[MATERIAL_MAP_PREFILTER].texture = ::Texture2D{0};
 
             const bool bothSides = ApplyMaterial(cmd.Material, ownMaps, FileMaterial(cmd.Model, slot));
 
@@ -1088,11 +1213,144 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
         ::EndShaderMode(); // draws what is left of the batch through it first
     if (pass.Camera3DPtr)
         ::EndMode3D();
+    if (m_planarThisPass) {
+        ::rlActiveTextureSlot(PlanarTextureUnit);
+        ::rlDisableTexture();
+        ::rlActiveTextureSlot(0);
+    }
+    if (m_environmentThisPass) {
+        for (const int unit : {IrradianceTextureUnit, PrefilterTextureUnit}) {
+            ::rlActiveTextureSlot(unit);
+            ::rlDisableTexture();
+        }
+        ::rlActiveTextureSlot(0);
+        m_environmentThisPass = false;
+    }
     if (m_shadowFrame && m_shadowFrame->cascades > 0) {
         ::rlActiveTextureSlot(ShadowTextureUnit);
         ::rlDisableTexture();
         ::rlActiveTextureSlot(0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The planar reflection
+// ---------------------------------------------------------------------------
+
+bool RaylibRenderBackend::RenderPlanarReflection(const BRITE::RenderPass& pass, int targetWidth, int targetHeight,
+                                                 bool hdr) {
+    const BRITE::ReflectionSettings& settings = pass.Reflections;
+    // A camera at or below the plane sees its underside, where the oblique near plane would face the wrong way: the
+    // surfaces reflect the sky instead.
+    if (!settings.Planar || pass.Camera3DPtr == nullptr || targetWidth <= 0 || targetHeight <= 0 ||
+        pass.Camera3DPtr->position.y <= settings.PlaneHeight)
+        return false;
+    // Drawn only for a pass that has a draw to read it; that draw is not drawn into it.
+    BRITE::RenderPass mirrored;
+    mirrored.ModelCommands.reserve(pass.ModelCommands.size());
+    bool anyReader = false;
+    for (const BRITE::ModelDrawCommand& cmd : pass.ModelCommands) {
+        if (cmd.Material.Reflection == BRITE::ReflectionMode::Planar)
+            anyReader = true;
+        else
+            mirrored.ModelCommands.push_back(cmd);
+    }
+    if (!anyReader)
+        return false;
+
+    const float scale = std::clamp(settings.Resolution, 0.05f, 1.0f);
+    const int width = std::max(1, static_cast<int>(static_cast<float>(targetWidth) * scale));
+    const int height = std::max(1, static_cast<int>(static_cast<float>(targetHeight) * scale));
+    const RenderTargetFormat format = hdr ? RenderTargetFormat::RGBA16F : RenderTargetFormat::RGBA8;
+    if (!m_planar)
+        m_planar = std::make_shared<PlanarState>();
+    TargetObjects* acquired = m_planar->Acquire(width, height, format, m_passSerial);
+    if (acquired == nullptr)
+        return false;
+    const TargetObjects& target = *acquired;
+
+    // The camera mirrored in the plane y = h: below it, looking up at the mirrored target, its up mirrored too. Through
+    // a point of the plane it sees what the real camera sees reflected there, so a reflecting fragment reads the point
+    // it projects to; and its view is the real one's mirror image, so every point of the plane the real camera sees
+    // lies inside it -- with the up left as it was, a rolled camera's mirror would be turned by twice its roll and
+    // miss the corners.
+    const float h = settings.PlaneHeight;
+    BRITE::Camera3D camera = *pass.Camera3DPtr;
+    camera.position.y = 2.0f * h - camera.position.y;
+    camera.target.y = 2.0f * h - camera.target.y;
+    camera.up.y = -camera.up.y;
+    const ::Matrix view =
+        ::MatrixLookAt({camera.position.x, camera.position.y, camera.position.z},
+                       {camera.target.x, camera.target.y, camera.target.z}, {camera.up.x, camera.up.y, camera.up.z});
+    const double nearPlane = ::rlGetCullDistanceNear(), farPlane = ::rlGetCullDistanceFar();
+    const double aspect = static_cast<double>(width) / static_cast<double>(height);
+    ::Matrix projection;
+    if (camera.projection == BRITE::Math::CameraProjection::Perspective) {
+        projection = ::MatrixPerspective(camera.fovy * DEG2RAD, aspect, nearPlane, farPlane);
+    } else {
+        const double top = camera.fovy / 2.0, right = top * aspect;
+        projection = ::MatrixOrtho(-right, right, -top, top, nearPlane, farPlane);
+    }
+    // The plane y - h = 0, kept side up, in the mirrored camera's view: a plane transforms by the inverse of the
+    // view, transposed.
+    const ::Matrix fromView = ::MatrixInvert(view);
+    const ::Vector4 world = {0.0f, 1.0f, 0.0f, -h};
+    const ::Vector4 plane = {
+        world.x * fromView.m0 + world.y * fromView.m1 + world.z * fromView.m2 + world.w * fromView.m3,
+        world.x * fromView.m4 + world.y * fromView.m5 + world.z * fromView.m6 + world.w * fromView.m7,
+        world.x * fromView.m8 + world.y * fromView.m9 + world.z * fromView.m10 + world.w * fromView.m11,
+        world.x * fromView.m12 + world.y * fromView.m13 + world.z * fromView.m14 + world.w * fromView.m15};
+    projection = ObliqueNearPlane(projection, plane);
+    m_planar->viewProjection = ::MatrixMultiply(view, projection);
+
+    // The pass's 3D world, but the reflecting draws, under the mirrored camera, without shadows.
+    mirrored.Camera3DPtr = &camera;
+    mirrored.Lights = pass.Lights;
+    mirrored.AmbientColor = pass.AmbientColor;
+    mirrored.AmbientIntensity = pass.AmbientIntensity;
+    mirrored.Fog = pass.Fog;
+    mirrored.Environment = pass.Environment;
+    mirrored.Post = pass.Post;
+    mirrored.Reflections = pass.Reflections;
+    mirrored.Primitive3DCommands = pass.Primitive3DCommands;
+    mirrored.Line3DCommands = pass.Line3DCommands;
+
+    ::RenderTexture2D surface{};
+    surface.id = target.framebuffer;
+    surface.texture.id = target.colour;
+    surface.texture.width = width;
+    surface.texture.height = height;
+    surface.texture.mipmaps = 1;
+    surface.texture.format = hdr ? PIXELFORMAT_UNCOMPRESSED_R16G16B16A16 : PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    ::BeginTextureMode(surface);
+    const auto clear = [&](unsigned char c) {
+        return hdr ? BRITE::ToneCurve::AuthoredToLinear(c / 255.0f, pass.Post.Exposure) : c / 255.0f;
+    };
+    ClearBound(clear(pass.ClearColor.r), clear(pass.ClearColor.g), clear(pass.ClearColor.b), 1.0f);
+    std::shared_ptr<ShadowFrame> shadows = std::move(m_shadowFrame);
+    std::memcpy(m_projection, &projection, sizeof(m_projection));
+    m_projectionOverride = true;
+    Draw3D(mirrored, hdr);
+    m_projectionOverride = false;
+    m_shadowFrame = std::move(shadows);
+    ::EndTextureMode();
+    // A skinned draw of the mirrored list may have left its pose in a model's buffers under another command's index:
+    // the pass's own draws are told to pose again.
+    ++m_passSerial;
+    m_planarThisPass = true;
+    return true;
+}
+
+bool RaylibRenderBackend::ReadLastPlanarReflection(int& width, int& height, std::vector<float>& rgba) const {
+    if (!m_planarThisPass || !m_planar)
+        return false;
+    width = m_planar->Current().width;
+    height = m_planar->Current().height;
+    return ReadTargetFloats(m_planar->Current(), rgba);
+}
+
+int RaylibRenderBackend::PlanarReflectionTargetsHeld() const {
+    return m_planar ? static_cast<int>(m_planar->slots.size()) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1370,7 +1628,8 @@ void RaylibRenderBackend::EnsurePbrShader(const PbrVariant& variant) {
     std::string fragment = EmbeddedShaders::PBR_FRAGMENT;
     std::string defines = "#define BRITE_HDR " + std::to_string(variant.hdr ? 1 : 0) +
                           "\n#define BRITE_SHADOW_CASCADES " + std::to_string(variant.shadowCascades) +
-                          "\n#define BRITE_SHADOW_FILTER " + std::to_string(variant.shadowFilter) + "\n";
+                          "\n#define BRITE_SHADOW_FILTER " + std::to_string(variant.shadowFilter) +
+                          "\n#define BRITE_REFLECTIONS " + std::to_string(variant.reflections ? 1 : 0) + "\n";
     fragment.insert(fragment.find('\n') + 1, defines);
     m_pbrShader = LoadShaderFromMemory(EmbeddedShaders::PBR_VERTEX, fragment.c_str());
     m_pbrLocs = {};
@@ -1437,6 +1696,12 @@ void RaylibRenderBackend::EnsurePbrShader(const PbrVariant& variant) {
     m_pbrLocs.shadowDepthBias = loc("shadowDepthBias");
     m_pbrLocs.shadowNormalBias = loc("shadowNormalBias");
     m_pbrLocs.viewForward = loc("viewForward");
+    m_pbrLocs.reflection = loc("reflection");
+    m_pbrLocs.reflectionF0 = loc("reflectionF0");
+    m_pbrLocs.reflectionDistortion = loc("reflectionDistortion");
+    m_pbrLocs.skyColor = loc("skyColor");
+    m_pbrLocs.planarMap = loc("planarMap");
+    m_pbrLocs.planarMatrix = loc("planarMatrix");
     for (int c = 0; c < BRITE::ShadowCascades::MaxCascades; ++c) {
         const std::string at = "[" + std::to_string(c) + "]";
         m_pbrLocs.shadowMatrix[c] = loc(("shadowMatrix" + at).c_str());
@@ -1546,8 +1811,47 @@ void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass) {
     ::SetShaderValue(*shader, m_pbrLocs.fogStart, &pass.Fog.Start, SHADER_UNIFORM_FLOAT);
     ::SetShaderValue(*shader, m_pbrLocs.fogEnd, &pass.Fog.End, SHADER_UNIFORM_FLOAT);
 
+    // The reflection variant's sky, and the planar reflection when this pass drew one.
+    const float skyColor[3] = {pass.Reflections.SkyColor.r / 255.0f, pass.Reflections.SkyColor.g / 255.0f,
+                               pass.Reflections.SkyColor.b / 255.0f};
+    ::SetShaderValue(*shader, m_pbrLocs.skyColor, skyColor, SHADER_UNIFORM_VEC3);
+    if (m_planarThisPass) {
+        const int unit = PlanarTextureUnit;
+        ::SetShaderValue(*shader, m_pbrLocs.planarMap, &unit, SHADER_UNIFORM_INT);
+        ::rlActiveTextureSlot(unit);
+        ::rlEnableTexture(m_planar->Current().colour);
+        ::rlActiveTextureSlot(0);
+        ::SetShaderValueMatrix(*shader, m_pbrLocs.planarMatrix, m_planar->viewProjection);
+    }
+
     const int useIBL = pass.Environment.IrradianceMap != BRITE::NullTextureHandle ? 1 : 0;
     ::SetShaderValue(*shader, m_pbrLocs.useIBL, &useIBL, SHADER_UNIFORM_INT);
+    // The environment map, irradiance and prefilter, as 2D textures on units of their own (IrradianceTextureUnit).
+    m_environmentThisPass = false;
+    if (useIBL == 1) {
+        auto texture = [&](BRITE::TextureHandle handle) -> unsigned int {
+            auto it = m_textures.find(handle);
+            if (handle == BRITE::NullTextureHandle || it == m_textures.end() || it->second.isRenderTexture)
+                return 0;
+            return static_cast<const ::Texture2D*>(it->second.ptr)->id;
+        };
+        const unsigned int irradiance = texture(pass.Environment.IrradianceMap);
+        const unsigned int prefilter = texture(pass.Environment.PrefilterMap);
+        const std::pair<unsigned int, int> bindings[2] = {{irradiance, IrradianceTextureUnit},
+                                                          {prefilter, PrefilterTextureUnit}};
+        const int locations[2] = {shader->locs[SHADER_LOC_MAP_IRRADIANCE], shader->locs[SHADER_LOC_MAP_PREFILTER]};
+        for (int k = 0; k < 2; ++k) {
+            const int unit = bindings[k].second;
+            ::SetShaderValue(*shader, locations[k], &unit, SHADER_UNIFORM_INT);
+            ::rlActiveTextureSlot(unit);
+            if (bindings[k].first != 0)
+                ::rlEnableTexture(bindings[k].first);
+            else
+                ::rlDisableTexture();
+        }
+        ::rlActiveTextureSlot(0);
+        m_environmentThisPass = true;
+    }
 
     if (pass.Camera3DPtr) {
         const float cameraPos[3] = {pass.Camera3DPtr->position.x, pass.Camera3DPtr->position.y,
@@ -1647,6 +1951,16 @@ bool RaylibRenderBackend::ApplyMaterial(const BRITE::PBRMaterial& material, cons
         useEmissive = ownMaps.emission ? 1 : 0;
     }
     ::SetShaderValue(*shader, m_pbrLocs.emissiveLight, emissive, SHADER_UNIFORM_VEC3);
+
+    // What the surface reflects: a planar reflection only where the pass drew one, else the sky.
+    int reflection = 0;
+    if (material.Reflection == BRITE::ReflectionMode::Sky)
+        reflection = 1;
+    else if (material.Reflection == BRITE::ReflectionMode::Planar)
+        reflection = m_planarThisPass ? 2 : 1;
+    ::SetShaderValue(*shader, m_pbrLocs.reflection, &reflection, SHADER_UNIFORM_INT);
+    ::SetShaderValue(*shader, m_pbrLocs.reflectionF0, &material.ReflectionF0, SHADER_UNIFORM_FLOAT);
+    ::SetShaderValue(*shader, m_pbrLocs.reflectionDistortion, &material.ReflectionDistortion, SHADER_UNIFORM_FLOAT);
     ::SetShaderValue(*shader, m_pbrLocs.useTexEmissive, &useEmissive, SHADER_UNIFORM_INT);
     return bothSides;
 }

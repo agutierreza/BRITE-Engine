@@ -165,6 +165,12 @@ void EndFullScreen(const FullScreenState& was) {
 
 } // namespace
 
+void ClearBound(float r, float g, float b, float a) {
+    glClearColor(r, g, b, a);
+    glDepthMask(GL_TRUE);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
 int MostSamples() {
     GLint most = 0;
     glGetIntegerv(GL_MAX_SAMPLES, &most);

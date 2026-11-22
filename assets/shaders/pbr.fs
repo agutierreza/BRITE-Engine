@@ -27,6 +27,7 @@
 //   BRITE_HDR              1: an HDR pass (RenderPass.hpp, PostSettings)
 //   BRITE_SHADOW_CASCADES  1..4: the pass's sun casts shadows, in this many cascades
 //   BRITE_SHADOW_FILTER    0 hard, 1 PCF 3x3, 2 Poisson 16 (ShadowFilter)
+//   BRITE_REFLECTIONS      1: a draw of the pass reflects (PBRMaterial::Reflection)
 #ifndef BRITE_HDR
 #define BRITE_HDR 0
 #endif
@@ -35,6 +36,9 @@
 #endif
 #ifndef BRITE_SHADOW_FILTER
 #define BRITE_SHADOW_FILTER 1
+#endif
+#ifndef BRITE_REFLECTIONS
+#define BRITE_REFLECTIONS 0
 #endif
 
 #include "tone_curve.glsl"
@@ -132,6 +136,16 @@ uniform float fogEnd;
 // curve at this exposure so it still shows as authored. Without it, the pass's
 // 8-bit picture, as this shader always drew it.
 uniform float exposure;
+
+#if BRITE_REFLECTIONS
+// REFLECTIONS (RenderPass.hpp, ReflectionSettings; PBRMaterial::Reflection).
+uniform int reflection;           // 0 none, 1 the sky, 2 the planar reflection
+uniform float reflectionF0;       // Schlick's F0
+uniform float reflectionDistortion;
+uniform vec3 skyColor;            // authored, as what the screen shows
+uniform sampler2D planarMap;      // the world seen from the mirrored camera
+uniform mat4 planarMatrix;        // world -> the mirrored camera's clip space
+#endif
 
 #if BRITE_SHADOW_CASCADES > 0
 // SUN SHADOWS (RenderPass.hpp, ShadowSettings). One depth atlas, a tile per
@@ -253,6 +267,40 @@ float SunShadow(vec3 worldPos, vec3 geometricNormal, vec3 L)
 }
 #endif
 
+#if BRITE_REFLECTIONS
+// The normal the surface is lit by -- after its normal map, turned toward the viewer on a back face -- kept by
+// ComputePBR for the reflection, so a normal map's ripples move the Fresnel and break up a planar reflection.
+vec3 shadingNormal = vec3(0.0, 0.0, 1.0);
+
+// Schlick's Fresnel: how much of the reflection a surface shows at this angle, F0 head on to 1 at a grazing angle.
+float ReflectionFresnel(vec3 N, vec3 V)
+{
+    return reflectionF0 + (1.0 - reflectionF0)*pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
+}
+
+// What the surface reflects, and whether it is LIGHT or a colour authored as the screen shows it (0..1): the planar
+// map where the point projects into it -- light in an HDR pass, a shown colour in any other, as the pass drew it --
+// else the environment map along the reflected ray, which is light, as the lit shader's ambient reads it; else the
+// sky colour, authored.
+vec3 ReflectedColour(vec3 N, vec3 V, out bool isLight)
+{
+    if (reflection == 2)
+    {
+        vec4 clip = planarMatrix*vec4(fragPosition, 1.0);
+        vec2 uv = clip.xy/clip.w*0.5 + 0.5 + N.xz*reflectionDistortion;
+        isLight = BRITE_HDR == 1;
+        return texture(planarMap, clamp(uv, 0.0, 1.0)).rgb;
+    }
+    if (useIBL == 1)
+    {
+        isLight = true;
+        return max(textureLod(prefilterMap, SampleSphericalMap(reflect(-V, N)), 0.0).rgb, vec3(0.0));
+    }
+    isLight = false;
+    return skyColor;
+}
+#endif
+
 vec3 ComputePBR()
 {
     // Albedo is the draw tint times the vertex colour, times the albedo texture
@@ -290,6 +338,9 @@ vec3 ComputePBR()
     // which is the face whose normal points the other way -- after the normal
     // map, which is authored for the front.
     if (doubleSided == 1 && !gl_FrontFacing) N = -N;
+#if BRITE_REFLECTIONS
+    shadingNormal = N;
+#endif
 
     // SPECULAR ANTI-ALIASING, under an HDR pass only (the 8-bit path is kept
     // exactly as it drew). A highlight narrower than the pixels that carry it
@@ -446,8 +497,26 @@ void main()
     }
 
     vec3 color = ComputePBR();
+#if BRITE_REFLECTIONS
+    vec3 reflectedColour = vec3(0.0);
+    float reflectedShare = 0.0;
+    bool reflectedIsLight = false;
+    if (reflection != 0)
+    {
+        vec3 N = shadingNormal;
+        vec3 V = normalize(viewPos - fragPosition);
+        reflectedColour = ReflectedColour(N, V, reflectedIsLight);
+        reflectedShare = ReflectionFresnel(N, V);
+    }
+#endif
 #if BRITE_HDR
     {
+#if BRITE_REFLECTIONS
+        // Under HDR the reflection is mixed as light: light as it is, an authored colour as the light that shows it.
+        if (reflection != 0)
+            color = mix(color, reflectedIsLight ? reflectedColour : AuthoredToLinear(reflectedColour, exposure),
+                        reflectedShare);
+#endif
         // HDR: linear light out. The fog fades in linear light toward the light
         // that shows as fogColor, so beyond fogEnd a surface still shows exactly
         // fogColor after the tone map.
@@ -463,6 +532,16 @@ void main()
 #endif
     color = color / (color + vec3(1.0)); // Reinhard tonemapping
     color = pow(color, vec3(1.0/2.2));   // Gamma correction
+#if BRITE_REFLECTIONS
+    // On the finished colour, as the fog: what is reflected as the screen shows it -- light through this shader's own
+    // curve, as the lit colour went through it just above.
+    if (reflection != 0)
+    {
+        vec3 shown = reflectedIsLight ? pow(reflectedColour/(reflectedColour + vec3(1.0)), vec3(1.0/2.2))
+                                      : reflectedColour;
+        color = mix(color, shown, reflectedShare);
+    }
+#endif
 
     // Fog on the finished colour, so fogColor is exactly what a surface beyond
     // fogEnd shows. The floor on the span makes an end at or before the start a

@@ -253,6 +253,13 @@ constexpr ShaderHandle NullShaderHandle = 0;
 using ModelHandle = uint64_t;
 constexpr ModelHandle NullModelHandle = 0;
 
+// What a lit surface reflects (PBRMaterial::Reflection; RenderPass.hpp, ReflectionSettings).
+enum class ReflectionMode {
+    None,   // nothing beyond its lights and ambient
+    Sky,    // the pass's sky: its environment map along the reflected ray, or else its sky colour
+    Planar, // the pass's planar reflection, the world mirrored in a plane; the sky where the pass has none
+};
+
 // How a model draw's colour is combined with what is already behind it.
 enum class BlendMode {
     Alpha,    // source * alpha + behind * (1 - alpha): opaque at an alpha of 255
@@ -338,6 +345,19 @@ struct PBRMaterial {
     // light, so overlapping glows build past white and bloom; without HDR they
     // stop at white.
     BlendMode Blend = BlendMode::Alpha;
+    // WATER, GLASS, POLISH: what the surface reflects, mixed over its lit colour by Schlick's Fresnel,
+    // F = F0 + (1 - F0)(1 - cos)^5 with cos the angle between the surface's normal and the view -- F0 head on, all of
+    // it at a grazing angle, as calm water shows the sky at the horizon and the bed at your feet. The normal is the
+    // one the surface is lit by, after its normal map, so ripples in the map move the Fresnel too. ReflectionF0 is F0:
+    // 0.02 for water, 0.04 for glass. ReflectionDistortion moves where a planar reflection is read by that normal's
+    // horizontal part (the map's ripples), in the reflection's own 0..1 across: a flat surface reads it undistorted.
+    // Lit surfaces only; an unlit one ignores it. The sky colour is authored as what the screen shows, as a clear
+    // colour is, so at a grazing angle the surface shows it exactly as authored, with or without HDR. The pass's
+    // environment map is LIGHT, as the lit shader's ambient reads it, and so is a planar reflection drawn by an HDR
+    // pass: each is mixed in as it is, and an 8-bit pass shows it through the same curve as the lit colour.
+    ReflectionMode Reflection = ReflectionMode::None;
+    float ReflectionF0 = 0.02f;
+    float ReflectionDistortion = 0.02f;
     // Whether the draw writes its depth. Off, it is still depth-TESTED -- hidden
     // by anything nearer already drawn -- but leaves no depth of its own, so
     // whatever is drawn after it is tested against what lay behind it: for a
