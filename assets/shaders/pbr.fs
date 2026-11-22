@@ -18,6 +18,25 @@
 #define LIGHT_POINT             1
 #define PI 3.14159265358979323846
 
+// THE VARIANTS. The backend compiles this shader once per feature set a pass
+// asks for, with these defined after the #version line, and picks the program
+// at draw time -- so a pixel never pays for a shadow loop it does not use. Each
+// is 0 unless defined. (The environment map stays a uniform branch: as a
+// variant it moved the 8-bit picture of a pass without one by a step on a few
+// multisampled pixels, and an untouched pass must draw exactly as before.)
+//   BRITE_HDR              1: an HDR pass (RenderPass.hpp, PostSettings)
+//   BRITE_SHADOW_CASCADES  1..4: the pass's sun casts shadows, in this many cascades
+//   BRITE_SHADOW_FILTER    0 hard, 1 PCF 3x3, 2 Poisson 16 (ShadowFilter)
+#ifndef BRITE_HDR
+#define BRITE_HDR 0
+#endif
+#ifndef BRITE_SHADOW_CASCADES
+#define BRITE_SHADOW_CASCADES 0
+#endif
+#ifndef BRITE_SHADOW_FILTER
+#define BRITE_SHADOW_FILTER 1
+#endif
+
 #include "tone_curve.glsl"
 
 struct Light {
@@ -107,13 +126,28 @@ uniform vec3 fogColor;
 uniform float fogStart;
 uniform float fogEnd;
 
-// 1: the pass is HDR (RenderPass.hpp, PostSettings). The fragment is written as
-// linear light for the backend's tone map, with no curve and no gamma here, and
-// every colour authored as what the screen shows -- the unlit albedo, the fog's
-// colour -- is run back through the curve at this exposure so it still shows
-// as authored. 0: the pass's 8-bit picture, as this shader always drew it.
-uniform int hdrOutput;
+// The HDR variant writes the fragment as linear light for the backend's tone
+// map, with no curve and no gamma here, and every colour authored as what the
+// screen shows -- the unlit albedo, the fog's colour -- is run back through the
+// curve at this exposure so it still shows as authored. Without it, the pass's
+// 8-bit picture, as this shader always drew it.
 uniform float exposure;
+
+#if BRITE_SHADOW_CASCADES > 0
+// SUN SHADOWS (RenderPass.hpp, ShadowSettings). One depth atlas, a tile per
+// cascade (shadowRect: the tile's offset in xy, its size in zw); a fragment
+// takes the first cascade whose far edge, along the view, lies beyond it.
+uniform int shadowLight;                  // which of lights[] casts
+uniform sampler2DShadow shadowMap;
+uniform mat4 shadowMatrix[BRITE_SHADOW_CASCADES];
+uniform vec4 shadowRect[BRITE_SHADOW_CASCADES];
+uniform float cascadeFar[BRITE_SHADOW_CASCADES];
+uniform float cascadeTexel[BRITE_SHADOW_CASCADES]; // world units a texel of each cascade
+uniform vec2 shadowTexelUV;               // one texel of the atlas, in uv
+uniform float shadowDepthBias;            // in the map's 0..1 depth
+uniform float shadowNormalBias;           // in texels of the fragment's cascade
+uniform vec3 viewForward;                 // the camera's unit forward
+#endif
 
 vec2 SampleSphericalMap(vec3 v)
 {
@@ -161,6 +195,64 @@ vec2 EnvBRDFApprox(float Roughness, float NoV)
     return AB;
 }
 
+#if BRITE_SHADOW_CASCADES > 0
+#if BRITE_SHADOW_FILTER == 2
+const vec2 POISSON[16] = vec2[](
+    vec2(-0.94201624, -0.39906216), vec2(0.94558609, -0.76890725), vec2(-0.094184101, -0.92938870),
+    vec2(0.34495938, 0.29387760), vec2(-0.91588581, 0.45771432), vec2(-0.81544232, -0.87912464),
+    vec2(-0.38277543, 0.27676845), vec2(0.97484398, 0.75648379), vec2(0.44323325, -0.97511554),
+    vec2(0.53742981, -0.47373420), vec2(-0.26496911, -0.41893023), vec2(0.79197514, 0.19090188),
+    vec2(-0.24188840, 0.99706507), vec2(-0.81409955, 0.91437590), vec2(0.19984126, 0.78641367),
+    vec2(0.14383161, -0.14100790));
+#endif
+
+// How much of the casting light reaches this point, 0..1. The point is pushed
+// along its surface's normal by NormalBias texels of its cascade -- more where
+// the surface turns away from the light, where acne starts -- so a surface does
+// not shadow itself; the lookup is held a few texels inside the cascade's tile
+// so a filter never reads the next tile; and the shadow fades out over the last
+// tenth of the distance, so its far edge never shows as a line.
+float SunShadow(vec3 worldPos, vec3 geometricNormal, vec3 L)
+{
+    float along = dot(worldPos - viewPos, viewForward);
+    float reach = cascadeFar[BRITE_SHADOW_CASCADES - 1];
+    if (along > reach) return 1.0;
+    int c = 0;
+    for (int i = 0; i < BRITE_SHADOW_CASCADES - 1; i++)
+        if (along > cascadeFar[i]) c = i + 1;
+
+    float facing = clamp(dot(geometricNormal, L), 0.0, 1.0);
+    vec3 p = worldPos + geometricNormal*shadowNormalBias*cascadeTexel[c]*(1.0 - 0.5*facing);
+    vec4 clip = shadowMatrix[c]*vec4(p, 1.0);
+    vec3 q = clip.xyz/clip.w*0.5 + 0.5;
+    if (q.z >= 1.0) return 1.0;
+    vec2 lo = shadowRect[c].xy + 3.0*shadowTexelUV;
+    vec2 hi = shadowRect[c].xy + shadowRect[c].zw - 3.0*shadowTexelUV;
+    vec2 uv = clamp(shadowRect[c].xy + q.xy*shadowRect[c].zw, lo, hi);
+    float z = q.z - shadowDepthBias;
+
+    float lit = 0.0;
+#if BRITE_SHADOW_FILTER == 0
+    lit = texture(shadowMap, vec3(uv, z));
+#elif BRITE_SHADOW_FILTER == 1
+    for (int y = -1; y <= 1; y++)
+        for (int x = -1; x <= 1; x++)
+            lit += texture(shadowMap, vec3(uv + vec2(x, y)*shadowTexelUV, z));
+    lit /= 9.0;
+#else
+    // Sixteen taps on a disc of 2.5 texels, turned per pixel by interleaved
+    // gradient noise so the pattern does not band.
+    float angle = 6.2831853*fract(52.9829189*fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    mat2 turn = mat2(cos(angle), sin(angle), -sin(angle), cos(angle));
+    for (int i = 0; i < 16; i++)
+        lit += texture(shadowMap, vec3(uv + turn*POISSON[i]*2.5*shadowTexelUV, z));
+    lit /= 16.0;
+#endif
+    float fade = clamp((reach - along)/(0.1*reach), 0.0, 1.0);
+    return mix(1.0, lit, fade);
+}
+#endif
+
 vec3 ComputePBR()
 {
     // Albedo is the draw tint times the vertex colour, times the albedo texture
@@ -202,14 +294,14 @@ vec3 ComputePBR()
     // SPECULAR ANTI-ALIASING, under an HDR pass only (the 8-bit path is kept
     // exactly as it drew). A highlight narrower than the pixels that carry it
     // shows as single-pixel sparkles that come and go as the surface moves, and
-    // light above white makes them bloom. Kaplanyan et al. (2016), Tokuyoshi and Kaplanyan (2019): the
-    // spread of the normal across a pixel, the variance of its screen-space
+    // light above white makes them bloom. Kaplanyan et al. (2016) and
+    // Tokuyoshi and Kaplanyan (2019): the spread of the normal across a pixel, the variance of its screen-space
     // derivatives, is added to the GGX distribution's alpha squared -- here
     // roughness^4, as GgxDistribution reads it -- held to 0.18 so a sharp edge
     // between two flat faces does not turn the whole face matte. A flat or
     // gently curved surface, whose normal barely moves between pixels, keeps
     // its roughness.
-    if (hdrOutput == 1)
+#if BRITE_HDR
     {
         vec3 du = dFdx(N);
         vec3 dv = dFdy(N);
@@ -217,6 +309,7 @@ vec3 ComputePBR()
         float kernel = min(2.0*variance, 0.18);
         roughness = pow(clamp(pow(roughness, 4.0) + kernel, 0.0, 1.0), 0.25);
     }
+#endif
 
     vec3 V = normalize(viewPos - fragPosition);
     vec3 R = reflect(-V, N);
@@ -252,6 +345,12 @@ vec3 ComputePBR()
             float attenuation = 1.0/(dist*dist*0.23);
             radiance = lights[i].color.rgb*lights[i].intensity*attenuation;
         }
+#if BRITE_SHADOW_CASCADES > 0
+        // The shadow darkens the casting light's term alone: the other lights
+        // and the ambient still reach the shaded side.
+        if (i == shadowLight)
+            radiance *= SunShadow(fragPosition, normalize(fragNormal), L);
+#endif
         vec3 H = normalize(V + L);
 
         float nDotV = max(dot(N,V), 0.0000001);
@@ -331,7 +430,7 @@ void main()
     {
         vec3 albedo = colDiffuse.rgb*fragColor.rgb;
         if (useTexAlbedo == 1) albedo *= texture(albedoMap, fragTexCoord*tiling + offset).rgb;
-        if (hdrOutput == 1)
+#if BRITE_HDR
         {
             // HDR: the authored colour as the light that shows it, plus the
             // surface's emission, which is light already and is how an unlit
@@ -341,12 +440,13 @@ void main()
             finalColor = vec4(AuthoredToLinear(albedo, exposure) + emissive, alpha);
             return;
         }
+#endif
         finalColor = vec4(albedo, alpha);
         return;
     }
 
     vec3 color = ComputePBR();
-    if (hdrOutput == 1)
+#if BRITE_HDR
     {
         // HDR: linear light out. The fog fades in linear light toward the light
         // that shows as fogColor, so beyond fogEnd a surface still shows exactly
@@ -360,6 +460,7 @@ void main()
         finalColor = vec4(color, alpha);
         return;
     }
+#endif
     color = color / (color + vec3(1.0)); // Reinhard tonemapping
     color = pow(color, vec3(1.0/2.2));   // Gamma correction
 

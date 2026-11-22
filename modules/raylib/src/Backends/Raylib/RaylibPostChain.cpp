@@ -422,4 +422,79 @@ bool PostChain::ReadBloomFloats(std::vector<float>& rgba, int& width, int& heigh
     return ReadTargetFloats(m_levels.front(), rgba);
 }
 
+// ---------------------------------------------------------------------------
+// The sun-shadow atlas
+// ---------------------------------------------------------------------------
+
+ShadowAtlas::~ShadowAtlas() {
+    if (::IsWindowReady())
+        Free();
+}
+
+void ShadowAtlas::Free() {
+    if (m_framebuffer != 0)
+        glDeleteFramebuffers(1, &m_framebuffer);
+    if (m_texture != 0)
+        glDeleteTextures(1, &m_texture);
+    m_framebuffer = 0;
+    m_texture = 0;
+    m_width = m_height = 0;
+}
+
+bool ShadowAtlas::Prepare(int width, int height) {
+    if (m_texture != 0 && m_width == width && m_height == height)
+        return true;
+    Free();
+    const SavedBinding saved;
+    m_texture = MakeTexture(width, height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_FLOAT, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, m_texture);
+    // Read through a sampler2DShadow: each lookup compares, and LINEAR gives the hardware's 2x2 filter of the results.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glGenFramebuffers(1, &m_framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_texture, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    if (!complete) {
+        if (!m_failureLogged)
+            spdlog::error("BRITE: a {}x{} shadow atlas could not be made; the pass is drawn without shadows", width,
+                          height);
+        m_failureLogged = true;
+        Free();
+        return false;
+    }
+    m_width = width;
+    m_height = height;
+    return true;
+}
+
+void ShadowAtlas::Begin() {
+    ::rlDrawRenderBatchActive();
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &m_savedFramebuffer);
+    glGetIntegerv(GL_VIEWPORT, m_savedViewport);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
+    glViewport(0, 0, m_width, m_height);
+    glDepthMask(GL_TRUE);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1.5f, 2.0f);
+}
+
+void ShadowAtlas::Tile(int x, int y, int size) {
+    glViewport(x * size, y * size, size, size);
+}
+
+void ShadowAtlas::End() {
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    glEnable(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(m_savedFramebuffer));
+    glViewport(m_savedViewport[0], m_savedViewport[1], m_savedViewport[2], m_savedViewport[3]);
+}
+
 } // namespace BRITE::Backends::Raylib

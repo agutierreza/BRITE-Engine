@@ -28,6 +28,11 @@ struct ModelDrawCommand {
     // A skinned model's pose for this draw alone (ModelPose.hpp): at rest unless set, and ignored by a model with no
     // skin. Two draws of one model in one pass each draw their own pose.
     ModelPose Pose;
+    // Whether the draw throws a shadow when its pass has a sun that casts (ShadowSettings). On by default; set it off
+    // for what should never shade anything -- a sky dome, a sun disc, a road surface, grass. Only the draw's OPAQUE
+    // meshes cast, and only when it writes its depth: a translucent mesh, an additive one and a layer (DepthWrite off)
+    // never do. A cut-out casts the shape it cuts. A skinned mesh casts in the draw's pose.
+    bool CastsShadow = true;
 };
 
 struct SpriteDrawCommand {
@@ -155,6 +160,49 @@ struct BloomSettings {
     float Radius = 1.0f;
 };
 
+// SUN SHADOWS. One directional light of the pass casts: every opaque model draw that CastsShadow is drawn from the
+// light into a depth map fitted to the camera's view out to Distance, split along the view into Cascades slices, each a
+// tile of one atlas MapSize texels a side; lit models darken that light's term alone where the map says it is hidden,
+// so the ambient and the other lights still reach the shaded side. Unlit models, primitives and lines neither cast nor
+// receive. Off unless Enabled; a pass with no 3D camera, or whose LightIndex names no directional light, has none.
+//
+// Each cascade's map is fitted to the sphere around its slice of the view and moved only in whole texels, so it does
+// not swim as the camera moves or turns. A caster is drawn into a cascade only when its bounds can reach it -- the
+// CPU's cost is draws, about one per caster mesh per cascade -- and a skinned mesh is judged by its bounds at rest. The
+// shadow fades out over the last tenth of Distance, so its far edge never shows as a line. The lit shader is compiled
+// once per feature set, so a pass without shadows never runs the shadow code.
+enum class ShadowFilter {
+    Hard,    // one hardware-compared lookup: a crisp edge, two texels soft
+    Pcf3x3,  // nine lookups: an edge about four texels soft
+    Poisson, // sixteen lookups on a turned disc: the softest edge, grainier up close
+};
+
+struct ShadowSettings {
+    bool Enabled = false;
+    // Which of the pass's Lights casts. It must be directional (a sun); any other entry, or an index out of range,
+    // casts nothing.
+    int LightIndex = 0;
+    // Texels a side of each cascade's map: a cascade covers about 2 x its slice's radius, so this is its sharpness.
+    int MapSize = 2048;
+    // How many slices the view is split into, 1 to 4. Each is a full re-draw of the casters that reach it.
+    int Cascades = 1;
+    // How far along the view, in world units from the camera, surfaces receive shadow.
+    float Distance = 60.0f;
+    // Where the cascades split: the practical split of Zhang et al., 0 even slices, 1 logarithmic ones that give each
+    // cascade the same texels per unit of depth on screen (ShadowCascades.hpp).
+    float SplitLambda = 0.75f;
+    // Explicit far edges of the first Cascades - 1 cascades, in world units along the view, nearest first: a positive
+    // value beyond the previous edge and short of Distance overrides SplitLambda for that cascade. For a camera that
+    // follows something, the first cascade should hold what it follows: a chase camera's subject at 7 to 25 units ahead
+    // wants its first edge beyond 25.
+    float Splits[3] = {0.0f, 0.0f, 0.0f};
+    ShadowFilter Filter = ShadowFilter::Pcf3x3;
+    // Bias against a surface shadowing itself: DepthBias in the map's 0..1 depth, NormalBias as a push of the receiving
+    // point along its normal, in texels of its cascade -- so it scales with the cascade, as acne does.
+    float DepthBias = 0.0006f;
+    float NormalBias = 1.5f;
+};
+
 // HDR: a pass whose 3D world is drawn in linear light and shown through a tone curve, so light can go beyond white --
 // a sun, a lamp, glints on water -- and roll off softly into it instead of clipping. OFF BY DEFAULT: a pass that never
 // touches its Post draws exactly as it always has (the lit shader's own Reinhard curve, into whatever target the pass
@@ -219,6 +267,8 @@ struct RenderPass {
 
     // HDR, bloom and the tone curve; off unless Post.Hdr is set (PostSettings).
     PostSettings Post;
+    // Sun shadows; off unless Shadows.Enabled is set (ShadowSettings).
+    ShadowSettings Shadows;
 
     std::vector<ModelDrawCommand> ModelCommands;
     std::vector<SpriteDrawCommand> SpriteCommands;

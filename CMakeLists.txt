@@ -305,6 +305,8 @@ if(BRITE_BUILD_RAYLIB)
     brite_read_shader(BRITE_POST_TONEMAP_FS post_tonemap.fs)
     brite_read_shader(BRITE_AUTHORED_COLOUR_VS authored_colour.vs)
     brite_read_shader(BRITE_AUTHORED_COLOUR_FS authored_colour.fs)
+    brite_read_shader(BRITE_SHADOW_DEPTH_VS shadow_depth.vs)
+    brite_read_shader(BRITE_SHADOW_DEPTH_FS shadow_depth.fs)
     configure_file(modules/raylib/src/Backends/Raylib/PostShaderSource.hpp.in
                    "${CMAKE_CURRENT_BINARY_DIR}/generated/Backends/Raylib/PostShaderSource.hpp" @ONLY)
     target_include_directories(BRITERaylib PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -464,6 +466,7 @@ if(BRITE_BUILD_TESTS)
         tests/PhysicsSystemTests.cpp
         tests/RenderSystemTests.cpp
         tests/ToneCurveTests.cpp
+        tests/ShadowCascadeTests.cpp
         tests/ModuleBoundaryTests.cpp
     )
     if(BRITE_ENABLE_PROFILER)
@@ -484,6 +487,7 @@ if(BRITE_BUILD_TESTS)
             tests/HdrPassTests.cpp
             tests/BloomTests.cpp
             tests/AdditiveBlendTests.cpp
+            tests/SunShadowTests.cpp
             tests/RaylibSceneAssetsTests.cpp
         )
     endif()

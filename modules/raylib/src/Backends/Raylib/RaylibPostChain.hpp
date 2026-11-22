@@ -89,4 +89,42 @@ class PostChain {
     void FreeLevels();
 };
 
+// THE SUN-SHADOW ATLAS (RenderPass.hpp, ShadowSettings): one depth texture, a tile per cascade, sampled with hardware
+// depth comparison. Made on the first pass with shadows, remade when a pass asks for another size.
+class ShadowAtlas {
+  public:
+    ShadowAtlas() = default;
+    ~ShadowAtlas();
+    ShadowAtlas(const ShadowAtlas&) = delete;
+    ShadowAtlas& operator=(const ShadowAtlas&) = delete;
+
+    // The atlas at this size, made or kept; false, logged once, when the device cannot make it.
+    bool Prepare(int width, int height);
+    // Binds it, clears its depth, and sets the depth pass's state: depth test and writes on, no culling (a single
+    // sheet casts from either side), a slope-scaled polygon offset against acne. End puts back the framebuffer, the
+    // viewport and rlgl's own state.
+    void Begin();
+    void Tile(int x, int y, int size);
+    void End();
+    unsigned int Texture() const {
+        return m_texture;
+    }
+    int Width() const {
+        return m_width;
+    }
+    int Height() const {
+        return m_height;
+    }
+
+  private:
+    unsigned int m_framebuffer = 0;
+    unsigned int m_texture = 0;
+    int m_width = 0;
+    int m_height = 0;
+    bool m_failureLogged = false;
+    int m_savedFramebuffer = 0;
+    int m_savedViewport[4] = {0, 0, 0, 0};
+    void Free();
+};
+
 } // namespace BRITE::Backends::Raylib

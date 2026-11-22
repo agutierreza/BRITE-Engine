@@ -1,9 +1,11 @@
 ﻿#include "Backends/Raylib/RaylibRenderBackend.hpp"
 #include "Backends/Raylib/PbrShaderSource.hpp"
 #include "Backends/Raylib/PostShaderSource.hpp"
+#include "Backends/ShadowCascades.hpp"
 #include "Backends/ToneCurve.hpp"
 #include "RaylibPostChain.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <raylib.h>
@@ -248,6 +250,50 @@ struct RaylibRenderBackend::FormattedTarget {
     BRITE::TextureHandle depth = BRITE::NullTextureHandle; // the readable depth's own handle, or none
 };
 
+// What a pass's shadow pass leaves for its lit draws (RenderShadows): per cascade, the light's view and projection, the
+// tile's rectangle in the atlas's uv, the far edge along the view and a texel's size in world units.
+struct RaylibRenderBackend::ShadowFrame {
+    int cascades = 0;
+    float forward[3] = {0.0f, 0.0f, -1.0f};
+    ::Matrix lightViewProjection[BRITE::ShadowCascades::MaxCascades];
+    float rect[BRITE::ShadowCascades::MaxCascades][4];
+    float farEdge[BRITE::ShadowCascades::MaxCascades];
+    float texel[BRITE::ShadowCascades::MaxCascades];
+};
+
+namespace {
+// The texture unit the shadow atlas is bound to for a pass's lit draws: one no material map reaches (raylib binds a
+// material's twelve maps to units 0 to 11).
+constexpr int ShadowTextureUnit = 14;
+
+// A model draw's transform as DrawModelEx builds it: the model's own, then scale, rotation and translation.
+::Matrix DrawTransform(const ::Model& model, const BRITE::ModelDrawCommand& cmd) {
+    ::Vector3 axis;
+    float angle;
+    ::QuaternionToAxisAngle({cmd.Rotation.x, cmd.Rotation.y, cmd.Rotation.z, cmd.Rotation.w}, &axis, &angle);
+    const ::Matrix placement = ::MatrixMultiply(
+        ::MatrixMultiply(::MatrixScale(cmd.Scale.x, cmd.Scale.y, cmd.Scale.z), ::MatrixRotate(axis, angle)),
+        ::MatrixTranslate(cmd.Position.x, cmd.Position.y, cmd.Position.z));
+    return ::MatrixMultiply(model.transform, placement);
+}
+} // namespace
+
+bool RaylibRenderBackend::MeshTranslucent(const BRITE::ModelDrawCommand& cmd, int slot, unsigned char ownAlpha) const {
+    // Whether one mesh of a model draw is translucent: additive, or its colour's alpha -- the model's own times the
+    // draw's tint, as the shader multiplies them -- is below 255, or its file says BLEND. A cut-out is not: a masked
+    // fragment is drawn solid or not at all. A texture's alpha makes a BLEND mesh translucent only through the file's
+    // say-so; an OPAQUE material ignores it, as glTF says, and so does a vertex colour's alpha here, which costs a scan
+    // of the mesh to read.
+    if (cmd.Material.Blend == BRITE::BlendMode::Additive)
+        return true; // light added to what is behind: drawn after it, whatever its alpha
+    const BRITE::GltfMaterialInfo* file = FileMaterial(cmd.Model, slot);
+    if (cmd.Material.AlphaMask || (file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Mask))
+        return false;
+    if (file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Blend)
+        return true;
+    return (static_cast<int>(ownAlpha) * static_cast<int>(cmd.Material.AlbedoTint.a)) / 255 < 255;
+}
+
 float RaylibRenderBackend::ClipFrame(float seconds, int keyframeCount) {
     const float last = static_cast<float>(std::max(keyframeCount - 1, 0));
     float frame = seconds * ClipSamplesPerSecond;
@@ -457,6 +503,11 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         targetWidth = targetTexture->texture.width;
         targetHeight = targetTexture->texture.height;
     }
+
+    // SUN SHADOWS (RenderPass.hpp, ShadowSettings) are drawn first, into their atlas, before any target is bound.
+    m_shadowFrame.reset();
+    m_shadowReport.clear();
+    RenderShadows(pass, targetWidth, targetHeight);
 
     // AN HDR PASS (RenderPass.hpp, PostSettings) draws its background callbacks and its 3D world first, into the
     // chain's own float target, then blooms it; the tone map lands on the pass's target below, where the 2D draws
@@ -719,28 +770,21 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
     }
 
     if (!pass.ModelCommands.empty()) {
-        EnsurePbrShader();
+        // The variant of the lit shader for what this pass uses, and no more (pbr.fs, THE VARIANTS).
+        PbrVariant variant;
+        variant.hdr = hdr;
+        if (m_shadowFrame && m_shadowFrame->cascades > 0) {
+            variant.shadowCascades = m_shadowFrame->cascades;
+            variant.shadowFilter = static_cast<int>(pass.Shadows.Filter);
+        }
+        EnsurePbrShader(variant);
         ApplyPassLighting(pass, hdr);
     }
 
-    // Whether one mesh of a model draw is translucent: its colour's alpha -- the model's own times the draw's tint, as
-    // the shader multiplies them -- is below 255, or its file says BLEND. A cut-out is not: a masked fragment is
-    // drawn solid or not at all. A texture's alpha makes a BLEND mesh translucent only through the file's say-so; an
-    // OPAQUE material ignores it, as glTF says, and so does a vertex colour's alpha here, which costs a scan of the
-    // mesh to read.
+    // Whether one mesh of a model draw is translucent (MeshTranslucent).
     auto meshTranslucent = [&](const BRITE::ModelDrawCommand& cmd, const ::Model& rlModel, int m) {
-        if (cmd.Material.Blend == BRITE::BlendMode::Additive)
-            return true; // light added to what is behind: drawn after it, whatever its alpha
         const int slot = MeshMaterialSlot(rlModel.meshMaterial[m], rlModel.materialCount);
-        const BRITE::GltfMaterialInfo* file = FileMaterial(cmd.Model, slot);
-        if (cmd.Material.AlphaMask || (file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Mask))
-            return false;
-        if (file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Blend)
-            return true;
-        return (static_cast<int>(rlModel.materials[slot].maps[MATERIAL_MAP_DIFFUSE].color.a) *
-                static_cast<int>(cmd.Material.AlbedoTint.a)) /
-                   255 <
-               255;
+        return MeshTranslucent(cmd, slot, rlModel.materials[slot].maps[MATERIAL_MAP_DIFFUSE].color.a);
     };
 
     // One model draw's meshes: the opaque ones in the opaque stage, or in the translucent stage the one mesh
@@ -1002,18 +1046,276 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
         ::EndShaderMode(); // draws what is left of the batch through it first
     if (pass.Camera3DPtr)
         ::EndMode3D();
+    if (m_shadowFrame && m_shadowFrame->cascades > 0) {
+        ::rlActiveTextureSlot(ShadowTextureUnit);
+        ::rlDisableTexture();
+        ::rlActiveTextureSlot(0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sun shadows
+// ---------------------------------------------------------------------------
+
+bool RaylibRenderBackend::RenderShadows(const BRITE::RenderPass& pass, int targetWidth, int targetHeight) {
+    namespace Cascades = BRITE::ShadowCascades;
+    const BRITE::ShadowSettings& settings = pass.Shadows;
+    if (!settings.Enabled || pass.Camera3DPtr == nullptr || pass.ModelCommands.empty() || targetWidth <= 0 ||
+        targetHeight <= 0)
+        return false;
+    const int lights = static_cast<int>(std::min(pass.Lights.size(), BRITE::MaxLightsPerPass));
+    if (settings.LightIndex < 0 || settings.LightIndex >= lights ||
+        pass.Lights[static_cast<std::size_t>(settings.LightIndex)].Type != BRITE::LightType::Directional)
+        return false;
+
+    // The depth pass's shader, compiled on first use.
+    if (m_shadowDepthShader == BRITE::NullShaderHandle) {
+        m_shadowDepthShader =
+            LoadShaderFromMemory(EmbeddedShaders::SHADOW_DEPTH_VERTEX, EmbeddedShaders::SHADOW_DEPTH_FRAGMENT);
+        ::Shader* depth = static_cast<::Shader*>(m_shaders[m_shadowDepthShader]);
+        m_shadowDepthWorks = depth->id != ::rlGetShaderIdDefault();
+        if (!m_shadowDepthWorks)
+            spdlog::error("BRITE: the shadow depth shader failed to compile; every pass is drawn without shadows");
+        m_shadowDepthAlphaMask = ::GetShaderLocation(*depth, "alphaMask");
+        m_shadowDepthAlphaCutoff = ::GetShaderLocation(*depth, "alphaCutoff");
+    }
+    if (!m_shadowDepthWorks)
+        return false;
+
+    // The atlas: one tile per cascade, two across once there are two, two down once there are three.
+    const int cascades = std::clamp(settings.Cascades, 1, Cascades::MaxCascades);
+    const int tilesAcross = cascades == 1 ? 1 : 2;
+    const int tilesDown = cascades <= 2 ? 1 : 2;
+    const int mapSize = std::max(settings.MapSize, 16);
+    if (!m_shadowAtlas)
+        m_shadowAtlas = std::make_shared<ShadowAtlas>();
+    if (!m_shadowAtlas->Prepare(mapSize * tilesAcross, mapSize * tilesDown))
+        return false;
+
+    // The camera's frame and the view's size at a distance d: tan(half the angle) x d for a perspective view, half its
+    // size for an orthographic one.
+    const BRITE::Camera3D& camera = *pass.Camera3DPtr;
+    const BRITE::Vector3 eye = camera.position;
+    const BRITE::Vector3 forward =
+        BRITE::Math::Normalize({camera.target.x - eye.x, camera.target.y - eye.y, camera.target.z - eye.z});
+    const BRITE::Vector3 right = BRITE::Math::Normalize(BRITE::Math::CrossProduct(forward, camera.up));
+    const BRITE::Vector3 up = BRITE::Math::CrossProduct(right, forward);
+    const float aspect = static_cast<float>(targetWidth) / static_cast<float>(targetHeight);
+    const bool perspective = camera.projection == BRITE::Math::CameraProjection::Perspective;
+    const float halfHeight = perspective ? std::tan(camera.fovy * BRITE::Deg2Rad * 0.5f) : camera.fovy * 0.5f;
+    const float heightSlope = perspective ? halfHeight : 0.0f, heightConstant = perspective ? 0.0f : halfHeight;
+    const float widthSlope = heightSlope * aspect, widthConstant = heightConstant * aspect;
+    const float nearPlane = static_cast<float>(::rlGetCullDistanceNear());
+    std::array<float, Cascades::MaxCascades - 1> splits = {settings.Splits[0], settings.Splits[1], settings.Splits[2]};
+    const std::array<float, Cascades::MaxCascades> farEdges = Cascades::FarEdges(
+        cascades, nearPlane, std::max(settings.Distance, 2.0f * nearPlane), settings.SplitLambda, splits);
+
+    // The light's view: from the origin, looking the way the light travels.
+    BRITE::Vector3 travel =
+        BRITE::Math::Normalize(pass.Lights[static_cast<std::size_t>(settings.LightIndex)].Direction);
+    if (BRITE::Math::Length(travel) < 0.5f)
+        travel = {0.0f, -1.0f, 0.0f};
+    const ::Vector3 lightUp = std::fabs(travel.y) > 0.99f ? ::Vector3{0.0f, 0.0f, 1.0f} : ::Vector3{0.0f, 1.0f, 0.0f};
+    const ::Matrix lightView = ::MatrixLookAt({0.0f, 0.0f, 0.0f}, {travel.x, travel.y, travel.z}, lightUp);
+
+    // The casters: every opaque mesh of a draw that casts and writes its depth, with its bounding sphere in the light's
+    // view. A skinned mesh's sphere is its rest geometry's.
+    struct Caster {
+        std::size_t command;
+        int mesh;
+        int slot;
+        ::Vector3 centre; // in the light's view
+        float radius;
+        ::Matrix transform; // the draw's
+        bool cutOut;        // a cut-out, drawn with its albedo for the alpha test
+        float cutoff;
+    };
+    std::vector<Caster> casters;
+    for (std::size_t i = 0; i < pass.ModelCommands.size(); ++i) {
+        const BRITE::ModelDrawCommand& cmd = pass.ModelCommands[i];
+        if (!cmd.CastsShadow || !cmd.Material.DepthWrite || cmd.Model == BRITE::NullModelHandle)
+            continue;
+        auto it = m_models.find(cmd.Model);
+        if (it == m_models.end())
+            continue;
+        const ::Model& model = *static_cast<::Model*>(it->second);
+        std::vector<MeshSphere>& spheres = m_meshSpheres[cmd.Model];
+        if (spheres.size() != static_cast<std::size_t>(model.meshCount)) {
+            spheres.clear();
+            for (int m = 0; m < model.meshCount; ++m) {
+                const ::BoundingBox box = ::GetMeshBoundingBox(model.meshes[m]);
+                const ::Vector3 centre = ::Vector3Scale(::Vector3Add(box.min, box.max), 0.5f);
+                spheres.push_back({{centre.x, centre.y, centre.z}, ::Vector3Distance(box.max, centre)});
+            }
+        }
+        const ::Matrix transform = DrawTransform(model, cmd);
+        // The sphere grows by the transform's largest scale: the longest of its three axes.
+        const float scale = std::max({::Vector3Length({transform.m0, transform.m1, transform.m2}),
+                                      ::Vector3Length({transform.m4, transform.m5, transform.m6}),
+                                      ::Vector3Length({transform.m8, transform.m9, transform.m10})});
+        for (int m = 0; m < model.meshCount; ++m) {
+            const int slot = MeshMaterialSlot(model.meshMaterial[m], model.materialCount);
+            if (MeshTranslucent(cmd, slot, model.materials[slot].maps[MATERIAL_MAP_DIFFUSE].color.a))
+                continue;
+            const MeshSphere& sphere = spheres[static_cast<std::size_t>(m)];
+            const ::Vector3 world = ::Vector3Transform({sphere.centre.x, sphere.centre.y, sphere.centre.z}, transform);
+            const BRITE::GltfMaterialInfo* file = FileMaterial(cmd.Model, slot);
+            const bool fileMasks = file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Mask;
+            const bool cutOut = cmd.Material.AlphaMask || fileMasks;
+            const float cutoff = cmd.Material.AlphaMask ? cmd.Material.AlphaCutoff
+                                 : fileMasks            ? file->AlphaCutoff
+                                                        : 0.0f;
+            casters.push_back(
+                {i, m, slot, ::Vector3Transform(world, lightView), sphere.radius * scale, transform, cutOut, cutoff});
+        }
+    }
+
+    auto frame = std::make_shared<ShadowFrame>();
+    frame->cascades = cascades;
+    frame->forward[0] = forward.x;
+    frame->forward[1] = forward.y;
+    frame->forward[2] = forward.z;
+
+    ::rlDrawRenderBatchActive();
+    const ::Matrix savedProjection = ::rlGetMatrixProjection();
+    const ::Matrix savedModelview = ::rlGetMatrixModelview();
+    m_shadowAtlas->Begin();
+    const ::Shader& depthShader = *static_cast<::Shader*>(m_shaders[m_shadowDepthShader]);
+    float edgeNear = nearPlane;
+    for (int c = 0; c < cascades; ++c) {
+        const float edgeFar = farEdges[static_cast<std::size_t>(c)];
+        const Cascades::Sphere slice = Cascades::SliceSphere(eye, forward, right, up, edgeNear, edgeFar, widthSlope,
+                                                             widthConstant, heightSlope, heightConstant);
+        edgeNear = edgeFar;
+        const float radius = slice.Radius;
+        const float texel = Cascades::TexelSize(radius, mapSize);
+        ::Vector3 centre = ::Vector3Transform({slice.Centre.x, slice.Centre.y, slice.Centre.z}, lightView);
+        centre.x = Cascades::SnapToTexel(centre.x, texel);
+        centre.y = Cascades::SnapToTexel(centre.y, texel);
+
+        // The casters that can reach this cascade, and the nearest of them to the sun, which sets the box's near side.
+        std::vector<const Caster*> reaching;
+        float sunward = centre.z + radius;
+        for (const Caster& caster : casters) {
+            if (!Cascades::CasterReachesCascade({caster.centre.x, caster.centre.y, caster.centre.z}, caster.radius,
+                                                {centre.x, centre.y, centre.z}, radius))
+                continue;
+            reaching.push_back(&caster);
+            sunward = std::max(sunward, caster.centre.z + caster.radius);
+        }
+        // The light's view looks down -z: the box spans depths from the sunward caster to the slice's far side.
+        const ::Matrix projection = ::MatrixOrtho(centre.x - radius, centre.x + radius, centre.y - radius,
+                                                  centre.y + radius, -sunward, -(centre.z - radius));
+        frame->lightViewProjection[c] = ::MatrixMultiply(lightView, projection);
+        const int tileX = c % tilesAcross, tileY = c / tilesAcross;
+        frame->rect[c][0] = static_cast<float>(tileX) / static_cast<float>(tilesAcross);
+        frame->rect[c][1] = static_cast<float>(tileY) / static_cast<float>(tilesDown);
+        frame->rect[c][2] = 1.0f / static_cast<float>(tilesAcross);
+        frame->rect[c][3] = 1.0f / static_cast<float>(tilesDown);
+        frame->farEdge[c] = edgeFar;
+        frame->texel[c] = texel;
+
+        m_shadowAtlas->Tile(tileX, tileY, mapSize);
+        ::rlSetMatrixProjection(projection);
+        ::rlSetMatrixModelview(lightView);
+        // Most casters are drawn the lean way: the mesh's vertex array and one matrix, no material, since only depth is
+        // written. A cut-out is drawn through DrawMesh with its albedo bound, for the alpha test.
+        bool leanReady = false;
+        const int noCutOut = 0;
+        for (const Caster* caster : reaching) {
+            const BRITE::ModelDrawCommand& cmd = pass.ModelCommands[caster->command];
+            const ::Model& model = *static_cast<::Model*>(m_models[cmd.Model]);
+            PoseForDraw(cmd.Model, cmd.Pose, caster->command); // the pose the draw itself takes, kept for it
+            const ::Mesh& mesh = model.meshes[caster->mesh];
+            if (!caster->cutOut && mesh.vaoId != 0) {
+                if (!leanReady) {
+                    ::rlEnableShader(depthShader.id);
+                    ::rlSetUniform(m_shadowDepthAlphaMask, &noCutOut, RL_SHADER_UNIFORM_INT, 1);
+                    leanReady = true;
+                }
+                // As DrawMesh composes it: the model's transform, then the view, then the projection.
+                ::rlSetUniformMatrix(depthShader.locs[SHADER_LOC_MATRIX_MVP],
+                                     ::MatrixMultiply(::MatrixMultiply(caster->transform, lightView), projection));
+                ::rlEnableVertexArray(mesh.vaoId);
+                if (mesh.indices != nullptr)
+                    ::rlDrawVertexArrayElements(0, mesh.triangleCount * 3, nullptr);
+                else
+                    ::rlDrawVertexArray(0, mesh.vertexCount);
+                ::rlDisableVertexArray();
+                continue;
+            }
+            leanReady = false; // DrawMesh leaves no program bound
+            ::MaterialMap maps[MATERIAL_MAPS_PER_MATERIAL];
+            std::memcpy(maps, model.materials[caster->slot].maps, sizeof(maps));
+            ::Material material = model.materials[caster->slot];
+            material.maps = maps;
+            material.shader = depthShader;
+            // A cut-out casts what it cuts: the draw's albedo map or the model's own, and its colour's alpha.
+            if (cmd.Material.AlbedoMap != BRITE::NullTextureHandle) {
+                auto texture = m_textures.find(cmd.Material.AlbedoMap);
+                if (texture != m_textures.end() && !texture->second.isRenderTexture)
+                    maps[MATERIAL_MAP_ALBEDO].texture = *static_cast<::Texture2D*>(texture->second.ptr);
+            }
+            const ::Color own = maps[MATERIAL_MAP_DIFFUSE].color;
+            maps[MATERIAL_MAP_DIFFUSE].color.a =
+                static_cast<unsigned char>((static_cast<int>(own.a) * cmd.Material.AlbedoTint.a) / 255);
+            const int cutOut = caster->cutOut ? 1 : 0;
+            ::SetShaderValue(depthShader, m_shadowDepthAlphaMask, &cutOut, SHADER_UNIFORM_INT);
+            ::SetShaderValue(depthShader, m_shadowDepthAlphaCutoff, &caster->cutoff, SHADER_UNIFORM_FLOAT);
+            ::DrawMesh(mesh, material, caster->transform);
+        }
+        if (leanReady)
+            ::rlDisableShader();
+
+        ShadowCascadeReport report;
+        report.CentreX = centre.x;
+        report.CentreY = centre.y;
+        report.Radius = radius;
+        report.Texel = texel;
+        report.FarEdge = edgeFar;
+        report.CasterDraws = static_cast<int>(reaching.size());
+        m_shadowReport.push_back(report);
+    }
+    m_shadowAtlas->End();
+    ::rlSetMatrixProjection(savedProjection);
+    ::rlSetMatrixModelview(savedModelview);
+    m_shadowFrame = std::move(frame);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
 // The PBR shader: compiled from the embedded source on first use
 // ---------------------------------------------------------------------------
 
-void RaylibRenderBackend::EnsurePbrShader() {
-    if (m_pbrShader != BRITE::NullShaderHandle)
+void RaylibRenderBackend::EnsurePbrShader(const PbrVariant& variant) {
+    const int key = variant.Key();
+    auto found = m_pbrVariants.find(key);
+    if (found != m_pbrVariants.end()) {
+        m_pbrShader = found->second.first;
+        m_pbrLocs = found->second.second;
         return;
+    }
 
-    m_pbrShader = LoadShaderFromMemory(EmbeddedShaders::PBR_VERTEX, EmbeddedShaders::PBR_FRAGMENT);
+    // The variant's features, defined just after the source's #version line (pbr.fs, THE VARIANTS).
+    std::string fragment = EmbeddedShaders::PBR_FRAGMENT;
+    std::string defines = "#define BRITE_HDR " + std::to_string(variant.hdr ? 1 : 0) +
+                          "\n#define BRITE_SHADOW_CASCADES " + std::to_string(variant.shadowCascades) +
+                          "\n#define BRITE_SHADOW_FILTER " + std::to_string(variant.shadowFilter) + "\n";
+    fragment.insert(fragment.find('\n') + 1, defines);
+    m_pbrShader = LoadShaderFromMemory(EmbeddedShaders::PBR_VERTEX, fragment.c_str());
+    m_pbrLocs = {};
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
+    if (shader->id == ::rlGetShaderIdDefault() && variant.shadowCascades > 0) {
+        // The shadows are what the device refused: the same features without them, rather than raylib's default.
+        spdlog::error("BRITE: the lit shader with {} shadow cascades failed to compile; the pass is drawn without "
+                      "shadows",
+                      variant.shadowCascades);
+        PbrVariant without = variant;
+        without.shadowCascades = 0;
+        EnsurePbrShader(without);
+        m_pbrVariants[key] = {m_pbrShader, m_pbrLocs};
+        return;
+    }
     if (shader->id == ::rlGetShaderIdDefault()) {
         // raylib falls back to its default shader when compilation fails, which
         // draws the model unlit and white -- visibly wrong, but not a crash. The
@@ -1057,8 +1359,20 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.fogColor = loc("fogColor");
     m_pbrLocs.fogStart = loc("fogStart");
     m_pbrLocs.fogEnd = loc("fogEnd");
-    m_pbrLocs.hdrOutput = loc("hdrOutput");
     m_pbrLocs.exposure = loc("exposure");
+    m_pbrLocs.shadowLight = loc("shadowLight");
+    m_pbrLocs.shadowMap = loc("shadowMap");
+    m_pbrLocs.shadowTexelUV = loc("shadowTexelUV");
+    m_pbrLocs.shadowDepthBias = loc("shadowDepthBias");
+    m_pbrLocs.shadowNormalBias = loc("shadowNormalBias");
+    m_pbrLocs.viewForward = loc("viewForward");
+    for (int c = 0; c < BRITE::ShadowCascades::MaxCascades; ++c) {
+        const std::string at = "[" + std::to_string(c) + "]";
+        m_pbrLocs.shadowMatrix[c] = loc(("shadowMatrix" + at).c_str());
+        m_pbrLocs.shadowRect[c] = loc(("shadowRect" + at).c_str());
+        m_pbrLocs.cascadeFar[c] = loc(("cascadeFar" + at).c_str());
+        m_pbrLocs.cascadeTexel[c] = loc(("cascadeTexel" + at).c_str());
+    }
     for (std::size_t i = 0; i < BRITE::MaxLightsPerPass; ++i) {
         const std::string prefix = "lights[" + std::to_string(i) + "].";
         auto& l = m_pbrLocs.lights[i];
@@ -1076,15 +1390,47 @@ void RaylibRenderBackend::EnsurePbrShader() {
     const float offset[2] = {0.0f, 0.0f};
     ::SetShaderValue(*shader, loc("tiling"), tiling, SHADER_UNIFORM_VEC2);
     ::SetShaderValue(*shader, loc("offset"), offset, SHADER_UNIFORM_VEC2);
+    m_pbrVariants[key] = {m_pbrShader, m_pbrLocs};
+}
+
+bool RaylibRenderBackend::PbrVariantHasUniform(bool hdr, int shadowCascades, const char* uniformName) {
+    PbrVariant variant;
+    variant.hdr = hdr;
+    variant.shadowCascades = shadowCascades;
+    EnsurePbrShader(variant);
+    return ::GetShaderLocation(*static_cast<::Shader*>(m_shaders[m_pbrShader]), uniformName) >= 0;
 }
 
 void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass, bool hdr) {
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
 
-    // Every pass sets the output, 8-bit or HDR: a uniform keeps its value between passes.
-    const int hdrOutput = hdr ? 1 : 0;
-    ::SetShaderValue(*shader, m_pbrLocs.hdrOutput, &hdrOutput, SHADER_UNIFORM_INT);
+    // The HDR variant's exposure (the variant itself says whether the pass is HDR).
+    (void)hdr;
     ::SetShaderValue(*shader, m_pbrLocs.exposure, &pass.Post.Exposure, SHADER_UNIFORM_FLOAT);
+
+    // The shadow variant's atlas and cascades, from this pass's shadow pass. The atlas is bound to a texture unit no
+    // material map reaches (raylib binds maps to units 0 to 11), for every lit draw of the pass.
+    if (m_shadowFrame && m_shadowFrame->cascades > 0) {
+        const ShadowFrame& f = *m_shadowFrame;
+        const int unit = ShadowTextureUnit;
+        ::SetShaderValue(*shader, m_pbrLocs.shadowMap, &unit, SHADER_UNIFORM_INT);
+        ::rlActiveTextureSlot(unit);
+        ::rlEnableTexture(m_shadowAtlas->Texture());
+        ::rlActiveTextureSlot(0);
+        ::SetShaderValue(*shader, m_pbrLocs.shadowLight, &pass.Shadows.LightIndex, SHADER_UNIFORM_INT);
+        ::SetShaderValue(*shader, m_pbrLocs.shadowDepthBias, &pass.Shadows.DepthBias, SHADER_UNIFORM_FLOAT);
+        ::SetShaderValue(*shader, m_pbrLocs.shadowNormalBias, &pass.Shadows.NormalBias, SHADER_UNIFORM_FLOAT);
+        const float texelUV[2] = {1.0f / static_cast<float>(m_shadowAtlas->Width()),
+                                  1.0f / static_cast<float>(m_shadowAtlas->Height())};
+        ::SetShaderValue(*shader, m_pbrLocs.shadowTexelUV, texelUV, SHADER_UNIFORM_VEC2);
+        ::SetShaderValue(*shader, m_pbrLocs.viewForward, f.forward, SHADER_UNIFORM_VEC3);
+        for (int c = 0; c < f.cascades; ++c) {
+            ::SetShaderValueMatrix(*shader, m_pbrLocs.shadowMatrix[c], f.lightViewProjection[c]);
+            ::SetShaderValue(*shader, m_pbrLocs.shadowRect[c], f.rect[c], SHADER_UNIFORM_VEC4);
+            ::SetShaderValue(*shader, m_pbrLocs.cascadeFar[c], &f.farEdge[c], SHADER_UNIFORM_FLOAT);
+            ::SetShaderValue(*shader, m_pbrLocs.cascadeTexel[c], &f.texel[c], SHADER_UNIFORM_FLOAT);
+        }
+    }
 
     const int count = static_cast<int>(std::min(pass.Lights.size(), BRITE::MaxLightsPerPass));
     for (std::size_t i = 0; i < BRITE::MaxLightsPerPass; ++i) {

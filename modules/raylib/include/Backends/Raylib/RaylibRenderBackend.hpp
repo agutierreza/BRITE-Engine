@@ -13,6 +13,7 @@ namespace Backends {
 namespace Raylib {
 
 class PostChain;
+class ShadowAtlas;
 
 class RaylibRenderBackend : public IRenderBackend {
   public:
@@ -41,6 +42,28 @@ class RaylibRenderBackend : public IRenderBackend {
     // back the same way. False when no HDR pass (or no bloom) has been drawn. For tests and tools.
     bool ReadLastHdrScene(int& width, int& height, std::vector<float>& rgba) const;
     bool ReadLastBloom(int& width, int& height, std::vector<float>& rgba) const;
+
+    // What the last pass with shadows drew, one entry per cascade, nearest first; empty when the last pass drew none.
+    // For tests and tools: the cascade's square in the light's view (its centre, snapped to whole texels, and its
+    // half-size), a texel's size in world units, its far edge along the view, and how many caster meshes were drawn.
+    struct ShadowCascadeReport {
+        float CentreX = 0.0f;
+        float CentreY = 0.0f;
+        float Radius = 0.0f;
+        float Texel = 0.0f;
+        float FarEdge = 0.0f;
+        int CasterDraws = 0;
+    };
+    const std::vector<ShadowCascadeReport>& LastShadowCascades() const {
+        return m_shadowReport;
+    }
+    // THE LIT SHADER'S VARIANTS (pbr.fs): one program per feature set a pass asks for, compiled on first use. How many
+    // exist, and whether the variant for these features has a uniform of this name -- a variant without shadows has
+    // no shadow code at all. For tests and tools.
+    std::size_t PbrVariantCount() const {
+        return m_pbrVariants.size();
+    }
+    bool PbrVariantHasUniform(bool hdr, int shadowCascades, const char* uniformName);
     void UnloadRenderTexture(BRITE::TextureHandle target) override;
 
     // How many samples per pixel a render texture is drawn with: 1 for an
@@ -118,9 +141,25 @@ class RaylibRenderBackend : public IRenderBackend {
                         ShaderUniformDataType uniformType) override;
 
   private:
-    // Compile the embedded PBR shader on first use and cache its uniform
-    // locations. Idempotent.
-    void EnsurePbrShader();
+    // The feature set a lit draw's program is compiled for (pbr.fs, THE VARIANTS).
+    struct PbrVariant {
+        bool hdr = false;
+        int shadowCascades = 0; // 0: no shadows
+        int shadowFilter = 1;   // ShadowFilter
+        int Key() const {
+            return (hdr ? 1 : 0) | (shadowCascades << 1) | (shadowFilter << 4);
+        }
+    };
+    // Compile the variant of the embedded PBR shader on first use, cache its uniform locations, and make it the one
+    // m_pbrShader and m_pbrLocs name. A variant with shadows that fails to compile falls back to the same features
+    // without them, logged once.
+    void EnsurePbrShader(const PbrVariant& variant);
+    // The pass's sun shadows drawn into the atlas, before any target is bound; false, and nothing drawn, when the pass
+    // casts none. Fills m_shadowFrame for the lit draws that follow.
+    bool RenderShadows(const BRITE::RenderPass& pass, int targetWidth, int targetHeight);
+    // Whether one mesh of a model draw is translucent (RenderPass.hpp): its slot's file material, its own colour's
+    // alpha.
+    bool MeshTranslucent(const BRITE::ModelDrawCommand& cmd, int slot, unsigned char ownAlpha) const;
     // Hand the pass's lights, ambient and camera position to the PBR shader.
     // Once per pass, before the model commands.
     void ApplyPassLighting(const BRITE::RenderPass& pass, bool hdr);
@@ -184,8 +223,17 @@ class RaylibRenderBackend : public IRenderBackend {
         int fogColor = -1;
         int fogStart = -1;
         int fogEnd = -1;
-        int hdrOutput = -1;
         int exposure = -1;
+        int shadowLight = -1;
+        int shadowMap = -1;
+        int shadowTexelUV = -1;
+        int shadowDepthBias = -1;
+        int shadowNormalBias = -1;
+        int viewForward = -1;
+        int shadowMatrix[4] = {-1, -1, -1, -1};
+        int shadowRect[4] = {-1, -1, -1, -1};
+        int cascadeFar[4] = {-1, -1, -1, -1};
+        int cascadeTexel[4] = {-1, -1, -1, -1};
         struct LightLocations {
             int enabled = -1;
             int type = -1;
@@ -196,6 +244,24 @@ class RaylibRenderBackend : public IRenderBackend {
         } lights[BRITE::MaxLightsPerPass];
     };
     PbrLocations m_pbrLocs;
+    // Every variant compiled so far, by PbrVariant::Key: its shader and its locations.
+    std::unordered_map<int, std::pair<BRITE::ShaderHandle, PbrLocations>> m_pbrVariants;
+
+    // SUN SHADOWS: the atlas (RaylibPostChain.hpp), the depth pass's shader, each model's meshes' bounding spheres in
+    // model space (found on first use), and what this pass's shadow pass left for its lit draws.
+    std::shared_ptr<ShadowAtlas> m_shadowAtlas;
+    BRITE::ShaderHandle m_shadowDepthShader = BRITE::NullShaderHandle;
+    bool m_shadowDepthWorks = false;
+    int m_shadowDepthAlphaMask = -1;
+    int m_shadowDepthAlphaCutoff = -1;
+    struct MeshSphere {
+        BRITE::Vector3 centre;
+        float radius;
+    };
+    std::unordered_map<BRITE::ModelHandle, std::vector<MeshSphere>> m_meshSpheres;
+    struct ShadowFrame;
+    std::shared_ptr<ShadowFrame> m_shadowFrame;
+    std::vector<ShadowCascadeReport> m_shadowReport;
 
     // To cleanly separate Texture2D vs RenderTexture2D, we store a boolean.
     // Real implementation would just use a wrapper struct allocated on heap.
