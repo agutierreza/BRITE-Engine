@@ -149,10 +149,12 @@ struct FogSettings {
 //     picture: 1 - (1 - picture)(1 - Intensity x the bloom). No curve, no dither: a pixel the bloom does not reach
 //     comes out exactly as it would without bloom. For a 2D or unlit game, the cheapest glow there is. Threshold should
 //     then be below 1 (0.7 to 0.9 is usual): at the default 1 only the knee's soft start blooms, from 1 - Knee (128 of
-//     255 at the default Knee) up. "As an 8-bit pass draws it" holds for every 3D draw, opaque or translucent, cleared
-//     or not; it does not reach PostSettings::Samples (the backend's own target is multisampled as asked, not as the
-//     pass's target is), the pass's Shader (applied to the 2D draws only, as under HDR), or the 2D draws, which come
-//     after and never bloom.
+//     255 at the default Knee) up. "As an 8-bit pass draws it" holds exactly for every 3D draw, opaque, translucent or
+//     additive, cleared or not, where the bloom does not reach; where it does, the glow is screened within what the
+//     world covered, never takes light away, and does not spill past it over a target the pass did not clear. It does
+//     not reach
+//     PostSettings::Samples (the backend's own target is multisampled as asked, not as the pass's target is), the
+//     pass's Shader (applied to the 2D draws only, as under HDR), or the 2D draws, which come after and never bloom.
 struct BloomSettings {
     bool Enabled = false;
     // How many half-size copies, each half the last: 1 to 8. Each adds a halo twice as wide as the one before and costs
@@ -250,8 +252,13 @@ struct ShadowSettings {
 //     PREMULTIPLIED colour, its alpha the coverage the 3D world built -- a layer of alpha a over nothing leaves alpha a
 //     -- so a translucent layer lies over the pass's target by its own alpha, as in an 8-bit pass: white at alpha 0.1
 //     over a grey of 0.5 shows 0.55 (HdrPassTests). Light that covers nothing -- an additive draw over nothing, the
-//     bloom's spill past the world's edge -- is ADDED to what the target held. The same holds with Hdr off and Bloom
-//     on.
+//     bloom's spill past the world's edge -- is ADDED to what the target held. With Hdr off and Bloom on the
+//     same holds of added light, exactly where the bloom does not reach; where it does, the glow is screened only
+//     within what the world covered and never takes light away (BloomSettings). UNDER HDR, light added over a PARTLY
+//     covered pixel is weighed by that pixel's coverage: the tone map divides by the coverage, maps and multiplies
+//     back, so a bright spark over a faint haze adds about the haze's alpha of it, and below an alpha of 1/512 a pixel
+//     counts as uncovered and its light is added whole. A pass that wants added light over thin layers exact clears its
+//     target, or draws them display-referred, where the composite needs no divide.
 // Without a 3D camera there is no 3D world to draw, and Hdr changes nothing.
 //
 // TRANSLUCENT LAYERS UNDER HDR blend in linear light, as light does: a 0.1 haze over a dark sky lifts it more than the
@@ -311,6 +318,10 @@ struct RenderPass {
 
     // Optional callbacks executed immediately after ClearBackground, before anything else.
     // Useful for full-screen shaders like TorusStarsRenderSystem.
+    // Drawn first, before the 3D world. Under an HDR pass or a display-referred bloom (PostSettings) they draw into the
+    // backend's premultiplied target and start under its blend -- raylib's custom separate mode, the colour over by its
+    // alpha and the alpha as coverage; a callback may set another for its own draws, and the backend sets its own again
+    // before the 3D world, so nothing a callback leaves reaches the world's draws.
     std::vector<std::function<void()>> BackgroundDrawCallbacks;
 
     // Optional callbacks executed inside the 2D Camera mode (after BeginMode2D).

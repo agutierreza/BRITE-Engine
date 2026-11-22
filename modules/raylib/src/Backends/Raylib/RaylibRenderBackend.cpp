@@ -565,6 +565,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             if (cb)
                 cb();
         }
+        // Set again: a callback may leave any blend behind it, and the 3D world must draw under the chain's own.
+        UseBlend(false);
         Draw3D(pass, hdr);
         ::rlDrawRenderBatchActive();
         m_premultipliedScene = false;

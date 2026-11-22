@@ -23,10 +23,11 @@ uniform int displayReferred;
 // the scene's coverage -- for the chain's ONE, ONE_MINUS_SRC_ALPHA blend; 0: it replaces the target, straight.
 uniform int overlay;
 
-// THE SCENE IS PREMULTIPLIED (RaylibRenderBackend.cpp: every draw into it keeps its alpha as coverage), so its colour is
-// divided by its alpha before the curve or the screen -- the curve is not linear, and must see the light itself -- and
-// multiplied back after, when laid over. Below this alpha the scene holds only added light -- an additive draw over
-// nothing, or the bloom's spill past the world's edge -- which covers nothing: taken as it is and, laid over, ADDED.
+// THE SCENE IS PREMULTIPLIED (RaylibRenderBackend.cpp: every draw into it keeps its alpha as coverage). UNDER HDR its
+// colour is divided by its alpha before the curve -- the curve is not linear, and must see the light itself -- and
+// multiplied back after, when laid over; below this alpha the scene holds only added light -- an additive draw over
+// nothing, or the bloom's spill past the world's edge -- which covers nothing: taken as it is and, laid over, ADDED. A
+// display-referred pass divides by nothing (below).
 const float LEAST_COVERAGE = 1.0/512.0;
 
 vec4 Out(vec3 colour, float coverage)
@@ -49,9 +50,18 @@ void main()
     vec3 linear = covered ? held.rgb/coverage : held.rgb;
     if (displayReferred == 1)
     {
+        // A DISPLAY-REFERRED pass composes on the premultiplied colour itself, with no divide: with no bloom the held
+        // value is exactly what an 8-bit pass would have laid over the target -- added light included -- and the glow is
+        // screened within the coverage, P + g max(A - P, 0), the premultiplied form of 1 - (1 - c)(1 - g). So the glow
+        // does not reach past what the world covered, and it never takes light away: where added light leaves more
+        // colour than coverage (P > A, a spark over nothing or over a thin haze) the glow adds nothing there.
         vec3 glow = min(bloomScale*texture(bloom, uv).rgb, vec3(1.0));
-        vec3 shown = 1.0 - (1.0 - clamp(linear, 0.0, 1.0))*(1.0 - glow);
-        o = covered ? Out(shown, coverage) : vec4(shown, coverage);
+        vec3 premultiplied = clamp(held.rgb, 0.0, 1.0);
+        vec3 shown = clamp(premultiplied + glow*max(vec3(coverage) - premultiplied, vec3(0.0)), 0.0, 1.0);
+        if (overlay == 1)
+            o = vec4(shown, coverage);
+        else
+            o = vec4(covered ? min(shown/coverage, vec3(1.0)) : shown, coverage);
         return;
     }
     vec3 c = linear + bloomScale*texture(bloom, uv).rgb;

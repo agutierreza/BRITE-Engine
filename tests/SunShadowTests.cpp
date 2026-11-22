@@ -15,6 +15,7 @@
 #include "HiddenWindowScene.hpp"
 
 #include <cmath>
+#include <cstdio>
 
 using HiddenWindow::SIZE;
 
@@ -300,7 +301,9 @@ TEST_F(SunShadow, TheNormalBiasKeepsAGrazingSunFromShadowingItsOwnReceiver) {
 // 0.0266 -- so the sun's term is what the patch reads above 0.25, and acne is how much of it is lost. At each angle:
 //   with the default bias at most a twentieth of the sun's term is lost;
 //   with NormalBias 0 more than a tenth is -- the witness that this setup has acne to keep away, so the first check
-//   cannot pass for want of any. (Measured on this machine, 22 Nov: a fifth lost at both angles with no bias.)
+//   cannot pass for want of any. (Measured on this machine, 22 Nov, and printed by the case: with the default bias 3.6%
+//   lost at 10 degrees and 3.2% at 5, against the bound of 5 -- the margin is thin, so a change to the bias or the
+//   filter that moves these should be looked at; with none, 21.8% and 20.2%.)
 // Mutation: the normal bias dropped from pbr.fs -> the default loses what NormalBias 0 loses: red.
 TEST_F(SunShadow, TheNormalBiasKeepsAPoissonFilteredGrazingSunFromShadowingItsOwnReceiver) {
     for (const float degrees : {10.0f, 5.0f}) {
@@ -327,6 +330,9 @@ TEST_F(SunShadow, TheNormalBiasKeepsAPoissonFilteredGrazingSunFromShadowingItsOw
         ASSERT_GT(sun, 0.01f) << degrees << " degrees: the sun reaches the bare ground (" << bare << ")";
         const float lostBiased = (bare - biased) / sun;
         const float lostUnbiased = (bare - acne) / sun;
+        std::printf(
+            "[normal bias] %.0f degrees: the sun's term %.4f; lost %.1f%% with the default bias, %.1f%% with none\n",
+            degrees, sun, lostBiased * 100.0f, lostUnbiased * 100.0f);
         EXPECT_LT(lostBiased, 0.05f) << degrees << " degrees: the default bias keeps the bare ground clean (bare "
                                      << bare << ", biased " << biased << ", " << lostBiased * 100.0f
                                      << "% of the sun lost)";

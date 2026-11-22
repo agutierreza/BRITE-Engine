@@ -330,9 +330,10 @@ TEST_F(HdrPass, ASetNoPassDrawsIntoIsFreed) {
 //   bloom, white), written as white x a; blended ONE, ONE_MINUS_SRC_ALPHA over the grey 128/255 = 0.501961:
 //   0.101961 + 0.501961 x 0.898039 = 0.552741, 140.95 of 255: 141 -- what an 8-bit pass gives, 128 + 127 a = 140.95.
 // Mutation: the chain's alpha blended as raylib blends it (SRC_ALPHA, ONE_MINUS_SRC_ALPHA on the alpha too) -> the
-// coverage is a x a = 0.010396, and the composite 0.101961 x 0.010396 + 0.501961 x 0.989604 = 0.4978: 127, red.
-// Mutation: the composite laid over by SRC_ALPHA again (the review's old path) -> 0.101961 x 0.101961 + 0.501961 x
-// 0.898039 = 0.4612: 118, red.
+// coverage is a x a = 0.010396. Under HDR the tone map divides 0.101961 by it (9.81, white through the curve),
+// multiplies back by 0.010396, and the composite 0.010396 + 0.501961 x 0.989604 = 0.5071: 129, red. Display-referred,
+// with no divide, 0.101961 + 0.501961 x 0.989604 = 0.6, 153, red. Mutation: the composite laid over by SRC_ALPHA again
+// (the review's old path) -> 0.101961 x 0.101961 + 0.501961 x 0.898039 = 0.4612: 118, red.
 TEST_F(HdrPass, ALayerInAPassThatDoesNotClearLiesOverTheTargetByItsAlpha) {
     for (bool hdr : {true, false}) {
         const BRITE::TextureHandle target = m_backend.LoadRenderTexture(HiddenWindow::SIZE, HiddenWindow::SIZE);
@@ -346,6 +347,89 @@ TEST_F(HdrPass, ALayerInAPassThatDoesNotClearLiesOverTheTargetByItsAlpha) {
             pass.Post.Bloom.Intensity = 0.0f;
         }
         pass.ShouldClear = false;
+        pass.ModelCommands.push_back(Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.0f), {255, 255, 255, 26}));
+        const BRITE::Color c = Picture(pass, target)[At(0.0f, 0.0f)];
+        EXPECT_TRUE(Within(c, 141, 141, 141, 1))
+            << (hdr ? "hdr " : "display ") << int(c.r) << " " << int(c.g) << " " << int(c.b);
+        m_backend.UnloadRenderTexture(target);
+    }
+}
+
+// ADDED LIGHT OVER A THIN LAYER, DISPLAY-REFERRED, IS EXACTLY AN 8-BIT PASS'S, laid over a target the pass did not
+// clear. The target is cleared dark, (20, 20, 20), by an 8-bit pass; a display-referred pass (Bloom on, no bloom
+// reaching: Intensity 0) that does not clear draws a white haze at alpha 3 (a = 0.011765) and over it an ADDITIVE spark
+// of (100, 100, 100). By hand, an 8-bit pass: 20/255 = 0.078431, the haze 0.078431 + 0.921569 x 0.011765 = 0.089273,
+// the spark adds 100/255 = 0.392157: 0.481430, 122.8 of 255: 123. Through the chain: premultiplied 0.011765 + 0.392157
+// = 0.403922 at coverage 0.011765, laid over by ONE, ONE_MINUS_SRC_ALPHA: 0.403922 + 0.078431 x 0.988235 = 0.481430,
+// the same 123. Mutation: the display path divides by the coverage again (engine-fixes-2's) -> 0.403922 / 0.011765 is
+// clipped to 1 and multiplied back to 0.011765: 0.011765 + 0.077508 = 0.089273, 23, red.
+TEST_F(HdrPass, AddedLightOverAThinLayerLiesOverTheTargetAsAnEightBitPassLaysIt) {
+    const BRITE::TextureHandle target = m_backend.LoadRenderTexture(HiddenWindow::SIZE, HiddenWindow::SIZE);
+    BRITE::RenderPass dark;
+    dark.ClearColor = {20, 20, 20, 255};
+    Picture(dark, target);
+    BRITE::RenderPass pass = Hdr();
+    pass.Post.Hdr = false;
+    pass.Post.Bloom.Enabled = true;
+    pass.Post.Bloom.Intensity = 0.0f;
+    pass.ShouldClear = false;
+    BRITE::ModelDrawCommand spark = Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.5f), {100, 100, 100, 255});
+    spark.Material.Blend = BRITE::BlendMode::Additive;
+    pass.ModelCommands = {Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.25f), {255, 255, 255, 3}), spark};
+    const BRITE::Color c = Picture(pass, target)[At(0.0f, 0.0f)];
+    EXPECT_TRUE(Within(c, 123, 123, 123, 1)) << int(c.r) << " " << int(c.g) << " " << int(c.b);
+    m_backend.UnloadRenderTexture(target);
+}
+
+// THE GLOW NEVER TAKES LIGHT AWAY: an additive spark of (100, 100, 100) over nothing, in a display-referred pass that
+// does not clear, over a dark target (20, 20, 20), with a bloom that reaches it (Threshold 0.2, no knee, Intensity 1:
+// the spark's 0.392 is above the threshold everywhere). With no bloom it shows 20/255 + 100/255 = 0.470588, 120. With
+// the bloom the spark's premultiplied colour P = 0.392157 stands over coverage A = 0 (added light covers nothing), so
+// the screen adds g max(A - P, 0) = 0 and the pixel shows the same 120 -- at least what it shows with no bloom.
+// Mutation: the screen as P + g (A - P) (engine-fixes-3's, blocked) -> the spark becomes P (1 - g), darker than with no
+// bloom, red.
+TEST_F(HdrPass, TheGlowNeverTakesLightAwayFromAnAddedSpark) {
+    for (float intensity : {0.0f, 1.0f}) {
+        const BRITE::TextureHandle target = m_backend.LoadRenderTexture(HiddenWindow::SIZE, HiddenWindow::SIZE);
+        BRITE::RenderPass dark;
+        dark.ClearColor = {20, 20, 20, 255};
+        Picture(dark, target);
+        BRITE::RenderPass pass = Hdr();
+        pass.Post.Hdr = false;
+        pass.Post.Bloom.Enabled = true;
+        pass.Post.Bloom.Threshold = 0.2f;
+        pass.Post.Bloom.Knee = 0.0f;
+        pass.Post.Bloom.Intensity = intensity;
+        pass.ShouldClear = false;
+        BRITE::ModelDrawCommand spark = Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.5f), {100, 100, 100, 255});
+        spark.Material.Blend = BRITE::BlendMode::Additive;
+        pass.ModelCommands = {spark};
+        const BRITE::Color c = Picture(pass, target)[At(0.0f, 0.0f)];
+        EXPECT_TRUE(Within(c, 120, 120, 120, 1))
+            << "intensity " << intensity << ": " << int(c.r) << " " << int(c.g) << " " << int(c.b);
+        m_backend.UnloadRenderTexture(target);
+    }
+}
+
+// A BACKGROUND CALLBACK'S BLEND DOES NOT REACH THE 3D WORLD: a callback that ends on raylib's straight alpha blend, in
+// a chained pass that does not clear, leaves the white layer at alpha 26 over grey 128 at the 141 of the case above
+// (ALayerInAPassThatDoesNotClearLiesOverTheTargetByItsAlpha), HDR and display-referred alike.
+// Mutation: the chain's blend not set again after the callbacks -> the layer's alpha builds as a x a, and the composite
+// comes out near 129 (the worked value above), red.
+TEST_F(HdrPass, ABackgroundCallbacksBlendDoesNotReachTheWorld) {
+    for (bool hdr : {true, false}) {
+        const BRITE::TextureHandle target = m_backend.LoadRenderTexture(HiddenWindow::SIZE, HiddenWindow::SIZE);
+        BRITE::RenderPass grey;
+        grey.ClearColor = {128, 128, 128, 255};
+        Picture(grey, target);
+        BRITE::RenderPass pass = Hdr();
+        pass.Post.Hdr = hdr;
+        if (!hdr) {
+            pass.Post.Bloom.Enabled = true;
+            pass.Post.Bloom.Intensity = 0.0f;
+        }
+        pass.ShouldClear = false;
+        pass.BackgroundDrawCallbacks.push_back([] { ::BeginBlendMode(BLEND_ALPHA); });
         pass.ModelCommands.push_back(Unlit(Quad(-3.0f, -3.0f, 3.0f, 3.0f, 0.0f), {255, 255, 255, 26}));
         const BRITE::Color c = Picture(pass, target)[At(0.0f, 0.0f)];
         EXPECT_TRUE(Within(c, 141, 141, 141, 1))

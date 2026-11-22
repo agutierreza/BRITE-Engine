@@ -39,7 +39,9 @@ class RaylibRenderBackend : public IRenderBackend {
     // R11G11B10F target's alpha reads 1), BOTTOM row first, as OpenGL holds it. For tests and tools.
     bool ReadRenderTargetLinear(BRITE::TextureHandle target, int& width, int& height, std::vector<float>& rgba);
     // The last HDR pass's float scene target, resolved, and its bloom's first level (every level's light summed), read
-    // back the same way. False when no HDR pass (or no bloom) has been drawn. For tests and tools.
+    // back the same way. The scene's colour is PREMULTIPLIED -- light times the alpha, the alpha the coverage the pass
+    // built (RenderPass.hpp, PostSettings) -- so where it covered fully it is the light itself. False when no HDR pass
+    // (or no bloom) has been drawn. For tests and tools.
     bool ReadLastHdrScene(int& width, int& height, std::vector<float>& rgba) const;
     bool ReadLastBloom(int& width, int& height, std::vector<float>& rgba) const;
     // How many float scene targets the chain has made: passes at sizes it already holds make none. For tests.
@@ -264,6 +266,8 @@ class RaylibRenderBackend : public IRenderBackend {
     // The shadow features (cascade count and filter, ShadowVariantKey) the device refused the lit shader with: no later
     // pass asking for one of them draws a shadow map it cannot read. Another count or filter is still tried.
     std::vector<int> m_shadowVariantsRefused;
+    // HDR is left out of the key on purpose: a refusal with HDR on also stops the same shadows with it off -- the
+    // conservative side, since the shadow code is the same in both.
     static int ShadowVariantKey(int cascades, int filter) {
         return cascades | (filter << 3);
     }
