@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <raylib.h>
 #include <raymath.h>
 #include <rlgl.h>
@@ -34,6 +32,15 @@ extern void(BRITE_GL_CALL* glad_glGetIntegerv)(unsigned int name, int* values);
 namespace BRITE {
 namespace Backends {
 namespace Raylib {
+
+// A mesh's material slot, checked against the model's material count before anything indexes the materials with it:
+// a loader bug or a hand-edited model file could otherwise send an out-of-range index straight into the array. Falls
+// back to slot 0, raylib's own default material. Above its first use, ReadMesh.
+int RaylibRenderBackend::MeshMaterialSlot(int slot, int materialCount) {
+    if (slot < 0 || slot >= materialCount)
+        return 0;
+    return slot;
+}
 
 namespace {
 // How many maps every raylib Material holds: rmodels.c's MAX_MATERIAL_MAPS, which
@@ -186,7 +193,10 @@ void ReadMesh(const ::Model& model, int m, bool posed, BRITE::MeshData& out) {
 
     // The draw multiplies the material's colour by the vertex colour; the read-back folds that product into the
     // vertex colour, so a plain white material draws it the same.
-    const ::Color base = model.materials[model.meshMaterial[m]].maps[MATERIAL_MAP_DIFFUSE].color;
+    const ::Color base =
+        model.materials[RaylibRenderBackend::MeshMaterialSlot(model.meshMaterial[m], model.materialCount)]
+            .maps[MATERIAL_MAP_DIFFUSE]
+            .color;
     out.Colors.resize(vertexCount);
     for (std::size_t i = 0; i < vertexCount; ++i) {
         const unsigned char* vertex = mesh.colors != nullptr ? &mesh.colors[i * 4] : nullptr;
@@ -557,7 +567,7 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     // OPAQUE material ignores it, as glTF says, and so does a vertex colour's alpha here, which costs a scan of the
     // mesh to read.
     auto meshTranslucent = [&](const BRITE::ModelDrawCommand& cmd, const ::Model& rlModel, int m) {
-        const int slot = rlModel.meshMaterial[m];
+        const int slot = MeshMaterialSlot(rlModel.meshMaterial[m], rlModel.materialCount);
         const BRITE::GltfMaterialInfo* file = FileMaterial(cmd.Model, slot);
         if (cmd.Material.AlphaMask || (file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Mask))
             return false;
@@ -634,7 +644,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
                 PoseForDraw(cmd.Model, cmd.Pose, static_cast<std::size_t>(&cmd - pass.ModelCommands.data()));
                 posed = true;
             }
-            const ::Material& own = rlModel->materials[rlModel->meshMaterial[m]];
+            const int slot = MeshMaterialSlot(rlModel->meshMaterial[m], rlModel->materialCount);
+            const ::Material& own = rlModel->materials[slot];
             ::MaterialMap maps[MATERIAL_MAPS_PER_MATERIAL];
             std::memcpy(maps, own.maps, sizeof(maps));
             ::Material material = own;
@@ -662,8 +673,7 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             maps[MATERIAL_MAP_IRRADIANCE].texture = irradiance ? *irradiance : ::Texture2D{0};
             maps[MATERIAL_MAP_PREFILTER].texture = prefilter ? *prefilter : ::Texture2D{0};
 
-            const bool bothSides =
-                ApplyMaterial(cmd.Material, ownMaps, FileMaterial(cmd.Model, rlModel->meshMaterial[m]));
+            const bool bothSides = ApplyMaterial(cmd.Material, ownMaps, FileMaterial(cmd.Model, slot));
 
             // The draw tint times the material's own colour, as DrawModelEx does.
             const ::Color ownColour = maps[MATERIAL_MAP_DIFFUSE].color;
@@ -1362,7 +1372,7 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
     // raylib's glTF loader reads a material's base colour and textures and
     // nothing else, so the rest is read from the file here: the file's material
     // i is raylib's slot i + 1, and slot 0 is raylib's own default. Read the
-    // same way raylib reads the file, relative to the working directory.
+    // same way raylib reads the file, through LoadFileData below.
     if (::IsFileExtension(fileName, ".gltf") || ::IsFileExtension(fileName, ".glb")) {
         // glTF's vertex colours are linear, as its base colours are, and raylib
         // stored each as value x 255 -- as if it were an sRGB byte, which the
@@ -1388,9 +1398,16 @@ BRITE::ModelHandle RaylibRenderBackend::LoadModel(const char* fileName) {
                                        mesh.vertexCount * 4, 0);
         }
 
-        std::ifstream file(fileName, std::ios::binary);
-        const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)),
-                                               std::istreambuf_iterator<char>());
+        // Read through raylib's own file-loading hook rather than a second,
+        // independent OS file handle: a caller who sandboxes raylib's reads
+        // (SetLoadFileDataCallback) then sandboxes this re-read too, instead
+        // of it quietly reaching the real filesystem on its own.
+        std::vector<unsigned char> bytes;
+        int fileSize = 0;
+        if (unsigned char* fileData = ::LoadFileData(fileName, &fileSize)) {
+            bytes.assign(fileData, fileData + fileSize);
+            ::UnloadFileData(fileData);
+        }
         std::vector<BRITE::GltfMaterialInfo> materials;
         if (!BRITE::ReadGltfMaterials(bytes, materials)) {
             spdlog::warn("BRITE: {}: its materials could not be read; drawn with their base colours alone", fileName);

@@ -4,6 +4,12 @@ if(POLICY CMP0135)
 endif()
 project(BRITEEngine C CXX)
 
+# raylib's bundled GLFW needs Objective-C for its Cocoa backend on macOS; enabled here, once,
+# up front, so it doesn't surface as a confusing configure error deep inside FetchContent.
+if(APPLE)
+    enable_language(OBJC)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -482,6 +488,9 @@ if(BRITE_BUILD_TESTS)
     # Which modules this configure builds, for ModuleBoundaryTests: each one's headers must be reachable exactly then.
     set_source_files_properties(tests/ModuleBoundaryTests.cpp PROPERTIES COMPILE_DEFINITIONS
         "BRITE_TEST_MODULE_RAYLIB=$<BOOL:${BRITE_BUILD_RAYLIB}>;BRITE_TEST_MODULE_BOX2D=$<BOOL:${BRITE_BUILD_BOX2D}>;BRITE_TEST_MODULE_BOX3D=$<BOOL:${BRITE_BUILD_BOX3D}>;BRITE_TEST_MODULE_AUDIO=$<BOOL:${BRITE_BUILD_AUDIO}>;BRITE_TEST_MODULE_PERSISTENCE=$<BOOL:${BRITE_BUILD_PERSISTENCE}>;BRITE_TEST_MODULE_DEBUG_UI=$<BOOL:${BRITE_BUILD_DEBUG_UI}>;BRITE_TEST_MODULE_CONTENT=$<BOOL:${BRITE_BUILD_CONTENT}>")
+    # Whether the content module is built, for ModelReadbackTests: its case of a model loaded through a routing.
+    set_source_files_properties(tests/ModelReadbackTests.cpp PROPERTIES COMPILE_DEFINITIONS
+        "BRITE_TEST_MODULE_CONTENT=$<BOOL:${BRITE_BUILD_CONTENT}>")
     # ContentManifestScriptTests runs the manifest script as a build would.
     set_source_files_properties(tests/ContentManifestScriptTests.cpp PROPERTIES COMPILE_DEFINITIONS
         "BRITE_TEST_CMAKE_COMMAND=\"${CMAKE_COMMAND}\";BRITE_TEST_MANIFEST_SCRIPT=\"${BRITE_CONTENT_MANIFEST_SCRIPT}\"")

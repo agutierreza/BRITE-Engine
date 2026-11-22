@@ -54,6 +54,14 @@
 
 #include <raylib.h>
 
+#ifndef BRITE_TEST_MODULE_CONTENT
+#error "CMakeLists.txt sets BRITE_TEST_MODULE_CONTENT for this file; without it the routed case would vanish unseen"
+#endif
+#if BRITE_TEST_MODULE_CONTENT
+#include <Backends/Raylib/RaylibContentLoads.hpp>
+#include <Content/ContentRoot.hpp>
+#endif
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -663,6 +671,38 @@ TEST_F(ModelReadbackTest, AHandleThatNamesNoModelReadsBackNothing) {
     EXPECT_FALSE(m_backend.ReadModelMeshes(model, meshes));
     EXPECT_TRUE(meshes.empty()) << "a handle already unloaded";
 }
+
+#if BRITE_TEST_MODULE_CONTENT
+// The file's materials are re-read the way raylib read the model, through LoadFileData, so a model raylib was routed
+// to is re-read through the same routing. The model is named here by its content name alone, "model.gltf", which only
+// the root can serve: no such file lies in the working directory, so any read around the routing finds nothing.
+// BY HAND: material 0's base colour factor is (1, 0.5, 0, 1). Re-read, its 0.5 is replaced by the draw colour that
+// linear value means, 186 (the two-node case above works it); not re-read, it stays what raylib stored, 0.5 x 255 =
+// 127.5, truncated to 127. Mesh 0 has no vertex colours, so it reads material 0 itself.
+// MUTATION: the re-read put back on a std::ifstream of the name -> it opens nothing, the materials are not read, and
+// mesh 0 reads (255, 127, 0, 255); red.
+TEST_F(ModelReadbackTest, AModelLoadedThroughARoutingHasItsMaterialsReReadThroughItToo) {
+    WriteGltf(m_dir.Path(), TwoNodeModel());
+    ASSERT_FALSE(fs::exists("model.gltf")) << "the case needs a name only the root can serve";
+    BRITE::Content::ContentRoot root(std::make_shared<BRITE::Content::FolderSource>(m_dir.Path()));
+    std::vector<std::string> outside;
+    BRITE::Raylib::FileLoadRouting routing;
+    routing.root = &root;
+    routing.outside = [&outside](std::string_view path) { outside.emplace_back(path); };
+    const BRITE::Raylib::ScopedFileLoadRouting scope(std::move(routing));
+
+    const BRITE::ModelHandle model = m_backend.LoadModel("model.gltf");
+    ASSERT_NE(model, BRITE::NullModelHandle);
+    std::vector<BRITE::MeshData> meshes;
+    ASSERT_TRUE(m_backend.ReadModelMeshes(model, meshes));
+    ASSERT_EQ(meshes.size(), 2u) << "raylib loaded the model through the root";
+    ASSERT_EQ(meshes[0].Colors.size(), 4u);
+    for (std::size_t i = 0; i < 4; ++i)
+        ExpectColour(meshes[0].Colors[i], 255, 186, 0, 255, "mesh 0, colour " + std::to_string(i));
+    EXPECT_TRUE(outside.empty()) << "nothing was asked for outside the root";
+    m_backend.UnloadModel(model);
+}
+#endif
 
 // ModulateChannel is the shader's a * b in 8 bits, rounded to the nearest:
 //   128 * 127 / 255 = 63.75  -> 64   (truncated: 63)

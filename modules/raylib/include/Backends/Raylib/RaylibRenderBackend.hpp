@@ -87,6 +87,14 @@ class RaylibRenderBackend : public IRenderBackend {
     // is odd, so "nearest" needs no tie rule.)
     static unsigned char ModulateChannel(unsigned char a, unsigned char b);
 
+    // The material slot a mesh is drawn with, given the slot its model names
+    // for it and how many materials the model holds: that slot when it names
+    // one of them, else 0, raylib's own default material. Every read of a
+    // mesh's material goes through it -- the material drawn, its file's
+    // material info, the translucency test and the read-back -- so a bad slot
+    // is slot 0 to all of them alike, and nothing reads out of range.
+    static int MeshMaterialSlot(int slot, int materialCount);
+
     BRITE::ShaderHandle LoadShader(const char* vsFileName, const char* fsFileName) override;
     BRITE::ShaderHandle LoadShaderFromMemory(const char* vsCode, const char* fsCode) override;
     void UnloadShader(BRITE::ShaderHandle shader) override;

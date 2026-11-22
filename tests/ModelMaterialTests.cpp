@@ -2080,3 +2080,21 @@ TEST(TexturesOwnedByModel, EachOwnTextureOnceAndNeitherZeroNorThePlaceholder) {
     const std::vector<unsigned int> owned = RaylibRenderBackend::TexturesOwnedByModel({0, 1, 7, 7, 9, 0, 1}, 1);
     EXPECT_EQ(owned, (std::vector<unsigned int>{7, 9}));
 }
+
+// A mesh's material slot as every read of it takes it -- the material drawn, the file's material info, the
+// translucency test and the read-back -- so all four agree. raylib's own loaders keep a slot in range (cgltf refuses a
+// primitive naming a material the file lacks; the OBJ loader and SetModelMeshMaterial check theirs; a model built in
+// code has slot 0), so no model the backend loads can carry a bad one and no site can be reached with one, window or
+// not: the check is for a model that would, and is pinned here, where every site reads its slot.
+// BY HAND: a model with 3 materials has slots 0, 1 and 2. Each is itself; 3 is one past the end and -1 before the
+// start, and both are slot 0, raylib's default material. A model with one material has slot 0 alone.
+// MUTATION: the check taken out (the slot returned as it is) -> 3 and -1 come back as themselves; red.
+TEST(MeshMaterialSlot, ASlotInRangeIsItselfAndOneOutOfRangeIsTheDefaultMaterial) {
+    EXPECT_EQ(RaylibRenderBackend::MeshMaterialSlot(2, 3), 2);
+    EXPECT_EQ(RaylibRenderBackend::MeshMaterialSlot(1, 3), 1);
+    EXPECT_EQ(RaylibRenderBackend::MeshMaterialSlot(0, 3), 0);
+    EXPECT_EQ(RaylibRenderBackend::MeshMaterialSlot(3, 3), 0) << "one past the end";
+    EXPECT_EQ(RaylibRenderBackend::MeshMaterialSlot(-1, 3), 0) << "before the start";
+    EXPECT_EQ(RaylibRenderBackend::MeshMaterialSlot(0, 1), 0);
+    EXPECT_EQ(RaylibRenderBackend::MeshMaterialSlot(1, 1), 0) << "a model with raylib's default material alone";
+}
