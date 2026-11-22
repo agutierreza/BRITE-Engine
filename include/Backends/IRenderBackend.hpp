@@ -36,11 +36,53 @@ struct TextureSampling {
     SamplingWrap Wrap = SamplingWrap::Repeat;
 };
 
+// What a render target's colour holds, per pixel.
+enum class RenderTargetFormat {
+    RGBA8,      // 8 bits a channel, 0..1: a finished picture, as LoadRenderTexture makes
+    RGBA16F,    // half floats a channel, alpha included: linear light beyond 1, for a picture still to be tone mapped
+    R11G11B10F, // small floats, no alpha, half RGBA16F's size: light for blurring and glows, where alpha is not needed
+};
+
+// A render target to make: its size, colour format, samples, and whether its depth can be read afterwards.
+struct RenderTargetDescription {
+    int Width = 0;
+    int Height = 0;
+    RenderTargetFormat Format = RenderTargetFormat::RGBA8;
+    // Samples per pixel, as LoadMultisampledRenderTexture: 1 or less is none, a count the device cannot give is
+    // lowered to its most. A multisampled target is resolved when each pass drawn into it ends -- its colour, and its
+    // depth when that is readable -- so whatever reads it reads one value a pixel.
+    int Samples = 1;
+    // A depth texture that can be sampled once a pass has drawn into the target (RenderTargetDepth): for a post pass
+    // that needs to know how far each pixel is -- fog, depth of field, outlines. Off, the depth is a buffer only the
+    // target's own passes test against.
+    bool ReadableDepth = false;
+};
+
 class IRenderBackend {
   public:
     virtual ~IRenderBackend() = default;
 
     virtual void SubmitRenderPass(const BRITE::RenderPass& pass) = 0;
+
+    // A render target as described: a pass names it as its TargetFramebuffer, a sprite or a material names it as a
+    // texture, ReadRenderTexture reads it (a float format clamped to 0..1), and UnloadRenderTexture unloads it.
+    // NullTextureHandle, and a log line saying why, when the size is not positive or the device cannot make it -- or
+    // when the backend cannot, which is what this default does for anything but RGBA8 with no readable depth, so that
+    // an implementation written before it existed still builds.
+    virtual BRITE::TextureHandle LoadRenderTarget(const RenderTargetDescription& description) {
+        if (description.Format != RenderTargetFormat::RGBA8 || description.ReadableDepth || description.Width <= 0 ||
+            description.Height <= 0)
+            return BRITE::NullTextureHandle;
+        return LoadMultisampledRenderTexture(description.Width, description.Height, description.Samples);
+    }
+    // The readable depth of a target made with ReadableDepth, as a texture a sprite or a material can name: each
+    // texel 0 at the camera's near plane to 1 at its far, as the depth buffer holds it (not linear in distance). It
+    // holds the depth of the last pass drawn into the target, and goes with the target when it is unloaded.
+    // NullTextureHandle for any other target, and from this default.
+    virtual BRITE::TextureHandle RenderTargetDepth(BRITE::TextureHandle target) {
+        (void)target;
+        return BRITE::NullTextureHandle;
+    }
 
     // We also need some way to create/destroy render targets if the application uses internal resolution scaling
     virtual BRITE::TextureHandle LoadRenderTexture(int width, int height) = 0;

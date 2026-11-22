@@ -55,10 +55,14 @@ endif()
 # ---------------------------------------------------------
 
 if(BRITE_BUILD_RAYLIB)
-    # Raylib
+    # Raylib, PINNED to one commit of its master branch. It was fetched from master itself, so a fresh configure
+    # compiled whatever master held that day, and master has renamed rlgl functions under code that calls them. The
+    # pin is the commit the builds of the day already compiled -- read from the pax header GitHub writes into the
+    # downloaded master.tar.gz -- so it changes no code they built; a build directory whose raylib source is set
+    # (FETCHCONTENT_SOURCE_DIR_RAYLIB) downloads nothing at all. Move it on purpose, and build everything when you do.
     FetchContent_Declare(
         raylib
-        URL https://github.com/raysan5/raylib/archive/master.tar.gz
+        URL https://github.com/raysan5/raylib/archive/dad422a430815ec595a5b241d65934ca612e5920.tar.gz
     )
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
@@ -268,6 +272,7 @@ if(BRITE_BUILD_RAYLIB)
         modules/raylib/src/Backends/Raylib/RaylibApplicationBackend.cpp
         modules/raylib/src/Backends/Raylib/RaylibInputBackend.cpp
         modules/raylib/src/Backends/Raylib/RaylibRenderBackend.cpp
+        modules/raylib/src/Backends/Raylib/RaylibPostChain.cpp
         modules/raylib/src/Backends/Raylib/RaylibSceneAssets.cpp
     )
     add_library(BRITE::Raylib ALIAS BRITERaylib)
@@ -277,13 +282,31 @@ if(BRITE_BUILD_RAYLIB)
     # editable source; it is read here at configure time into a generated header of
     # string literals, and listing the two files in CMAKE_CONFIGURE_DEPENDS makes a
     # build after editing them reconfigure on its own rather than link a stale copy.
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.vs" BRITE_PBR_VS)
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.fs" BRITE_PBR_FS)
+    #
+    # The HDR pass's own shaders (the bloom chain, the tone map, primitives through the tone curve) are embedded the
+    # same way. A shader holding the line `#include "tone_curve.glsl"` has assets/shaders/tone_curve.glsl put in its
+    # place here -- GLSL has no include of its own -- so the curve is written once for every shader that needs it.
+    set(BRITE_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders")
+    file(READ "${BRITE_SHADER_DIR}/tone_curve.glsl" BRITE_TONE_CURVE_GLSL)
+    function(brite_read_shader variable file)
+        file(READ "${BRITE_SHADER_DIR}/${file}" source)
+        string(REPLACE "#include \"tone_curve.glsl\"" "${BRITE_TONE_CURVE_GLSL}" source "${source}")
+        set(${variable} "${source}" PARENT_SCOPE)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BRITE_SHADER_DIR}/${file}")
+    endfunction()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BRITE_SHADER_DIR}/tone_curve.glsl")
+    brite_read_shader(BRITE_PBR_VS pbr.vs)
+    brite_read_shader(BRITE_PBR_FS pbr.fs)
     configure_file(modules/raylib/src/Backends/Raylib/PbrShaderSource.hpp.in
                    "${CMAKE_CURRENT_BINARY_DIR}/generated/Backends/Raylib/PbrShaderSource.hpp" @ONLY)
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.vs"
-                 "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/pbr.fs")
+    brite_read_shader(BRITE_POST_FULLSCREEN_VS post_fullscreen.vs)
+    brite_read_shader(BRITE_POST_BLOOM_DOWN_FS post_bloom_down.fs)
+    brite_read_shader(BRITE_POST_BLOOM_UP_FS post_bloom_up.fs)
+    brite_read_shader(BRITE_POST_TONEMAP_FS post_tonemap.fs)
+    brite_read_shader(BRITE_AUTHORED_COLOUR_VS authored_colour.vs)
+    brite_read_shader(BRITE_AUTHORED_COLOUR_FS authored_colour.fs)
+    configure_file(modules/raylib/src/Backends/Raylib/PostShaderSource.hpp.in
+                   "${CMAKE_CURRENT_BINARY_DIR}/generated/Backends/Raylib/PostShaderSource.hpp" @ONLY)
     target_include_directories(BRITERaylib PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(BRITERaylib PUBLIC BRITECore raylib nlohmann_json::nlohmann_json)
     list(APPEND BRITE_MODULES BRITERaylib)
@@ -440,6 +463,7 @@ if(BRITE_BUILD_TESTS)
         tests/ScenePhysicsTests.cpp
         tests/PhysicsSystemTests.cpp
         tests/RenderSystemTests.cpp
+        tests/ToneCurveTests.cpp
         tests/ModuleBoundaryTests.cpp
     )
     if(BRITE_ENABLE_PROFILER)
@@ -456,6 +480,10 @@ if(BRITE_BUILD_TESTS)
             tests/WindowModeTests.cpp
             tests/DepthWriteTests.cpp
             tests/TranslucentDrawOrderTests.cpp
+            tests/RenderTargetTests.cpp
+            tests/HdrPassTests.cpp
+            tests/BloomTests.cpp
+            tests/AdditiveBlendTests.cpp
             tests/RaylibSceneAssetsTests.cpp
         )
     endif()

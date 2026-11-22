@@ -253,6 +253,12 @@ constexpr ShaderHandle NullShaderHandle = 0;
 using ModelHandle = uint64_t;
 constexpr ModelHandle NullModelHandle = 0;
 
+// How a model draw's colour is combined with what is already behind it.
+enum class BlendMode {
+    Alpha,    // source * alpha + behind * (1 - alpha): opaque at an alpha of 255
+    Additive, // source * alpha + behind: light added to light
+};
+
 struct PBRMaterial {
     TextureHandle AlbedoMap = NullTextureHandle;
     // A tangent-space normal map, as glTF defines one: red along the texture's
@@ -284,8 +290,9 @@ struct PBRMaterial {
     // Draw the albedo as authored -- tint times vertex colour times albedo
     // texture -- with no lights, no ambient, no tone mapping and no fog: for a
     // sky, a painted backdrop or a light-emitting sign. The scalars and every
-    // map but the albedo are ignored. A model draw only; sprites and primitives
-    // are unlit already.
+    // map but the albedo and the emission are ignored. Under an HDR pass it
+    // still shows as authored, and adds its emission (below). A model draw
+    // only; sprites and primitives are unlit already.
     bool Unlit = false;
     // Alpha as a cut-out: a fragment whose alpha -- tint times vertex colour
     // times albedo texture -- falls below AlphaCutoff is not drawn, and every
@@ -302,11 +309,31 @@ struct PBRMaterial {
     // Light the surface gives off, added to whatever light falls on it: a sign,
     // a display, a lamp. An sRGB colour, as the tint is, times EmissionMap when
     // there is one, times EmissionStrength -- so an emission map shows as it is
-    // under a white Emission, and a strength above 1 glows brighter than any
-    // colour can say. Black is none. A lit surface only: unlit ones are drawn
-    // as authored. Set, it replaces a loaded model's own emission for this draw.
+    // under a white Emission. Black is none. Set, it replaces a loaded model's
+    // own emission for this draw.
+    //
+    // BRIGHTER THAN WHITE needs a pass whose PostSettings::Hdr is on. There the
+    // light is kept as it is, so a strength above 1 is light beyond anything a
+    // colour can author -- a sun, a lamp, a spark -- and it is what the pass's
+    // bloom spreads. An emission of strength s and colour c adds s * c^2.2 of
+    // linear light, where an authored white is about 7.24 (ToneCurve.hpp): a
+    // white emission needs a strength of several to show past white, and tens
+    // to glow like a sun. On an UNLIT surface under an HDR pass the emission is
+    // added too, on top of the authored colour, so an unlit game can make one
+    // of its own shapes glow without lighting anything. Without HDR every
+    // channel stops at white, and an unlit surface ignores its emission and is
+    // drawn as authored, as it always was.
     Color Emission = Black;
     float EmissionStrength = 1.0f;
+    // How the draw's colour meets what is behind it (BlendMode, above). Alpha
+    // is the ordinary blend, and opaque when the colour's alpha is 255.
+    // Additive adds its colour, times its alpha, to what is behind it -- for a
+    // glow, a spark, a flash or a beam -- and is always translucent: drawn
+    // after every opaque draw, sorted with the translucent ones, writing no
+    // depth (RenderPass says the order). Under an HDR pass it adds linear
+    // light, so overlapping glows build past white and bloom; without HDR they
+    // stop at white.
+    BlendMode Blend = BlendMode::Alpha;
     // Whether the draw writes its depth. Off, it is still depth-TESTED -- hidden
     // by anything nearer already drawn -- but leaves no depth of its own, so
     // whatever is drawn after it is tested against what lay behind it: for a

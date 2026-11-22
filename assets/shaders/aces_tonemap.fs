@@ -1,5 +1,9 @@
 #version 330
 
+// AN 8-BIT POST-PROCESSING PASS, for an Application's chain of client shaders, kept for the clients that load it. It
+// reads a finished 8-bit picture, so it cannot see light above white. For real HDR -- linear light, bloom of several
+// passes and the ACES curve -- turn on a pass's PostSettings (RenderPass.hpp) instead.
+
 // Input vertex attributes (from vertex shader)
 in vec2 fragTexCoord;
 in vec4 fragColor;

@@ -1,5 +1,8 @@
 ﻿#include "Backends/Raylib/RaylibRenderBackend.hpp"
 #include "Backends/Raylib/PbrShaderSource.hpp"
+#include "Backends/Raylib/PostShaderSource.hpp"
+#include "Backends/ToneCurve.hpp"
+#include "RaylibPostChain.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -237,6 +240,14 @@ struct RaylibRenderBackend::Skin {
     std::size_t posedCommand = 0;
 };
 
+// A render target as described (IRenderBackend.hpp). Its objects are the backend's own (RaylibPostChain), and a raylib
+// RenderTexture2D that names them stands for it in m_textures, so a pass targets it and a sprite or a material reads it
+// as it does any render texture. Its multisampled surface, when it has one, is the one passes draw into.
+struct RaylibRenderBackend::FormattedTarget {
+    TargetObjects objects;
+    BRITE::TextureHandle depth = BRITE::NullTextureHandle; // the readable depth's own handle, or none
+};
+
 float RaylibRenderBackend::ClipFrame(float seconds, int keyframeCount) {
     const float last = static_cast<float>(std::max(keyframeCount - 1, 0));
     float frame = seconds * ClipSamplesPerSecond;
@@ -434,34 +445,74 @@ bool RaylibRenderBackend::ReadPosedModelMeshes(BRITE::ModelHandle handle, const 
 
 void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     ++m_passSerial;
+    // The pass's own target, and its size: a render texture's, or the window's drawing surface.
+    RenderTexture2D* targetTexture = nullptr;
+    int targetWidth = ::GetRenderWidth();
+    int targetHeight = ::GetRenderHeight();
     if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
         auto it = m_textures.find(pass.TargetFramebuffer);
-        if (it != m_textures.end() && it->second.isRenderTexture) {
-            RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
-            // A multisampled target is drawn into its multisampled framebuffer,
-            // at the same size; the pass is resolved into rt when it ends.
-            auto multisampled = m_multisampled.find(pass.TargetFramebuffer);
-            if (multisampled != m_multisampled.end()) {
-                RenderTexture2D surface = *rt;
-                surface.id = multisampled->second.framebuffer;
-                ::BeginTextureMode(surface);
-            } else {
-                ::BeginTextureMode(*rt);
-            }
-        } else {
+        if (it == m_textures.end() || !it->second.isRenderTexture)
             return; // Invalid target
+        targetTexture = static_cast<RenderTexture2D*>(it->second.ptr);
+        targetWidth = targetTexture->texture.width;
+        targetHeight = targetTexture->texture.height;
+    }
+
+    // AN HDR PASS (RenderPass.hpp, PostSettings) draws its background callbacks and its 3D world first, into the
+    // chain's own float target, then blooms it; the tone map lands on the pass's target below, where the 2D draws
+    // follow. A device that cannot run the chain draws the pass as if Hdr were off.
+    bool hdr = pass.Post.Hdr && pass.Camera3DPtr != nullptr && targetWidth > 0 && targetHeight > 0;
+    if (hdr) {
+        if (!m_post)
+            m_post = std::make_shared<PostChain>();
+        hdr = m_post->Ready() && EnsureAuthoredColourShader();
+    }
+    if (hdr) {
+        // The clear colour is authored as what the screen shows: the light that shows it, alpha as authored.
+        const float exposure = pass.Post.Exposure;
+        const float linearClear[4] = {BRITE::ToneCurve::AuthoredToLinear(pass.ClearColor.r / 255.0f, exposure),
+                                      BRITE::ToneCurve::AuthoredToLinear(pass.ClearColor.g / 255.0f, exposure),
+                                      BRITE::ToneCurve::AuthoredToLinear(pass.ClearColor.b / 255.0f, exposure),
+                                      pass.ClearColor.a / 255.0f};
+        hdr = m_post->BeginScene(targetWidth, targetHeight, pass.Post.Samples, pass.ShouldClear, linearClear);
+    }
+    if (hdr) {
+        for (auto& cb : pass.BackgroundDrawCallbacks) {
+            if (cb)
+                cb();
+        }
+        Draw3D(pass, true);
+        m_post->EndScene();
+        m_post->Bloom(pass.Post.Bloom);
+    }
+
+    if (targetTexture != nullptr) {
+        // A multisampled target is drawn into its multisampled framebuffer,
+        // at the same size; the pass is resolved into rt when it ends.
+        auto multisampled = m_multisampled.find(pass.TargetFramebuffer);
+        if (multisampled != m_multisampled.end()) {
+            RenderTexture2D surface = *targetTexture;
+            surface.id = multisampled->second.framebuffer;
+            ::BeginTextureMode(surface);
+        } else {
+            ::BeginTextureMode(*targetTexture);
         }
     } else {
         ::BeginDrawing();
     }
 
-    if (pass.ShouldClear) {
-        ::ClearBackground({pass.ClearColor.r, pass.ClearColor.g, pass.ClearColor.b, pass.ClearColor.a});
-    }
+    if (hdr) {
+        // The tone-mapped picture replaces what the target held, or lies over it where the 3D world drew.
+        m_post->Composite(pass.Post.Exposure, pass.Post.Bloom, pass.ShouldClear);
+    } else {
+        if (pass.ShouldClear) {
+            ::ClearBackground({pass.ClearColor.r, pass.ClearColor.g, pass.ClearColor.b, pass.ClearColor.a});
+        }
 
-    for (auto& cb : pass.BackgroundDrawCallbacks) {
-        if (cb)
-            cb();
+        for (auto& cb : pass.BackgroundDrawCallbacks) {
+            if (cb)
+                cb();
+        }
     }
 
     if (pass.Shader != BRITE::NullShaderHandle) {
@@ -472,6 +523,107 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         }
     }
 
+    if (!hdr)
+        Draw3D(pass, false);
+
+    if (pass.Camera) {
+        ::Camera2D rlCamera;
+        rlCamera.offset = {pass.Camera->offset.x, pass.Camera->offset.y};
+        rlCamera.target = {pass.Camera->target.x, pass.Camera->target.y};
+        rlCamera.rotation = pass.Camera->rotation;
+        rlCamera.zoom = pass.Camera->zoom;
+        ::BeginMode2D(rlCamera);
+    }
+
+    for (auto& cb : pass.WorldDrawCallbacks) {
+        if (cb)
+            cb();
+    }
+
+    for (const auto& cmd : pass.SpriteCommands) {
+        if (cmd.Material.AlbedoMap == BRITE::NullTextureHandle)
+            continue;
+        auto it = m_textures.find(cmd.Material.AlbedoMap);
+        if (it == m_textures.end())
+            continue;
+
+        ::Texture2D rlTexture;
+        if (it->second.isRenderTexture) {
+            RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
+            rlTexture = rt->texture;
+        } else {
+            ::Texture2D* tex = static_cast<::Texture2D*>(it->second.ptr);
+            rlTexture = *tex;
+        }
+
+        ::Rectangle rlSource = {cmd.SourceRect.x, cmd.SourceRect.y, cmd.SourceRect.width, cmd.SourceRect.height};
+        ::Rectangle rlDest = {cmd.DestRect.x, cmd.DestRect.y, cmd.DestRect.width, cmd.DestRect.height};
+        ::Vector2 rlOrigin = {cmd.Origin.x, cmd.Origin.y};
+        ::Color rlTint = {cmd.Material.AlbedoTint.r, cmd.Material.AlbedoTint.g, cmd.Material.AlbedoTint.b,
+                          cmd.Material.AlbedoTint.a};
+
+        ::DrawTexturePro(rlTexture, rlSource, rlDest, rlOrigin, cmd.RotationDeg, rlTint);
+    }
+
+    for (const auto& cmd : pass.LineCommands) {
+        ::DrawLine(cmd.Start.x, cmd.Start.y, cmd.End.x, cmd.End.y, {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a});
+    }
+
+    for (const auto& cmd : pass.RectCommands) {
+        ::Rectangle rlDest = {cmd.DestRect.x, cmd.DestRect.y, cmd.DestRect.width, cmd.DestRect.height};
+        ::Vector2 rlOrigin = {cmd.Origin.x, cmd.Origin.y};
+        ::Color rlTint = {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a};
+        if (cmd.IsFilled) {
+            ::DrawRectanglePro(rlDest, rlOrigin, cmd.RotationDeg, rlTint);
+        } else {
+            ::DrawRectangleLines(cmd.DestRect.x - cmd.Origin.x, cmd.DestRect.y - cmd.Origin.y, cmd.DestRect.width,
+                                 cmd.DestRect.height, rlTint);
+        }
+    }
+
+    if (pass.Camera) {
+        ::EndMode2D();
+    }
+
+    for (auto& cb : pass.UIDrawCallbacks) {
+        if (cb)
+            cb();
+    }
+
+    if (pass.Shader != BRITE::NullShaderHandle) {
+        auto it = m_shaders.find(pass.Shader);
+        if (it != m_shaders.end()) {
+            ::EndShaderMode();
+        }
+    }
+
+    if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
+        ::EndTextureMode();
+        // Resolve a multisampled target: average each pixel's samples into the
+        // ordinary render texture that every reader of the handle reads. A target
+        // made by LoadRenderTarget resolves its own, depth included when readable.
+        auto formatted = m_formattedTargets.find(pass.TargetFramebuffer);
+        auto multisampled = m_multisampled.find(pass.TargetFramebuffer);
+        if (formatted != m_formattedTargets.end()) {
+            ResolveTarget(formatted->second->objects);
+        } else if (multisampled != m_multisampled.end()) {
+            const RenderTexture2D* rt = static_cast<RenderTexture2D*>(m_textures[pass.TargetFramebuffer].ptr);
+            const int width = rt->texture.width, height = rt->texture.height;
+            ::rlBindFramebuffer(RL_READ_FRAMEBUFFER, multisampled->second.framebuffer);
+            ::rlBindFramebuffer(RL_DRAW_FRAMEBUFFER, rt->id);
+            ::rlBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT_);
+            ::rlBindFramebuffer(RL_READ_FRAMEBUFFER, 0);
+            ::rlBindFramebuffer(RL_DRAW_FRAMEBUFFER, 0);
+        }
+    } else {
+        ::EndDrawing();
+    }
+}
+
+// The 3D world of a pass -- its camera, primitives, models and 3D lines, opaque then translucent -- drawn into whatever
+// is bound: the pass's own target, or under an HDR pass the chain's float target, where primitives and lines go
+// through the authored-colour shader and the lit shader writes linear light.
+void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
     if (pass.Camera3DPtr) {
         ::Camera3D rlCamera3D = {0};
         rlCamera3D.position = {pass.Camera3DPtr->position.x, pass.Camera3DPtr->position.y,
@@ -501,6 +653,16 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
                 ::rlEnableBackfaceCulling();
             }
         }
+    }
+
+    // Under an HDR pass every primitive and 3D line is drawn through the authored-colour shader, so its tint still
+    // shows as authored after the tone map. rlgl draws its batch with the shader set when the batch is drawn, so the
+    // shader stays set until the last of them is drawn, below.
+    ::Shader* authoredColour = nullptr;
+    if (hdr) {
+        authoredColour = static_cast<::Shader*>(m_shaders[m_authoredColourShader]);
+        ::SetShaderValue(*authoredColour, m_authoredColourExposure, &pass.Post.Exposure, SHADER_UNIFORM_FLOAT);
+        ::BeginShaderMode(*authoredColour);
     }
 
     // THE ORDER A PASS IS DRAWN IN (RenderPass.hpp says it too): the opaque draws first, then the translucent draws.
@@ -558,7 +720,7 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
 
     if (!pass.ModelCommands.empty()) {
         EnsurePbrShader();
-        ApplyPassLighting(pass);
+        ApplyPassLighting(pass, hdr);
     }
 
     // Whether one mesh of a model draw is translucent: its colour's alpha -- the model's own times the draw's tint, as
@@ -567,6 +729,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     // OPAQUE material ignores it, as glTF says, and so does a vertex colour's alpha here, which costs a scan of the
     // mesh to read.
     auto meshTranslucent = [&](const BRITE::ModelDrawCommand& cmd, const ::Model& rlModel, int m) {
+        if (cmd.Material.Blend == BRITE::BlendMode::Additive)
+            return true; // light added to what is behind: drawn after it, whatever its alpha
         const int slot = MeshMaterialSlot(rlModel.meshMaterial[m], rlModel.materialCount);
         const BRITE::GltfMaterialInfo* file = FileMaterial(cmd.Model, slot);
         if (cmd.Material.AlphaMask || (file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Mask))
@@ -691,7 +855,14 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             // mesh, and the primitives, which rlgl batches and draws later.
             if (!writesDepth)
                 ::rlDisableDepthMask();
+            // An additive mesh adds its colour, times its alpha, to what is behind it; and back to the ordinary blend
+            // before anything else is drawn.
+            const bool additive = cmd.Material.Blend == BRITE::BlendMode::Additive;
+            if (additive)
+                ::rlSetBlendMode(RL_BLEND_ADDITIVE);
             ::DrawMesh(rlModel->meshes[m], material, transform);
+            if (additive)
+                ::rlSetBlendMode(RL_BLEND_ALPHA);
             if (!writesDepth)
                 ::rlEnableDepthMask();
             if (bothSides)
@@ -827,97 +998,10 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         }
     }
 
+    if (authoredColour != nullptr)
+        ::EndShaderMode(); // draws what is left of the batch through it first
     if (pass.Camera3DPtr)
         ::EndMode3D();
-
-    if (pass.Camera) {
-        ::Camera2D rlCamera;
-        rlCamera.offset = {pass.Camera->offset.x, pass.Camera->offset.y};
-        rlCamera.target = {pass.Camera->target.x, pass.Camera->target.y};
-        rlCamera.rotation = pass.Camera->rotation;
-        rlCamera.zoom = pass.Camera->zoom;
-        ::BeginMode2D(rlCamera);
-    }
-
-    for (auto& cb : pass.WorldDrawCallbacks) {
-        if (cb)
-            cb();
-    }
-
-    for (const auto& cmd : pass.SpriteCommands) {
-        if (cmd.Material.AlbedoMap == BRITE::NullTextureHandle)
-            continue;
-        auto it = m_textures.find(cmd.Material.AlbedoMap);
-        if (it == m_textures.end())
-            continue;
-
-        ::Texture2D rlTexture;
-        if (it->second.isRenderTexture) {
-            RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
-            rlTexture = rt->texture;
-        } else {
-            ::Texture2D* tex = static_cast<::Texture2D*>(it->second.ptr);
-            rlTexture = *tex;
-        }
-
-        ::Rectangle rlSource = {cmd.SourceRect.x, cmd.SourceRect.y, cmd.SourceRect.width, cmd.SourceRect.height};
-        ::Rectangle rlDest = {cmd.DestRect.x, cmd.DestRect.y, cmd.DestRect.width, cmd.DestRect.height};
-        ::Vector2 rlOrigin = {cmd.Origin.x, cmd.Origin.y};
-        ::Color rlTint = {cmd.Material.AlbedoTint.r, cmd.Material.AlbedoTint.g, cmd.Material.AlbedoTint.b,
-                          cmd.Material.AlbedoTint.a};
-
-        ::DrawTexturePro(rlTexture, rlSource, rlDest, rlOrigin, cmd.RotationDeg, rlTint);
-    }
-
-    for (const auto& cmd : pass.LineCommands) {
-        ::DrawLine(cmd.Start.x, cmd.Start.y, cmd.End.x, cmd.End.y, {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a});
-    }
-
-    for (const auto& cmd : pass.RectCommands) {
-        ::Rectangle rlDest = {cmd.DestRect.x, cmd.DestRect.y, cmd.DestRect.width, cmd.DestRect.height};
-        ::Vector2 rlOrigin = {cmd.Origin.x, cmd.Origin.y};
-        ::Color rlTint = {cmd.Tint.r, cmd.Tint.g, cmd.Tint.b, cmd.Tint.a};
-        if (cmd.IsFilled) {
-            ::DrawRectanglePro(rlDest, rlOrigin, cmd.RotationDeg, rlTint);
-        } else {
-            ::DrawRectangleLines(cmd.DestRect.x - cmd.Origin.x, cmd.DestRect.y - cmd.Origin.y, cmd.DestRect.width,
-                                 cmd.DestRect.height, rlTint);
-        }
-    }
-
-    if (pass.Camera) {
-        ::EndMode2D();
-    }
-
-    for (auto& cb : pass.UIDrawCallbacks) {
-        if (cb)
-            cb();
-    }
-
-    if (pass.Shader != BRITE::NullShaderHandle) {
-        auto it = m_shaders.find(pass.Shader);
-        if (it != m_shaders.end()) {
-            ::EndShaderMode();
-        }
-    }
-
-    if (pass.TargetFramebuffer != BRITE::NullTextureHandle) {
-        ::EndTextureMode();
-        // Resolve a multisampled target: average each pixel's samples into the
-        // ordinary render texture that every reader of the handle reads.
-        auto multisampled = m_multisampled.find(pass.TargetFramebuffer);
-        if (multisampled != m_multisampled.end()) {
-            const RenderTexture2D* rt = static_cast<RenderTexture2D*>(m_textures[pass.TargetFramebuffer].ptr);
-            const int width = rt->texture.width, height = rt->texture.height;
-            ::rlBindFramebuffer(RL_READ_FRAMEBUFFER, multisampled->second.framebuffer);
-            ::rlBindFramebuffer(RL_DRAW_FRAMEBUFFER, rt->id);
-            ::rlBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT_);
-            ::rlBindFramebuffer(RL_READ_FRAMEBUFFER, 0);
-            ::rlBindFramebuffer(RL_DRAW_FRAMEBUFFER, 0);
-        }
-    } else {
-        ::EndDrawing();
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -973,6 +1057,8 @@ void RaylibRenderBackend::EnsurePbrShader() {
     m_pbrLocs.fogColor = loc("fogColor");
     m_pbrLocs.fogStart = loc("fogStart");
     m_pbrLocs.fogEnd = loc("fogEnd");
+    m_pbrLocs.hdrOutput = loc("hdrOutput");
+    m_pbrLocs.exposure = loc("exposure");
     for (std::size_t i = 0; i < BRITE::MaxLightsPerPass; ++i) {
         const std::string prefix = "lights[" + std::to_string(i) + "].";
         auto& l = m_pbrLocs.lights[i];
@@ -992,8 +1078,13 @@ void RaylibRenderBackend::EnsurePbrShader() {
     ::SetShaderValue(*shader, loc("offset"), offset, SHADER_UNIFORM_VEC2);
 }
 
-void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass) {
+void RaylibRenderBackend::ApplyPassLighting(const BRITE::RenderPass& pass, bool hdr) {
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
+
+    // Every pass sets the output, 8-bit or HDR: a uniform keeps its value between passes.
+    const int hdrOutput = hdr ? 1 : 0;
+    ::SetShaderValue(*shader, m_pbrLocs.hdrOutput, &hdrOutput, SHADER_UNIFORM_INT);
+    ::SetShaderValue(*shader, m_pbrLocs.exposure, &pass.Post.Exposure, SHADER_UNIFORM_FLOAT);
 
     const int count = static_cast<int>(std::min(pass.Lights.size(), BRITE::MaxLightsPerPass));
     for (std::size_t i = 0; i < BRITE::MaxLightsPerPass; ++i) {
@@ -1202,6 +1293,96 @@ BRITE::TextureHandle RaylibRenderBackend::LoadMultisampledRenderTexture(int widt
     return handle;
 }
 
+BRITE::TextureHandle RaylibRenderBackend::LoadRenderTarget(const RenderTargetDescription& description) {
+    auto target = std::make_shared<FormattedTarget>();
+    std::string why;
+    if (!CreateTarget(description, target->objects, why)) {
+        spdlog::error("BRITE: a {}x{} render target could not be made: {}", description.Width, description.Height, why);
+        return BRITE::NullTextureHandle;
+    }
+    const TargetObjects& o = target->objects;
+    RenderTexture2D* rt = new RenderTexture2D{};
+    rt->id = o.framebuffer;
+    rt->texture.id = o.colour;
+    rt->texture.width = o.width;
+    rt->texture.height = o.height;
+    rt->texture.mipmaps = 1;
+    // raylib has no format for R11G11B10F; nothing of raylib's reads this target's pixels (ReadRenderTexture reads
+    // a float target itself), so the nearest is named.
+    rt->texture.format = o.format == RenderTargetFormat::RGBA8 ? PIXELFORMAT_UNCOMPRESSED_R8G8B8A8
+                                                               : PIXELFORMAT_UNCOMPRESSED_R16G16B16A16;
+    rt->depth.id = o.depthTexture != 0 ? o.depthTexture : o.depthRenderbuffer;
+    rt->depth.width = o.width;
+    rt->depth.height = o.height;
+    const BRITE::TextureHandle handle = m_nextId++;
+    m_textures[handle] = {true, rt};
+    if (o.msFramebuffer != 0) {
+        MultisampledTarget surface;
+        surface.framebuffer = o.msFramebuffer;
+        surface.colour = o.msColour;
+        surface.depth = o.msDepth;
+        surface.samples = o.samples;
+        m_multisampled[handle] = surface;
+    }
+    if (o.depthTexture != 0) {
+        ::Texture2D* depth = new ::Texture2D{};
+        depth->id = o.depthTexture;
+        depth->width = o.width;
+        depth->height = o.height;
+        depth->mipmaps = 1;
+        depth->format = PIXELFORMAT_UNCOMPRESSED_R32; // one channel, as a sampler reads a depth texture
+        target->depth = m_nextId++;
+        m_textures[target->depth] = {false, depth};
+    }
+    m_formattedTargets[handle] = std::move(target);
+    return handle;
+}
+
+BRITE::TextureHandle RaylibRenderBackend::RenderTargetDepth(BRITE::TextureHandle target) {
+    auto it = m_formattedTargets.find(target);
+    return it != m_formattedTargets.end() ? it->second->depth : BRITE::NullTextureHandle;
+}
+
+bool RaylibRenderBackend::ReadRenderTargetLinear(BRITE::TextureHandle target, int& width, int& height,
+                                                 std::vector<float>& rgba) {
+    auto it = m_formattedTargets.find(target);
+    if (it == m_formattedTargets.end())
+        return false;
+    const TargetObjects& o = it->second->objects;
+    if (!ReadTargetFloats(o, rgba))
+        return false;
+    width = o.width;
+    height = o.height;
+    return true;
+}
+
+bool RaylibRenderBackend::ReadLastHdrScene(int& width, int& height, std::vector<float>& rgba) const {
+    if (!m_post || m_post->Scene().colour == 0)
+        return false;
+    width = m_post->Scene().width;
+    height = m_post->Scene().height;
+    return ReadTargetFloats(m_post->Scene(), rgba);
+}
+
+bool RaylibRenderBackend::ReadLastBloom(int& width, int& height, std::vector<float>& rgba) const {
+    return m_post && m_post->ReadBloomFloats(rgba, width, height);
+}
+
+bool RaylibRenderBackend::EnsureAuthoredColourShader() {
+    if (m_authoredColourShader != BRITE::NullShaderHandle)
+        return m_authoredColourWorks;
+    m_authoredColourShader =
+        LoadShaderFromMemory(EmbeddedShaders::AUTHORED_COLOUR_VERTEX, EmbeddedShaders::AUTHORED_COLOUR_FRAGMENT);
+    ::Shader* shader = static_cast<::Shader*>(m_shaders[m_authoredColourShader]);
+    // raylib falls back to its default shader when compilation fails; its log says why.
+    m_authoredColourWorks = shader->id != ::rlGetShaderIdDefault();
+    if (!m_authoredColourWorks)
+        spdlog::error(
+            "BRITE: the authored-colour shader failed to compile; every HDR pass is drawn as if Hdr were off");
+    m_authoredColourExposure = ::GetShaderLocation(*shader, "exposure");
+    return m_authoredColourWorks;
+}
+
 int RaylibRenderBackend::RenderTextureSamples(BRITE::TextureHandle target) const {
     auto it = m_textures.find(target);
     if (it == m_textures.end() || !it->second.isRenderTexture)
@@ -1211,6 +1392,21 @@ int RaylibRenderBackend::RenderTextureSamples(BRITE::TextureHandle target) const
 }
 
 void RaylibRenderBackend::UnloadRenderTexture(BRITE::TextureHandle target) {
+    auto formatted = m_formattedTargets.find(target);
+    if (formatted != m_formattedTargets.end()) {
+        // Its objects are its own: freed here, and the raylib structs that named them dropped without raylib's
+        // unload, which would free them a second time.
+        DestroyTarget(formatted->second->objects);
+        if (formatted->second->depth != BRITE::NullTextureHandle) {
+            delete static_cast<::Texture2D*>(m_textures[formatted->second->depth].ptr);
+            m_textures.erase(formatted->second->depth);
+        }
+        delete static_cast<RenderTexture2D*>(m_textures[target].ptr);
+        m_textures.erase(target);
+        m_multisampled.erase(target);
+        m_formattedTargets.erase(formatted);
+        return;
+    }
     auto multisampled = m_multisampled.find(target);
     if (multisampled != m_multisampled.end()) {
         glad_glDeleteRenderbuffers(1, &multisampled->second.colour);
@@ -1231,6 +1427,31 @@ bool RaylibRenderBackend::ReadRenderTexture(BRITE::TextureHandle target, int& wi
     auto it = m_textures.find(target);
     if (it == m_textures.end() || !it->second.isRenderTexture)
         return false;
+
+    // A float target is read as floats and held to 0..1, as an 8-bit target would hold it.
+    auto formatted = m_formattedTargets.find(target);
+    if (formatted != m_formattedTargets.end() && formatted->second->objects.format != RenderTargetFormat::RGBA8) {
+        std::vector<float> rgba;
+        if (!ReadTargetFloats(formatted->second->objects, rgba))
+            return false;
+        width = formatted->second->objects.width;
+        height = formatted->second->objects.height;
+        pixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+        auto byte = [](float v) { return static_cast<unsigned char>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+        const bool hasAlpha = formatted->second->objects.format == RenderTargetFormat::RGBA16F;
+        for (int row = 0; row < height; ++row) {
+            // OpenGL holds the bottom row first; the caller is promised the top row first.
+            const float* source =
+                &rgba[static_cast<std::size_t>(height - 1 - row) * static_cast<std::size_t>(width) * 4];
+            for (int x = 0; x < width; ++x) {
+                BRITE::Color& c = pixels[static_cast<std::size_t>(row) * static_cast<std::size_t>(width) +
+                                         static_cast<std::size_t>(x)];
+                c = {byte(source[x * 4 + 0]), byte(source[x * 4 + 1]), byte(source[x * 4 + 2]),
+                     hasAlpha ? byte(source[x * 4 + 3]) : static_cast<unsigned char>(255)};
+            }
+        }
+        return true;
+    }
 
     RenderTexture2D* rt = static_cast<RenderTexture2D*>(it->second.ptr);
     ::Image image = ::LoadImageFromTexture(rt->texture);
@@ -1260,6 +1481,10 @@ BRITE::TextureHandle RaylibRenderBackend::LoadTexture(const char* fileName) {
 }
 
 void RaylibRenderBackend::UnloadTexture(BRITE::TextureHandle texture) {
+    // A render target's readable depth goes with its target (RenderTargetDepth), never alone.
+    for (const auto& [handle, target] : m_formattedTargets)
+        if (target->depth == texture)
+            return;
     auto it = m_textures.find(texture);
     if (it != m_textures.end() && !it->second.isRenderTexture) {
         ::Texture2D* tex = static_cast<::Texture2D*>(it->second.ptr);

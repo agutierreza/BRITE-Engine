@@ -86,7 +86,9 @@ inline constexpr std::size_t MaxLightsPerPass = 4;
 //
 // Only lit models are fogged. Unlit materials carry their colour as authored,
 // and primitives, sprites and lines never pass through the lit shader, so none
-// of them is fogged. Off unless Enabled.
+// of them is fogged. Off unless Enabled. Under an HDR pass (PostSettings) the
+// fade runs in linear light toward the light that shows as Tint, so a surface
+// beyond End still shows exactly Tint.
 struct FogSettings {
     bool Enabled = false;
     Color Tint = White;
@@ -106,9 +108,11 @@ struct FogSettings {
 //
 // A 3D draw is TRANSLUCENT when it blends with what is behind it:
 //   - a primitive or a 3D line whose tint's alpha is below 255 (a grid has no tint and is opaque);
+//   - every mesh of a model draw whose material's Blend is Additive, cut-out or not;
 //   - a mesh of a model draw whose colour's alpha is below 255 -- the model's own times the draw's AlbedoTint -- or
 //     whose glTF material says BLEND, which also counts the albedo texture's alpha. A cut-out (a draw's AlphaMask, a
-//     file's MASK) is never translucent: it is drawn solid or not at all. A vertex colour's alpha is not read.
+//     file's MASK) is otherwise never translucent: it is drawn solid or not at all. A vertex colour's alpha is not
+//     read.
 // A translucent draw is depth-TESTED, so anything nearer and opaque still hides it, but it writes no depth of its own.
 //
 // The translucent draws come in two groups, drawn in this order:
@@ -121,6 +125,77 @@ struct FogSettings {
 // mesh lists them. A skinned model's mesh is sorted by its box at rest, whatever pose the draw puts it in. Draws of
 // equal depth, and every draw of a pass with no 3D camera, keep the order the pass lists them in: primitives, then
 // models, then lines. There is no order-independent transparency.
+//
+// With PostSettings::Hdr on (below), steps 1 to 3 -- the background callbacks and every 3D draw, in the same order --
+// are drawn in linear light into the backend's own float target; then bloom, then the tone map onto the pass's
+// target; then step 4, the 2D draws and callbacks, over the tone-mapped picture, exactly as without HDR.
+
+// BLOOM: light above Threshold spread over the picture, as a lens and an eye spread a bright light. A chain of
+// half-size copies of the pass's linear light: the first takes only what is above the threshold, each next one is a
+// blurred half of the one before, and they are summed back up, each blurred again on the way, so a bright point gets
+// a tight core and a wide faint halo. Read only by an HDR pass; nothing else carries light above white to spread.
+struct BloomSettings {
+    bool Enabled = false;
+    // How many half-size copies, each half the last: 1 to 8. Each adds a halo twice as wide as the one before and costs
+    // two full-screen draws at its size, so the first is most of the cost.
+    int Levels = 5;
+    // The linear light where bloom starts. An authored white is about 7.24 (ToneCurve.hpp), so at the default of 1 an
+    // authored channel above about 231 of 255 (the light 1 at exposure 1) blooms a little too, and from about 205 on
+    // the knee's soft start below -- a bright sky round a sun, as the eye sees it. Raise it to keep authored colours
+    // out and let only emission past white bloom.
+    float Threshold = 1.0f;
+    // A soft start: light from Threshold * (1 - Knee) to Threshold * (1 + Knee) blooms on a curve rather than
+    // switching on at the threshold. 0 is a hard edge.
+    float Knee = 0.5f;
+    // How much of the spread light is added back onto the picture: the picture plus Intensity times the bloom, before
+    // the tone map. 0 adds none.
+    float Intensity = 0.05f;
+    // How far each level's blur reaches on the way back up, in texels of that level: 1 is the chain's own, larger is
+    // wider and softer.
+    float Radius = 1.0f;
+};
+
+// HDR: a pass whose 3D world is drawn in linear light and shown through a tone curve, so light can go beyond white --
+// a sun, a lamp, glints on water -- and roll off softly into it instead of clipping. OFF BY DEFAULT: a pass that never
+// touches its Post draws exactly as it always has (the lit shader's own Reinhard curve, into whatever target the pass
+// names).
+//
+// With Hdr on and a 3D camera on the pass:
+//   - The background callbacks and the 3D world are drawn into the backend's own float target (RGBA16F), the size of
+//     the pass's target, with Samples samples per pixel, then resolved, bloomed (Bloom) and tone-mapped
+//     (ToneCurve.hpp: ACES at Exposure, then gamma, then a dither too fine to see that keeps a sky's gradient from
+//     banding in 8 bits) onto the pass's target, where the 2D draws and the UI follow, untouched by the curve.
+//   - Lit models are lit in linear light, and EmissionStrength above 1 is real (PBRMaterial::Emission). A glossy
+//     surface's highlight is widened where its normal turns faster than a pixel can show (the geometric specular
+//     anti-aliasing of Kaplanyan et al., 2016, and Tokuyoshi and Kaplanyan, 2019), so a curved or distant glossy
+//     surface gives a highlight, not single-pixel sparkles that bloom would spread.
+//   - WHAT A CALLER AUTHORS AS WHAT THE SCREEN SHOWS STILL SHOWS SO, at any exposure: the clear colour, an unlit
+//     material, the fog's tint at and beyond its End, and the tint of every primitive and 3D line are run backwards
+//     through the curve, ToneCurve::AuthoredToLinear, and show as authored before bloom adds anything. A translucent
+//     colour blends in linear light, so where it lies over another colour it reads a little differently than in an
+//     8-bit pass.
+//   - The background callbacks draw into the float target: what they write is linear light. A callback written for an
+//     8-bit pass shows brighter under the curve.
+//   - The pass's Shader is applied to its 2D draws only, after the tone map -- the client post-processing passes of an
+//     Application keep working on the 8-bit picture -- and not to the 3D world.
+//   - With ShouldClear off, the float target starts empty and the tone-mapped picture is laid over what the pass's
+//     target held, where the 3D world drew; the target shows through elsewhere.
+// Without a 3D camera there is no 3D world to draw, and Hdr changes nothing.
+//
+// A device that cannot draw into a float target, or whose compiler refuses the chain's shaders, draws every HDR pass
+// as if Hdr were off -- the picture it has always drawn -- and logs why once. It never draws a black screen.
+struct PostSettings {
+    bool Hdr = false;
+    // Samples per pixel of the float target: multisample anti-aliasing for the 3D world. 1 or less is none; a count
+    // the device cannot give is lowered to its most. A 4-sample RGBA16F target holds 32 bytes of colour a pixel: on a
+    // weak device this is the lever.
+    int Samples = 4;
+    // Linear light is multiplied by this before the curve: above 1 brighter, below 1 darker. Authored colours are not
+    // moved by it (above).
+    float Exposure = 1.0f;
+    BloomSettings Bloom;
+};
+
 struct RenderPass {
     TextureHandle TargetFramebuffer = NullTextureHandle; // NullTextureHandle means default screen
     ShaderHandle Shader = NullShaderHandle;              // NullShaderHandle means no post-processing shader
@@ -141,6 +216,9 @@ struct RenderPass {
     float AmbientIntensity = 0.0f;
 
     FogSettings Fog;
+
+    // HDR, bloom and the tone curve; off unless Post.Hdr is set (PostSettings).
+    PostSettings Post;
 
     std::vector<ModelDrawCommand> ModelCommands;
     std::vector<SpriteDrawCommand> SpriteCommands;

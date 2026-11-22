@@ -18,6 +18,8 @@
 #define LIGHT_POINT             1
 #define PI 3.14159265358979323846
 
+#include "tone_curve.glsl"
+
 struct Light {
     int enabled;
     int type;
@@ -105,6 +107,14 @@ uniform vec3 fogColor;
 uniform float fogStart;
 uniform float fogEnd;
 
+// 1: the pass is HDR (RenderPass.hpp, PostSettings). The fragment is written as
+// linear light for the backend's tone map, with no curve and no gamma here, and
+// every colour authored as what the screen shows -- the unlit albedo, the fog's
+// colour -- is run back through the curve at this exposure so it still shows
+// as authored. 0: the pass's 8-bit picture, as this shader always drew it.
+uniform int hdrOutput;
+uniform float exposure;
+
 vec2 SampleSphericalMap(vec3 v)
 {
     vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
@@ -188,6 +198,25 @@ vec3 ComputePBR()
     // which is the face whose normal points the other way -- after the normal
     // map, which is authored for the front.
     if (doubleSided == 1 && !gl_FrontFacing) N = -N;
+
+    // SPECULAR ANTI-ALIASING, under an HDR pass only (the 8-bit path is kept
+    // exactly as it drew). A highlight narrower than the pixels that carry it
+    // shows as single-pixel sparkles that come and go as the surface moves, and
+    // light above white makes them bloom. Kaplanyan et al. (2016), Tokuyoshi and Kaplanyan (2019): the
+    // spread of the normal across a pixel, the variance of its screen-space
+    // derivatives, is added to the GGX distribution's alpha squared -- here
+    // roughness^4, as GgxDistribution reads it -- held to 0.18 so a sharp edge
+    // between two flat faces does not turn the whole face matte. A flat or
+    // gently curved surface, whose normal barely moves between pixels, keeps
+    // its roughness.
+    if (hdrOutput == 1)
+    {
+        vec3 du = dFdx(N);
+        vec3 dv = dFdy(N);
+        float variance = 0.25*(dot(du, du) + dot(dv, dv));
+        float kernel = min(2.0*variance, 0.18);
+        roughness = pow(clamp(pow(roughness, 4.0) + kernel, 0.0, 1.0), 0.25);
+    }
 
     vec3 V = normalize(viewPos - fragPosition);
     vec3 R = reflect(-V, N);
@@ -302,11 +331,35 @@ void main()
     {
         vec3 albedo = colDiffuse.rgb*fragColor.rgb;
         if (useTexAlbedo == 1) albedo *= texture(albedoMap, fragTexCoord*tiling + offset).rgb;
+        if (hdrOutput == 1)
+        {
+            // HDR: the authored colour as the light that shows it, plus the
+            // surface's emission, which is light already and is how an unlit
+            // surface goes past white.
+            vec3 emissive = emissiveLight;
+            if (useTexEmissive == 1) emissive *= pow(texture(emissiveMap, fragTexCoord*tiling + offset).rgb, vec3(2.2));
+            finalColor = vec4(AuthoredToLinear(albedo, exposure) + emissive, alpha);
+            return;
+        }
         finalColor = vec4(albedo, alpha);
         return;
     }
 
     vec3 color = ComputePBR();
+    if (hdrOutput == 1)
+    {
+        // HDR: linear light out. The fog fades in linear light toward the light
+        // that shows as fogColor, so beyond fogEnd a surface still shows exactly
+        // fogColor after the tone map.
+        if (fogEnabled == 1)
+        {
+            float fromCamera = length(viewPos - fragPosition);
+            float fade = clamp((fromCamera - fogStart)/max(fogEnd - fogStart, 0.0001), 0.0, 1.0);
+            color = mix(color, AuthoredToLinear(fogColor, exposure), fade);
+        }
+        finalColor = vec4(color, alpha);
+        return;
+    }
     color = color / (color + vec3(1.0)); // Reinhard tonemapping
     color = pow(color, vec3(1.0/2.2));   // Gamma correction
 

@@ -12,6 +12,8 @@ namespace BRITE {
 namespace Backends {
 namespace Raylib {
 
+class PostChain;
+
 class RaylibRenderBackend : public IRenderBackend {
   public:
     // The most vertices LoadModelFromMesh accepts in one mesh. raylib draws
@@ -30,6 +32,15 @@ class RaylibRenderBackend : public IRenderBackend {
 
     BRITE::TextureHandle LoadRenderTexture(int width, int height) override;
     BRITE::TextureHandle LoadMultisampledRenderTexture(int width, int height, int samples) override;
+    BRITE::TextureHandle LoadRenderTarget(const RenderTargetDescription& description) override;
+    BRITE::TextureHandle RenderTargetDepth(BRITE::TextureHandle target) override;
+    // A target made by LoadRenderTarget read back as it holds its colour: linear, unclamped floats, RGBA (an
+    // R11G11B10F target's alpha reads 1), BOTTOM row first, as OpenGL holds it. For tests and tools.
+    bool ReadRenderTargetLinear(BRITE::TextureHandle target, int& width, int& height, std::vector<float>& rgba);
+    // The last HDR pass's float scene target, resolved, and its bloom's first level (every level's light summed), read
+    // back the same way. False when no HDR pass (or no bloom) has been drawn. For tests and tools.
+    bool ReadLastHdrScene(int& width, int& height, std::vector<float>& rgba) const;
+    bool ReadLastBloom(int& width, int& height, std::vector<float>& rgba) const;
     void UnloadRenderTexture(BRITE::TextureHandle target) override;
 
     // How many samples per pixel a render texture is drawn with: 1 for an
@@ -112,7 +123,12 @@ class RaylibRenderBackend : public IRenderBackend {
     void EnsurePbrShader();
     // Hand the pass's lights, ambient and camera position to the PBR shader.
     // Once per pass, before the model commands.
-    void ApplyPassLighting(const BRITE::RenderPass& pass);
+    void ApplyPassLighting(const BRITE::RenderPass& pass, bool hdr);
+    // The pass's 3D world, into whatever is bound; `hdr` for an HDR pass's float target (SubmitRenderPass).
+    void Draw3D(const BRITE::RenderPass& pass, bool hdr);
+    // The shader primitives and 3D lines are drawn through under an HDR pass, compiled on first use; false when the
+    // device refused it.
+    bool EnsureAuthoredColourShader();
     // The per-mesh material scalars and which texture maps are bound.
     // Which textures a mesh's own material brought with it, each a real
     // texture and not the loader's placeholder.
@@ -168,6 +184,8 @@ class RaylibRenderBackend : public IRenderBackend {
         int fogColor = -1;
         int fogStart = -1;
         int fogEnd = -1;
+        int hdrOutput = -1;
+        int exposure = -1;
         struct LightLocations {
             int enabled = -1;
             int type = -1;
@@ -197,6 +215,15 @@ class RaylibRenderBackend : public IRenderBackend {
         int samples = 0;
     };
     std::unordered_map<BRITE::TextureHandle, MultisampledTarget> m_multisampled;
+
+    // The HDR chain (RaylibPostChain.hpp), made on the first HDR pass; defined beside the code that uses it.
+    std::shared_ptr<PostChain> m_post;
+    BRITE::ShaderHandle m_authoredColourShader = BRITE::NullShaderHandle;
+    bool m_authoredColourWorks = false;
+    int m_authoredColourExposure = -1;
+    // The render targets LoadRenderTarget made, which own their objects.
+    struct FormattedTarget;
+    std::unordered_map<BRITE::TextureHandle, std::shared_ptr<FormattedTarget>> m_formattedTargets;
 
     // Track raylib ::Shader objects by ShaderHandle
     std::unordered_map<BRITE::ShaderHandle, void*> m_shaders;
