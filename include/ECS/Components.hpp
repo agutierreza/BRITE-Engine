@@ -158,7 +158,7 @@ struct RevoluteJoint3DComponent {
 
     Vector3 LocalAnchorA = {0.0f, 0.0f, 0.0f}; // In pixels
     Vector3 LocalAnchorB = {0.0f, 0.0f, 0.0f}; // In pixels
-    Vector3 Axis = {0.0f, 0.0f, 1.0f};         // The rotation axis
+    Vector3 Axis = {0.0f, 0.0f, 1.0f};         // The rotation axis, in the space of the body the joint is on
 
     float ReferenceAngle = 0.0f; // In degrees
     bool EnableLimit = false;
