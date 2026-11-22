@@ -35,6 +35,37 @@ struct ModelDrawCommand {
     bool CastsShadow = true;
 };
 
+// One copy of an instanced draw's model (InstancedModelDrawCommand): placed as a ModelDrawCommand places its model --
+// scaled, then rotated, then moved, after the model's own transform -- and tinted: its Tint multiplies the draw's
+// AlbedoTint, alpha included, as a vertex colour does.
+struct ModelInstance {
+    Vector3 Position = {0.0f, 0.0f, 0.0f};
+    Quaternion Rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+    Vector3 Scale = {1.0f, 1.0f, 1.0f};
+    Color Tint = White;
+};
+
+// MANY COPIES OF ONE MODEL IN ONE DRAW PER MESH: windows, lanterns, grass, debris. Each mesh of the model is drawn once
+// for every instance with one instanced draw, so the CPU pays for the meshes, not for the copies; the GPU still pays
+// for every triangle of every copy. What a copy looks like is what a ModelDrawCommand of the same model and material
+// draws at its placement, lit, under HDR, fog, shadows and reflections alike, but for:
+//   - a skinned model is drawn at rest: the copies share no pose;
+//   - a mesh is translucent (RenderPass.hpp, the order) when the model draw's rules make it so, or when any copy's Tint
+//     alpha is below 255. A translucent mesh is drawn in the translucent stage as ONE sorted draw, keyed by the centre
+//     of its copies' positions, with the copies inside it drawn farthest first; a layer's copies (DepthWrite off) are
+//     drawn in the order listed. Copies of one mesh that interpenetrate blend in that order, as one mesh's triangles
+//     do;
+//   - the draw casts (CastsShadow, as a model draw's) per copy: each cascade draws the copies whose bounding sphere
+//     reaches it, in one draw per mesh.
+// Nothing is culled against the camera: the GPU clips what lies outside the view, and a client that knows its copies'
+// layout culls them cheaper than BRITE could. An empty Instances draws nothing.
+struct InstancedModelDrawCommand {
+    ModelHandle Model = NullModelHandle;
+    PBRMaterial Material;
+    std::vector<ModelInstance> Instances;
+    bool CastsShadow = true;
+};
+
 struct SpriteDrawCommand {
     PBRMaterial Material;
     Rectangle SourceRect;
@@ -103,8 +134,9 @@ struct FogSettings {
 
 // THE ORDER A PASS IS DRAWN IN, whatever order its command lists hold:
 //   1. the background callbacks;
-//   2. the OPAQUE 3D draws, depth-tested and writing depth: the models first, each as it is drawn, in the order listed;
-//      then the primitives, then the 3D lines, which the backend holds in a batch and draws together after the models;
+//   2. the OPAQUE 3D draws, depth-tested and writing depth: the models first, each as it is drawn, in the order listed,
+//      then the instanced models (InstancedModelDrawCommand) in the order listed; then the primitives, then the 3D
+//      lines, which the backend holds in a batch and draws together after the models;
 //   3. the TRANSLUCENT 3D draws (below), after everything in 2, blended over what is really there;
 //   4. the 2D draws: sprites, lines, rectangles, and the world and UI callbacks.
 // Within the opaque draws the order shows only at exactly equal depth, where the later draw wins: a primitive beats a
@@ -335,6 +367,8 @@ struct RenderPass {
     ReflectionSettings Reflections;
 
     std::vector<ModelDrawCommand> ModelCommands;
+    // Many copies of one model, one draw per mesh (InstancedModelDrawCommand); drawn after ModelCommands in each stage.
+    std::vector<InstancedModelDrawCommand> InstancedModelCommands;
     std::vector<SpriteDrawCommand> SpriteCommands;
     std::vector<LineDrawCommand> LineCommands;
     std::vector<RectDrawCommand> RectCommands;

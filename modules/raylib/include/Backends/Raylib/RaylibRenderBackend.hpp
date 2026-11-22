@@ -14,6 +14,7 @@ namespace Raylib {
 
 class PostChain;
 class ShadowAtlas;
+class InstanceStream;
 
 class RaylibRenderBackend : public IRenderBackend {
   public:
@@ -58,7 +59,8 @@ class RaylibRenderBackend : public IRenderBackend {
 
     // What the last pass with shadows drew, one entry per cascade, nearest first; empty when the last pass drew none.
     // For tests and tools: the cascade's square in the light's view (its centre, snapped to whole texels, and its
-    // half-size), a texel's size in world units, its far edge along the view, and how many caster meshes were drawn.
+    // half-size), a texel's size in world units, its far edge along the view, and how many caster draws it took: one
+    // a mesh of a model draw, one a mesh of an instanced draw for all its copies that reach the cascade.
     struct ShadowCascadeReport {
         float CentreX = 0.0f;
         float CentreY = 0.0f;
@@ -69,6 +71,17 @@ class RaylibRenderBackend : public IRenderBackend {
     };
     const std::vector<ShadowCascadeReport>& LastShadowCascades() const {
         return m_shadowReport;
+    }
+    // How many draw calls the last pass's lit model meshes took -- a ModelDrawCommand's one per mesh, an
+    // InstancedModelDrawCommand's one per mesh for all its copies -- its planar reflection's included, its shadows'
+    // not. For tests and measurements.
+    int LastPassModelDrawCalls() const {
+        return m_modelDrawCalls;
+    }
+    // For tests: every instanced variant of the lit shader that has shadows fails to compile from now on, as on a
+    // device that refuses it, so what a refusal does to the other draws can be seen.
+    void RefuseInstancedShadowsForTest() {
+        m_refuseInstancedShadowsForTest = true;
     }
     // THE LIT SHADER'S VARIANTS (pbr.fs): one program per feature set a pass asks for, compiled on first use. How many
     // exist, and whether the variant for these features has a uniform of this name -- a variant without shadows has
@@ -160,8 +173,10 @@ class RaylibRenderBackend : public IRenderBackend {
         int shadowCascades = 0; // 0: no shadows
         int shadowFilter = 1;   // ShadowFilter
         bool reflections = false;
+        bool instanced = false; // the vertex stage's: an instanced draw (pbr.vs)
         int Key() const {
-            return (hdr ? 1 : 0) | (shadowCascades << 1) | (shadowFilter << 4) | (reflections ? 64 : 0);
+            return (hdr ? 1 : 0) | (shadowCascades << 1) | (shadowFilter << 4) | (reflections ? 64 : 0) |
+                   (instanced ? 128 : 0);
         }
     };
     // Compile the variant of the embedded PBR shader on first use, cache its uniform locations, and make it the one
@@ -285,6 +300,11 @@ class RaylibRenderBackend : public IRenderBackend {
     }
     int m_shadowDepthAlphaMask = -1;
     int m_shadowDepthAlphaCutoff = -1;
+    // The depth pass's instanced variant (shadow_depth.vs, BRITE_INSTANCED), compiled beside it, and its locations.
+    BRITE::ShaderHandle m_shadowDepthInstancedShader = BRITE::NullShaderHandle;
+    bool m_shadowDepthInstancedWorks = false;
+    int m_shadowDepthInstancedAlphaMask = -1;
+    int m_shadowDepthInstancedAlphaCutoff = -1;
     struct MeshSphere {
         BRITE::Vector3 centre;
         float radius;
@@ -293,6 +313,15 @@ class RaylibRenderBackend : public IRenderBackend {
     struct ShadowFrame;
     std::shared_ptr<ShadowFrame> m_shadowFrame;
     std::vector<ShadowCascadeReport> m_shadowReport;
+
+    // INSTANCED DRAWS (RenderPass.hpp, InstancedModelDrawCommand): the stream their copies' attributes go through
+    // (RaylibPostChain.hpp), made on the first, and the draw calls the pass's lit model meshes took.
+    std::shared_ptr<InstanceStream> m_instances;
+    int m_modelDrawCalls = 0;
+    bool m_refuseInstancedShadowsForTest = false;
+    // The pose index a skinned model takes in an instanced draw -- at rest, and never one a ModelDrawCommand's index
+    // reaches -- so PoseForDraw keeps the two apart.
+    static constexpr std::size_t InstancedPoseIndex = static_cast<std::size_t>(-1);
 
     // THE PLANAR REFLECTION (ReflectionSettings): its targets, kept by size, and the mirrored camera's view and
     // projection for the reflecting draws of the pass being drawn. m_planarThisPass: the pass drew one, and its draws

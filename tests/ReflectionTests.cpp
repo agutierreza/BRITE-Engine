@@ -282,6 +282,27 @@ TEST_F(Reflection, ACameraBelowThePlaneReflectsTheSky) {
     }
 }
 
+// AN INSTANCED COPY IS IN THE PLANAR REFLECTION as a model draw is: the planar case with the red cube drawn as one copy
+// of an instanced draw at the model's own place (InstancedModelDrawCommand). The middle shows its reflection, the
+// same 1.2056 of red, and no green or blue.
+// Mutation: the mirrored world drawn without the instanced draws -> the blue sky in the water, red.
+TEST_F(Reflection, AnInstancedCopyIsInThePlanarReflection) {
+    const BRITE::ModelHandle water = Water(0.0f);
+    BRITE::RenderPass pass = PlanarPass(water, true);
+    BRITE::InstancedModelDrawCommand copies;
+    copies.Model = pass.ModelCommands[1].Model;
+    copies.Material = pass.ModelCommands[1].Material;
+    copies.Instances.resize(1); // at the origin, unturned, unscaled, white: the cube where the model has it
+    pass.ModelCommands.pop_back();
+    pass.InstancedModelCommands = {copies};
+    WaterPicture(pass);
+    const std::vector<float> linear = LinearScene();
+    const std::size_t middle = static_cast<std::size_t>((SIZE - 1 - 31) * SIZE + 31) * 4;
+    EXPECT_NEAR(linear[middle + 0], 1.2056f, 0.06f);
+    EXPECT_NEAR(linear[middle + 1], 0.0f, 0.01f);
+    EXPECT_NEAR(linear[middle + 2], 0.0f, 0.01f);
+}
+
 // THE SAME IN AN 8-BIT PASS: the reflection is drawn in the colours the screen shows, into an 8-bit target, and mixed
 // over the finished colour. The water is black, so the middle shows the cube's red, 1, times the same F, 0.166481:
 // 0.166481 x 255 = 42.45, and neither green nor blue.

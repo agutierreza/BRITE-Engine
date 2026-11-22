@@ -1,7 +1,8 @@
 #pragma once
 
-// PRIVATE to the raylib render backend: render targets with a colour format and a readable depth, and the HDR pass's
-// chain -- its float scene target, the bloom chain and the tone map (RenderPass.hpp, PostSettings). Raw OpenGL 3.3
+// PRIVATE to the raylib render backend: render targets with a colour format and a readable depth, the HDR pass's
+// chain -- its float scene target, the bloom chain and the tone map (RenderPass.hpp, PostSettings) -- the sun-shadow
+// atlas, and the instanced draws' attribute stream. Raw OpenGL 3.3
 // through raylib's own loader, glad, where rlgl has no call; no raylib type in this header.
 
 #include "Backends/IRenderBackend.hpp"
@@ -164,6 +165,31 @@ class ShadowAtlas {
     int m_savedFramebuffer = 0;
     int m_savedViewport[4] = {0, 0, 0, 0};
     void Free();
+};
+
+// THE INSTANCE STREAM (RenderPass.hpp, InstancedModelDrawCommand): an instanced draw's attributes, one set per copy --
+// its placement, a column-major 4x4 as a ModelDrawCommand's model matrix is, at locations 9 to 12 (raylib's own for
+// instanceTransform), and its tint as 0..1 floats at 13 -- streamed into one buffer the backend owns. pbr.vs and
+// shadow_depth.vs read them in their BRITE_INSTANCED variants.
+constexpr int InstanceTransformLocation = 9;
+constexpr int InstanceTintLocation = 13;
+struct InstanceData {
+    float transform[16];
+    float tint[4];
+};
+class InstanceStream {
+  public:
+    InstanceStream() = default;
+    ~InstanceStream();
+    InstanceStream(const InstanceStream&) = delete;
+    InstanceStream& operator=(const InstanceStream&) = delete;
+    // Draws the vertex array `vao` -- a mesh's: `elements` indices when it is indexed, else `vertices` vertices -- once
+    // per copy in `data`, through the program and uniforms already set. Leaves the vertex array as it found it, the
+    // instance attributes off and their divisors 0, and nothing bound.
+    void Draw(unsigned int vao, bool indexed, int elements, int vertices, const InstanceData* data, int count);
+
+  private:
+    unsigned int m_buffer = 0;
 };
 
 } // namespace BRITE::Backends::Raylib

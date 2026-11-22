@@ -343,6 +343,12 @@ struct RaylibRenderBackend::PlanarState {
 namespace {
 // The texture unit the planar reflection is bound to for a pass's lit draws, beside the shadow atlas's.
 constexpr int PlanarTextureUnit = 13;
+
+// Whether raylib refused a shader it was asked to load: a stage that fails to COMPILE leaves no program at all (id 0),
+// and a program that fails to LINK is replaced by raylib's default one. Either is a refusal.
+bool ShaderRefused(const ::Shader& shader) {
+    return shader.id == 0 || shader.id == ::rlGetShaderIdDefault();
+}
 // The texture units the pass's environment map is bound to for its lit draws, as the 2D panorama pbr.fs samples:
 // irradiance and prefilter. raylib's DrawMesh binds a material's irradiance and prefilter slots as CUBEMAPS, which a
 // panorama is not -- the bind fails and the shader reads black -- so the backend binds them itself, beside the maps.
@@ -614,6 +620,7 @@ void RaylibRenderBackend::UseBlend(bool additive) const {
 
 void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     ++m_passSerial;
+    m_modelDrawCalls = 0;
     // The pass's own target, and its size: a render texture's, or the window's drawing surface.
     RenderTexture2D* targetTexture = nullptr;
     int targetWidth = ::GetRenderWidth();
@@ -936,24 +943,123 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
             drawPrimitive(cmd);
     }
 
-    if (!pass.ModelCommands.empty()) {
-        // The variant of the lit shader for what this pass uses, and no more (pbr.fs, THE VARIANTS).
-        PbrVariant variant;
-        variant.hdr = hdr;
-        for (const BRITE::ModelDrawCommand& cmd : pass.ModelCommands)
-            variant.reflections = variant.reflections || cmd.Material.Reflection != BRITE::ReflectionMode::None;
-        if (m_shadowFrame && m_shadowFrame->cascades > 0) {
-            variant.shadowCascades = m_shadowFrame->cascades;
-            variant.shadowFilter = static_cast<int>(pass.Shadows.Filter);
-        }
-        EnsurePbrShader(variant);
-        ApplyPassLighting(pass);
+    // THE LIT SHADER, the variant for what this pass uses and no more (pbr.fs, THE VARIANTS): a model draw's, and the
+    // instanced one beside it when the pass has instanced draws. Each program the pass uses is given the pass's
+    // lighting once, the first time it is used; a program keeps its uniforms, so changing between the two costs a
+    // lookup.
+    PbrVariant variant;
+    variant.hdr = hdr;
+    for (const BRITE::ModelDrawCommand& cmd : pass.ModelCommands)
+        variant.reflections = variant.reflections || cmd.Material.Reflection != BRITE::ReflectionMode::None;
+    for (const BRITE::InstancedModelDrawCommand& cmd : pass.InstancedModelCommands)
+        variant.reflections = variant.reflections || cmd.Material.Reflection != BRITE::ReflectionMode::None;
+    if (m_shadowFrame && m_shadowFrame->cascades > 0) {
+        variant.shadowCascades = m_shadowFrame->cascades;
+        variant.shadowFilter = static_cast<int>(pass.Shadows.Filter);
     }
+    bool lit[2] = {false, false};
+    auto useVariant = [&](bool instanced) {
+        PbrVariant wanted = variant;
+        wanted.instanced = instanced;
+        EnsurePbrShader(wanted);
+        if (!lit[instanced ? 1 : 0]) {
+            ApplyPassLighting(pass);
+            lit[instanced ? 1 : 0] = true;
+        }
+    };
+    if (!pass.ModelCommands.empty())
+        useVariant(false);
 
     // Whether one mesh of a model draw is translucent (MeshTranslucent).
     auto meshTranslucent = [&](const BRITE::ModelDrawCommand& cmd, const ::Model& rlModel, int m) {
         const int slot = MeshMaterialSlot(rlModel.meshMaterial[m], rlModel.materialCount);
         return MeshTranslucent(cmd, slot, rlModel.materials[slot].maps[MATERIAL_MAP_DIFFUSE].color.a);
+    };
+
+    // A texture the draw command names, or nothing when it names none or the
+    // handle is not a plain texture.
+    auto commandTexture = [&](TextureHandle handle) -> const ::Texture2D* {
+        if (handle == BRITE::NullTextureHandle)
+            return nullptr;
+        auto texIt = m_textures.find(handle);
+        if (texIt == m_textures.end() || texIt->second.isRenderTexture)
+            return nullptr;
+        return static_cast<const ::Texture2D*>(texIt->second.ptr);
+    };
+
+    // ONE MESH of a draw, through the lit shader in use, with ITS OWN material: a model loaded from a file keeps its
+    // materials in slots 1..n (raylib reserves slot 0 for a default), and every one of them is drawn lit. The material
+    // is copied, maps and all, so nothing below changes the model: the draw's textures replace the model's own for this
+    // draw only, and a slot the draw leaves empty keeps what the model brought. `issue` draws the mesh with the
+    // material made: once (a model draw) or once per copy (an instanced one).
+    auto drawMesh = [&](BRITE::ModelHandle handle, const BRITE::PBRMaterial& drawMaterial, const ::Model& rlModel,
+                        int m, bool writesDepth, const ::Color& tint, auto&& issue) {
+        const ::Shader& pbrShader = *static_cast<::Shader*>(m_shaders[m_pbrShader]);
+        const std::pair<TextureHandle, int> overrides[] = {
+            {drawMaterial.AlbedoMap, MATERIAL_MAP_ALBEDO},       {drawMaterial.NormalMap, MATERIAL_MAP_NORMAL},
+            {drawMaterial.RoughnessMap, MATERIAL_MAP_ROUGHNESS}, {drawMaterial.MetallicMap, MATERIAL_MAP_METALNESS},
+            {drawMaterial.EmissionMap, MATERIAL_MAP_EMISSION},   {drawMaterial.AOMap, MATERIAL_MAP_OCCLUSION},
+        };
+        const int slot = MeshMaterialSlot(rlModel.meshMaterial[m], rlModel.materialCount);
+        const ::Material& own = rlModel.materials[slot];
+        ::MaterialMap maps[MATERIAL_MAPS_PER_MATERIAL];
+        std::memcpy(maps, own.maps, sizeof(maps));
+        ::Material material = own;
+        material.maps = maps;
+        material.shader = pbrShader;
+
+        // The loader's placeholder is a 1x1 white texture, which is no texture.
+        auto owns = [&](int map) {
+            const unsigned int id = maps[map].texture.id;
+            return id != 0 && id != ::rlGetTextureIdDefault();
+        };
+        OwnMaps ownMaps;
+        ownMaps.albedo = owns(MATERIAL_MAP_ALBEDO);
+        ownMaps.emission = owns(MATERIAL_MAP_EMISSION);
+        ownMaps.metalness = owns(MATERIAL_MAP_METALNESS);
+        ownMaps.roughness = owns(MATERIAL_MAP_ROUGHNESS);
+        ownMaps.occlusion = owns(MATERIAL_MAP_OCCLUSION);
+        ownMaps.normal = owns(MATERIAL_MAP_NORMAL);
+
+        for (const auto& [mapHandle, mapIndex] : overrides) {
+            if (const ::Texture2D* texture = commandTexture(mapHandle))
+                maps[mapIndex].texture = *texture;
+        }
+        // The environment belongs to the pass, never to the model: bound by ApplyPassLighting as the 2D panorama it
+        // is, so these slots, which DrawMesh would bind as cubemaps, are left empty.
+        maps[MATERIAL_MAP_IRRADIANCE].texture = ::Texture2D{0};
+        maps[MATERIAL_MAP_PREFILTER].texture = ::Texture2D{0};
+
+        const bool bothSides = ApplyMaterial(drawMaterial, ownMaps, FileMaterial(handle, slot));
+
+        // The draw tint times the material's own colour, as DrawModelEx does.
+        const ::Color ownColour = maps[MATERIAL_MAP_DIFFUSE].color;
+        maps[MATERIAL_MAP_DIFFUSE].color = {static_cast<unsigned char>((static_cast<int>(ownColour.r) * tint.r) / 255),
+                                            static_cast<unsigned char>((static_cast<int>(ownColour.g) * tint.g) / 255),
+                                            static_cast<unsigned char>((static_cast<int>(ownColour.b) * tint.b) / 255),
+                                            static_cast<unsigned char>((static_cast<int>(ownColour.a) * tint.a) / 255)};
+
+        // Culling off for this mesh alone, and back on before the next.
+        if (bothSides)
+            ::rlDisableBackfaceCulling();
+        // Depth writes off for this mesh alone -- the draw's own DepthWrite, and
+        // every translucent mesh -- and back on before anything else: the next
+        // mesh, and the primitives, which rlgl batches and draws later.
+        if (!writesDepth)
+            ::rlDisableDepthMask();
+        // An additive mesh adds its colour, times its alpha, to what is behind it; and back to the ordinary blend
+        // before anything else is drawn.
+        const bool additive = drawMaterial.Blend == BRITE::BlendMode::Additive;
+        if (additive)
+            UseBlend(true);
+        issue(rlModel.meshes[m], material);
+        ++m_modelDrawCalls;
+        if (additive)
+            UseBlend(false);
+        if (!writesDepth)
+            ::rlEnableDepthMask();
+        if (bothSides)
+            ::rlEnableBackfaceCulling();
     };
 
     // One model draw's meshes: the opaque ones in the opaque stage, or in the translucent stage the one mesh
@@ -967,23 +1073,7 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
 
         const ::Model* rlModel = static_cast<::Model*>(it->second);
         const bool writesDepth = !translucentStage && cmd.Material.DepthWrite;
-        const ::Shader& pbrShader = *static_cast<::Shader*>(m_shaders[m_pbrShader]);
 
-        // A texture the draw command names, or nothing when it names none or the
-        // handle is not a plain texture.
-        auto commandTexture = [&](TextureHandle handle) -> const ::Texture2D* {
-            if (handle == BRITE::NullTextureHandle)
-                return nullptr;
-            auto texIt = m_textures.find(handle);
-            if (texIt == m_textures.end() || texIt->second.isRenderTexture)
-                return nullptr;
-            return static_cast<const ::Texture2D*>(texIt->second.ptr);
-        };
-        const std::pair<TextureHandle, int> overrides[] = {
-            {cmd.Material.AlbedoMap, MATERIAL_MAP_ALBEDO},       {cmd.Material.NormalMap, MATERIAL_MAP_NORMAL},
-            {cmd.Material.RoughnessMap, MATERIAL_MAP_ROUGHNESS}, {cmd.Material.MetallicMap, MATERIAL_MAP_METALNESS},
-            {cmd.Material.EmissionMap, MATERIAL_MAP_EMISSION},   {cmd.Material.AOMap, MATERIAL_MAP_OCCLUSION},
-        };
         // The model's placement, built exactly as DrawModelEx builds it (scale,
         // then rotation, then translation, after the model's own transform), so
         // a model lands where it always has.
@@ -1004,13 +1094,6 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
         // opaque stage draws a command's opaque meshes, the translucent stage one mesh at a time, interleaved with
         // other draws -- so every mesh is drawn in its own command's pose, and two draws in one pass never share one.
         bool posed = false;
-
-        // Mesh by mesh, each with ITS OWN material: a model loaded from a file
-        // keeps its materials in slots 1..n (raylib reserves slot 0 for a
-        // default), and every one of them is drawn lit. The material is copied,
-        // maps and all, so nothing below changes the model: the draw command's
-        // textures replace the model's own for this draw only, and a slot the
-        // command leaves empty keeps what the model brought.
         for (int m = 0; m < rlModel->meshCount; ++m) {
             if ((onlyMesh >= 0 && m != onlyMesh) || meshTranslucent(cmd, *rlModel, m) != translucentStage)
                 continue;
@@ -1018,71 +1101,126 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
                 PoseForDraw(cmd.Model, cmd.Pose, static_cast<std::size_t>(&cmd - pass.ModelCommands.data()));
                 posed = true;
             }
-            const int slot = MeshMaterialSlot(rlModel->meshMaterial[m], rlModel->materialCount);
-            const ::Material& own = rlModel->materials[slot];
-            ::MaterialMap maps[MATERIAL_MAPS_PER_MATERIAL];
-            std::memcpy(maps, own.maps, sizeof(maps));
-            ::Material material = own;
-            material.maps = maps;
-            material.shader = pbrShader;
-
-            // The loader's placeholder is a 1x1 white texture, which is no texture.
-            auto owns = [&](int map) {
-                const unsigned int id = maps[map].texture.id;
-                return id != 0 && id != ::rlGetTextureIdDefault();
-            };
-            OwnMaps ownMaps;
-            ownMaps.albedo = owns(MATERIAL_MAP_ALBEDO);
-            ownMaps.emission = owns(MATERIAL_MAP_EMISSION);
-            ownMaps.metalness = owns(MATERIAL_MAP_METALNESS);
-            ownMaps.roughness = owns(MATERIAL_MAP_ROUGHNESS);
-            ownMaps.occlusion = owns(MATERIAL_MAP_OCCLUSION);
-            ownMaps.normal = owns(MATERIAL_MAP_NORMAL);
-
-            for (const auto& [handle, mapIndex] : overrides) {
-                if (const ::Texture2D* texture = commandTexture(handle))
-                    maps[mapIndex].texture = *texture;
-            }
-            // The environment belongs to the pass, never to the model: bound by ApplyPassLighting as the 2D panorama it
-            // is, so these slots, which DrawMesh would bind as cubemaps, are left empty.
-            maps[MATERIAL_MAP_IRRADIANCE].texture = ::Texture2D{0};
-            maps[MATERIAL_MAP_PREFILTER].texture = ::Texture2D{0};
-
-            const bool bothSides = ApplyMaterial(cmd.Material, ownMaps, FileMaterial(cmd.Model, slot));
-
-            // The draw tint times the material's own colour, as DrawModelEx does.
-            const ::Color ownColour = maps[MATERIAL_MAP_DIFFUSE].color;
-            maps[MATERIAL_MAP_DIFFUSE].color = {
-                static_cast<unsigned char>((static_cast<int>(ownColour.r) * tint.r) / 255),
-                static_cast<unsigned char>((static_cast<int>(ownColour.g) * tint.g) / 255),
-                static_cast<unsigned char>((static_cast<int>(ownColour.b) * tint.b) / 255),
-                static_cast<unsigned char>((static_cast<int>(ownColour.a) * tint.a) / 255)};
-
-            // Culling off for this mesh alone, and back on before the next.
-            if (bothSides)
-                ::rlDisableBackfaceCulling();
-            // Depth writes off for this mesh alone -- the draw's own DepthWrite, and
-            // every translucent mesh -- and back on before anything else: the next
-            // mesh, and the primitives, which rlgl batches and draws later.
-            if (!writesDepth)
-                ::rlDisableDepthMask();
-            // An additive mesh adds its colour, times its alpha, to what is behind it; and back to the ordinary blend
-            // before anything else is drawn.
-            const bool additive = cmd.Material.Blend == BRITE::BlendMode::Additive;
-            if (additive)
-                UseBlend(true);
-            ::DrawMesh(rlModel->meshes[m], material, transform);
-            if (additive)
-                UseBlend(false);
-            if (!writesDepth)
-                ::rlEnableDepthMask();
-            if (bothSides)
-                ::rlEnableBackfaceCulling();
+            drawMesh(cmd.Model, cmd.Material, *rlModel, m, writesDepth, tint,
+                     [&](const ::Mesh& mesh, const ::Material& material) { ::DrawMesh(mesh, material, transform); });
         }
     };
 
     for (const auto& cmd : pass.ModelCommands)
         drawModel(cmd, false, -1);
+
+    // INSTANCED DRAWS (InstancedModelDrawCommand). Each command's copies become the stream's attributes once, in the
+    // order listed: a placement as a model draw's (the model's own transform, then scale, rotation, translation) and a
+    // tint. A mesh is translucent by a model draw's rules applied to `proxies` -- the command's model and material, the
+    // material's alpha times the faintest copy's -- so one faint copy makes the whole mesh translucent.
+    std::vector<std::vector<InstanceData>> instanceData(pass.InstancedModelCommands.size());
+    std::vector<BRITE::ModelDrawCommand> proxies(pass.InstancedModelCommands.size());
+    for (std::size_t i = 0; i < pass.InstancedModelCommands.size(); ++i) {
+        const BRITE::InstancedModelDrawCommand& cmd = pass.InstancedModelCommands[i];
+        auto it = m_models.find(cmd.Model);
+        if (cmd.Model == BRITE::NullModelHandle || it == m_models.end() || cmd.Instances.empty())
+            continue;
+        const ::Model& rlModel = *static_cast<::Model*>(it->second);
+        int faintest = 255;
+        std::vector<InstanceData>& data = instanceData[i];
+        data.resize(cmd.Instances.size());
+        for (std::size_t k = 0; k < cmd.Instances.size(); ++k) {
+            const BRITE::ModelInstance& copy = cmd.Instances[k];
+            BRITE::ModelDrawCommand placed;
+            placed.Position = copy.Position;
+            placed.Rotation = copy.Rotation;
+            placed.Scale = copy.Scale;
+            const ::float16 columns = ::MatrixToFloatV(DrawTransform(rlModel, placed));
+            std::memcpy(data[k].transform, columns.v, sizeof(data[k].transform));
+            data[k].tint[0] = copy.Tint.r / 255.0f;
+            data[k].tint[1] = copy.Tint.g / 255.0f;
+            data[k].tint[2] = copy.Tint.b / 255.0f;
+            data[k].tint[3] = copy.Tint.a / 255.0f;
+            faintest = std::min(faintest, static_cast<int>(copy.Tint.a));
+        }
+        proxies[i].Model = cmd.Model;
+        proxies[i].Material = cmd.Material;
+        proxies[i].Material.AlbedoTint.a =
+            static_cast<unsigned char>((static_cast<int>(cmd.Material.AlbedoTint.a) * faintest) / 255);
+    }
+
+    // One instanced draw of a mesh: what raylib's DrawMesh does for one placement, done once for every copy in `data`
+    // -- the material's colour and maps bound, the view and projection as the matrix, the model matrix per copy.
+    auto issueInstanced = [&](const ::Mesh& mesh, const ::Material& material, const InstanceData* data, int count) {
+        if (!m_instances)
+            m_instances = std::make_shared<InstanceStream>();
+        const ::Shader& shader = material.shader;
+        ::rlEnableShader(shader.id);
+        if (shader.locs[SHADER_LOC_COLOR_DIFFUSE] != -1) {
+            const ::Color c = material.maps[MATERIAL_MAP_DIFFUSE].color;
+            const float values[4] = {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f};
+            ::rlSetUniform(shader.locs[SHADER_LOC_COLOR_DIFFUSE], values, SHADER_UNIFORM_VEC4, 1);
+        }
+        const ::Matrix view = ::rlGetMatrixModelview();
+        const ::Matrix projection = ::rlGetMatrixProjection();
+        if (shader.locs[SHADER_LOC_MATRIX_VIEW] != -1)
+            ::rlSetUniformMatrix(shader.locs[SHADER_LOC_MATRIX_VIEW], view);
+        if (shader.locs[SHADER_LOC_MATRIX_PROJECTION] != -1)
+            ::rlSetUniformMatrix(shader.locs[SHADER_LOC_MATRIX_PROJECTION], projection);
+        for (int map = 0; map < MATERIAL_MAPS_PER_MATERIAL; ++map) {
+            if (material.maps[map].texture.id == 0)
+                continue;
+            ::rlActiveTextureSlot(map);
+            if (map == MATERIAL_MAP_IRRADIANCE || map == MATERIAL_MAP_PREFILTER || map == MATERIAL_MAP_CUBEMAP)
+                ::rlEnableTextureCubemap(material.maps[map].texture.id);
+            else
+                ::rlEnableTexture(material.maps[map].texture.id);
+            ::rlSetUniform(shader.locs[SHADER_LOC_MAP_DIFFUSE + map], &map, SHADER_UNIFORM_INT, 1);
+        }
+        // The copies' placements carry the model matrix; rlgl's own transform stack is empty inside a pass.
+        ::rlSetUniformMatrix(shader.locs[SHADER_LOC_MATRIX_MVP], ::MatrixMultiply(view, projection));
+        m_instances->Draw(mesh.vaoId, mesh.indices != nullptr, mesh.triangleCount * 3, mesh.vertexCount, data, count);
+        for (int map = 0; map < MATERIAL_MAPS_PER_MATERIAL; ++map) {
+            if (material.maps[map].texture.id == 0)
+                continue;
+            ::rlActiveTextureSlot(map);
+            if (map == MATERIAL_MAP_IRRADIANCE || map == MATERIAL_MAP_PREFILTER || map == MATERIAL_MAP_CUBEMAP)
+                ::rlDisableTextureCubemap();
+            else
+                ::rlDisableTexture();
+        }
+        ::rlActiveTextureSlot(0);
+        ::rlDisableShader();
+    };
+
+    // One instanced command's meshes, as drawModel draws a model draw's: the opaque ones, or the one translucent mesh
+    // `onlyMesh` names with the copies in `data` (sorted, for a sorted draw). A skinned model is drawn at rest.
+    auto drawInstanced = [&](std::size_t index, bool translucentStage, int onlyMesh,
+                             const std::vector<InstanceData>& data) {
+        const BRITE::InstancedModelDrawCommand& cmd = pass.InstancedModelCommands[index];
+        // A device that refused the instanced variant left no usable program for it -- no program, or raylib's default
+        // (ShaderRefused): the copies are skipped (EnsurePbrShader has said so in the log).
+        if (data.empty() || ShaderRefused(*static_cast<::Shader*>(m_shaders[m_pbrShader])))
+            return;
+        const ::Model& rlModel = *static_cast<::Model*>(m_models[cmd.Model]);
+        const bool writesDepth = !translucentStage && cmd.Material.DepthWrite;
+        const ::Color tint = {cmd.Material.AlbedoTint.r, cmd.Material.AlbedoTint.g, cmd.Material.AlbedoTint.b,
+                              cmd.Material.AlbedoTint.a};
+        bool posed = false;
+        for (int m = 0; m < rlModel.meshCount; ++m) {
+            if ((onlyMesh >= 0 && m != onlyMesh) || meshTranslucent(proxies[index], rlModel, m) != translucentStage)
+                continue;
+            if (!posed) {
+                PoseForDraw(cmd.Model, BRITE::ModelPose{}, InstancedPoseIndex);
+                posed = true;
+            }
+            drawMesh(cmd.Model, cmd.Material, rlModel, m, writesDepth, tint,
+                     [&](const ::Mesh& mesh, const ::Material& material) {
+                         issueInstanced(mesh, material, data.data(), static_cast<int>(data.size()));
+                     });
+        }
+    };
+
+    if (!pass.InstancedModelCommands.empty()) {
+        useVariant(true);
+        for (std::size_t i = 0; i < pass.InstancedModelCommands.size(); ++i)
+            drawInstanced(i, false, -1, instanceData[i]);
+    }
 
     auto drawLine = [](const BRITE::Line3DDrawCommand& cmd) {
         ::DrawLine3D({cmd.Start.x, cmd.Start.y, cmd.Start.z}, {cmd.End.x, cmd.End.y, cmd.End.z},
@@ -1111,11 +1249,15 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
     // because a layer was always drawn ahead of the batch of translucent primitives and lines, and a layer under them
     // keeps what it looked like.
     struct TranslucentDraw {
-        enum class Kind { Primitive, ModelMesh, Line } kind;
+        enum class Kind { Primitive, ModelMesh, Line, InstancedMesh } kind;
         float depth;
         std::size_t index;
         int mesh;
+        // An instanced mesh's copies, sorted farthest first: an index into sortedCopies, or none (a layer's, drawn as
+        // listed).
+        std::size_t copies = static_cast<std::size_t>(-1);
     };
+    std::vector<std::vector<InstanceData>> sortedCopies;
     std::vector<TranslucentDraw> sorted;
     std::vector<TranslucentDraw> layers;
     ::Vector3 eye = {0.0f, 0.0f, 0.0f};
@@ -1127,6 +1269,22 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
     }
     auto viewDepth = [&](const ::Vector3& point) {
         return pass.Camera3DPtr ? ::Vector3DotProduct(::Vector3Subtract(point, eye), forward) : 0.0f;
+    };
+
+    // The centre of each of a model's meshes' own bounding boxes, in model space, found once: a scan of the mesh. A
+    // skinned model's is its rest geometry's: a pose moves the mesh within reach of its bones, and is not applied to
+    // find the key.
+    auto meshCentres = [&](BRITE::ModelHandle handle, const ::Model& rlModel) -> const std::vector<BRITE::Vector3>& {
+        std::vector<BRITE::Vector3>& centres = m_meshCentres[handle];
+        if (centres.size() != static_cast<std::size_t>(rlModel.meshCount)) {
+            centres.clear();
+            for (int k = 0; k < rlModel.meshCount; ++k) {
+                const ::BoundingBox box = ::GetMeshBoundingBox(rlModel.meshes[k]);
+                centres.push_back(
+                    {(box.min.x + box.max.x) * 0.5f, (box.min.y + box.max.y) * 0.5f, (box.min.z + box.max.z) * 0.5f});
+            }
+        }
+        return centres;
     };
 
     for (std::size_t i = 0; i < pass.Primitive3DCommands.size(); ++i) {
@@ -1144,18 +1302,7 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
         for (int m = 0; m < rlModel->meshCount; ++m) {
             if (!meshTranslucent(cmd, *rlModel, m))
                 continue;
-            // The centre of the mesh's own bounding box, in model space, found once: a scan of the mesh. A skinned
-            // model's is its rest geometry's: a pose moves the mesh within reach of its bones, and is not applied to
-            // find the key.
-            std::vector<BRITE::Vector3>& centres = m_meshCentres[cmd.Model];
-            if (centres.size() != static_cast<std::size_t>(rlModel->meshCount)) {
-                centres.clear();
-                for (int k = 0; k < rlModel->meshCount; ++k) {
-                    const ::BoundingBox box = ::GetMeshBoundingBox(rlModel->meshes[k]);
-                    centres.push_back({(box.min.x + box.max.x) * 0.5f, (box.min.y + box.max.y) * 0.5f,
-                                       (box.min.z + box.max.z) * 0.5f});
-                }
-            }
+            const std::vector<BRITE::Vector3>& centres = meshCentres(cmd.Model, *rlModel);
             // Placed as the draw below places the model: its own transform, then scale, rotation, translation.
             ::Vector3 axis;
             float angle;
@@ -1169,6 +1316,45 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
                 ::Vector3Transform(::Vector3Transform({centre.x, centre.y, centre.z}, rlModel->transform), placement);
             (cmd.Material.DepthWrite ? sorted : layers)
                 .push_back({TranslucentDraw::Kind::ModelMesh, viewDepth(world), i, m});
+        }
+    }
+    // An instanced command's translucent mesh is ONE draw, keyed by the centre of its copies' positions -- the mean of
+    // the mesh's centre as each copy places it -- with the copies inside it drawn farthest first. A layer's copies keep
+    // the order listed.
+    for (std::size_t i = 0; i < pass.InstancedModelCommands.size(); ++i) {
+        const std::vector<InstanceData>& data = instanceData[i];
+        if (data.empty())
+            continue;
+        const BRITE::InstancedModelDrawCommand& cmd = pass.InstancedModelCommands[i];
+        const ::Model& rlModel = *static_cast<::Model*>(m_models[cmd.Model]);
+        for (int m = 0; m < rlModel.meshCount; ++m) {
+            if (!meshTranslucent(proxies[i], rlModel, m))
+                continue;
+            const BRITE::Vector3 centre = meshCentres(cmd.Model, rlModel)[static_cast<std::size_t>(m)];
+            std::vector<std::pair<float, std::size_t>> depths(data.size());
+            ::Vector3 sum = {0.0f, 0.0f, 0.0f};
+            for (std::size_t k = 0; k < data.size(); ++k) {
+                const float* t = data[k].transform; // column-major: t[0..3] the first column
+                const ::Vector3 world = {t[0] * centre.x + t[4] * centre.y + t[8] * centre.z + t[12],
+                                         t[1] * centre.x + t[5] * centre.y + t[9] * centre.z + t[13],
+                                         t[2] * centre.x + t[6] * centre.y + t[10] * centre.z + t[14]};
+                sum = ::Vector3Add(sum, world);
+                depths[k] = {viewDepth(world), k};
+            }
+            const ::Vector3 mean = ::Vector3Scale(sum, 1.0f / static_cast<float>(data.size()));
+            TranslucentDraw draw{TranslucentDraw::Kind::InstancedMesh, viewDepth(mean), i, m};
+            if (cmd.Material.DepthWrite) {
+                std::stable_sort(depths.begin(), depths.end(),
+                                 [](const auto& a, const auto& b) { return a.first > b.first; });
+                std::vector<InstanceData> copies(data.size());
+                for (std::size_t k = 0; k < depths.size(); ++k)
+                    copies[k] = data[depths[k].second];
+                draw.copies = sortedCopies.size();
+                sortedCopies.push_back(std::move(copies));
+                sorted.push_back(draw);
+            } else {
+                layers.push_back(draw);
+            }
         }
     }
     if (pass.Camera3DPtr) {
@@ -1191,14 +1377,26 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
         order.insert(order.end(), sorted.begin(), sorted.end());
         for (std::size_t i = 0; i < order.size();) {
             if (order[i].kind == TranslucentDraw::Kind::ModelMesh) {
+                if (!pass.InstancedModelCommands.empty())
+                    useVariant(false);
                 drawModel(pass.ModelCommands[order[i].index], true, order[i].mesh);
+                ++i;
+                continue;
+            }
+            if (order[i].kind == TranslucentDraw::Kind::InstancedMesh) {
+                useVariant(true);
+                const TranslucentDraw& draw = order[i];
+                drawInstanced(draw.index, true, draw.mesh,
+                              draw.copies < sortedCopies.size() ? sortedCopies[draw.copies] : instanceData[draw.index]);
                 ++i;
                 continue;
             }
             // A run of primitives and lines shares one change of the depth writes and one flush: the batch is drawn at
             // the flush, so the writes are off across it, in the order the run lists them.
             ::rlDisableDepthMask();
-            for (; i < order.size() && order[i].kind != TranslucentDraw::Kind::ModelMesh; ++i) {
+            for (; i < order.size() && order[i].kind != TranslucentDraw::Kind::ModelMesh &&
+                   order[i].kind != TranslucentDraw::Kind::InstancedMesh;
+                 ++i) {
                 if (order[i].kind == TranslucentDraw::Kind::Primitive)
                     drawPrimitive(pass.Primitive3DCommands[order[i].index]);
                 else
@@ -1254,6 +1452,12 @@ bool RaylibRenderBackend::RenderPlanarReflection(const BRITE::RenderPass& pass, 
             anyReader = true;
         else
             mirrored.ModelCommands.push_back(cmd);
+    }
+    for (const BRITE::InstancedModelDrawCommand& cmd : pass.InstancedModelCommands) {
+        if (cmd.Material.Reflection == BRITE::ReflectionMode::Planar)
+            anyReader = true;
+        else
+            mirrored.InstancedModelCommands.push_back(cmd);
     }
     if (!anyReader)
         return false;
@@ -1360,8 +1564,8 @@ int RaylibRenderBackend::PlanarReflectionTargetsHeld() const {
 bool RaylibRenderBackend::RenderShadows(const BRITE::RenderPass& pass, int targetWidth, int targetHeight) {
     namespace Cascades = BRITE::ShadowCascades;
     const BRITE::ShadowSettings& settings = pass.Shadows;
-    if (!settings.Enabled || pass.Camera3DPtr == nullptr || pass.ModelCommands.empty() || targetWidth <= 0 ||
-        targetHeight <= 0)
+    if (!settings.Enabled || pass.Camera3DPtr == nullptr ||
+        (pass.ModelCommands.empty() && pass.InstancedModelCommands.empty()) || targetWidth <= 0 || targetHeight <= 0)
         return false;
     const int lights = static_cast<int>(std::min(pass.Lights.size(), BRITE::MaxLightsPerPass));
     if (settings.LightIndex < 0 || settings.LightIndex >= lights ||
@@ -1373,11 +1577,24 @@ bool RaylibRenderBackend::RenderShadows(const BRITE::RenderPass& pass, int targe
         m_shadowDepthShader =
             LoadShaderFromMemory(EmbeddedShaders::SHADOW_DEPTH_VERTEX, EmbeddedShaders::SHADOW_DEPTH_FRAGMENT);
         ::Shader* depth = static_cast<::Shader*>(m_shaders[m_shadowDepthShader]);
-        m_shadowDepthWorks = depth->id != ::rlGetShaderIdDefault();
+        m_shadowDepthWorks = !ShaderRefused(*depth);
         if (!m_shadowDepthWorks)
             spdlog::error("BRITE: the shadow depth shader failed to compile; every pass is drawn without shadows");
         m_shadowDepthAlphaMask = ::GetShaderLocation(*depth, "alphaMask");
         m_shadowDepthAlphaCutoff = ::GetShaderLocation(*depth, "alphaCutoff");
+    }
+    // Its instanced variant, for InstancedModelDrawCommand casters, compiled on the first pass that has any. Refused,
+    // they cast nothing; the rest still do.
+    if (m_shadowDepthInstancedShader == BRITE::NullShaderHandle && !pass.InstancedModelCommands.empty()) {
+        std::string vertex = EmbeddedShaders::SHADOW_DEPTH_VERTEX;
+        vertex.insert(vertex.find('\n') + 1, "#define BRITE_INSTANCED 1\n");
+        m_shadowDepthInstancedShader = LoadShaderFromMemory(vertex.c_str(), EmbeddedShaders::SHADOW_DEPTH_FRAGMENT);
+        ::Shader* instanced = static_cast<::Shader*>(m_shaders[m_shadowDepthInstancedShader]);
+        m_shadowDepthInstancedWorks = !ShaderRefused(*instanced);
+        if (m_shadowDepthWorks && !m_shadowDepthInstancedWorks)
+            spdlog::error("BRITE: the instanced shadow depth shader failed to compile; instanced draws cast no shadow");
+        m_shadowDepthInstancedAlphaMask = ::GetShaderLocation(*instanced, "alphaMask");
+        m_shadowDepthInstancedAlphaCutoff = ::GetShaderLocation(*instanced, "alphaCutoff");
     }
     // The atlas: one tile per cascade, two across once there are two, two down once there are three.
     const int cascades = std::clamp(settings.Cascades, 1, Cascades::MaxCascades);
@@ -1477,6 +1694,99 @@ bool RaylibRenderBackend::RenderShadows(const BRITE::RenderPass& pass, int targe
         }
     }
 
+    // The instanced casters (InstancedModelDrawCommand): the same rule for each opaque mesh, and a bounding sphere for
+    // every copy, so each cascade draws only the copies that reach it -- in one draw per mesh. A skinned model's copies
+    // are drawn at rest, so their rest spheres hold and they are culled like any other.
+    struct InstancedCaster {
+        std::size_t command;
+        int mesh;
+        int slot;
+        bool cutOut;
+        float cutoff;
+        std::vector<::Vector3> centres; // each copy's, in the light's view
+        std::vector<float> radii;
+    };
+    std::vector<InstancedCaster> instancedCasters;
+    std::vector<std::vector<InstanceData>> instancedData(pass.InstancedModelCommands.size());
+    for (std::size_t i = 0; i < pass.InstancedModelCommands.size() && m_shadowDepthInstancedWorks; ++i) {
+        const BRITE::InstancedModelDrawCommand& cmd = pass.InstancedModelCommands[i];
+        if (!cmd.CastsShadow || !cmd.Material.DepthWrite || cmd.Material.Unlit || cmd.Model == BRITE::NullModelHandle ||
+            cmd.Instances.empty())
+            continue;
+        auto it = m_models.find(cmd.Model);
+        if (it == m_models.end())
+            continue;
+        const ::Model& model = *static_cast<::Model*>(it->second);
+        // A copy whose tint is faint makes the mesh translucent (RenderPass.hpp), and a translucent mesh never casts.
+        BRITE::ModelDrawCommand proxy;
+        proxy.Model = cmd.Model;
+        proxy.Material = cmd.Material;
+        int faintest = 255;
+        for (const BRITE::ModelInstance& copy : cmd.Instances)
+            faintest = std::min(faintest, static_cast<int>(copy.Tint.a));
+        proxy.Material.AlbedoTint.a =
+            static_cast<unsigned char>((static_cast<int>(cmd.Material.AlbedoTint.a) * faintest) / 255);
+        std::vector<MeshSphere>& spheres = m_meshSpheres[cmd.Model];
+        if (spheres.size() != static_cast<std::size_t>(model.meshCount)) {
+            spheres.clear();
+            for (int m = 0; m < model.meshCount; ++m) {
+                const ::BoundingBox box = ::GetMeshBoundingBox(model.meshes[m]);
+                const ::Vector3 centre = ::Vector3Scale(::Vector3Add(box.min, box.max), 0.5f);
+                spheres.push_back({{centre.x, centre.y, centre.z}, ::Vector3Distance(box.max, centre)});
+            }
+        }
+        std::vector<::Matrix> transforms(cmd.Instances.size());
+        std::vector<float> scales(cmd.Instances.size());
+        std::vector<InstanceData>& data = instancedData[i];
+        data.resize(cmd.Instances.size());
+        for (std::size_t k = 0; k < cmd.Instances.size(); ++k) {
+            const BRITE::ModelInstance& copy = cmd.Instances[k];
+            BRITE::ModelDrawCommand placed;
+            placed.Position = copy.Position;
+            placed.Rotation = copy.Rotation;
+            placed.Scale = copy.Scale;
+            const ::Matrix& t = transforms[k] = DrawTransform(model, placed);
+            // As a model draw's: the sphere grows by at most the Frobenius norm of the placement's 3x3.
+            scales[k] = std::sqrt(t.m0 * t.m0 + t.m1 * t.m1 + t.m2 * t.m2 + t.m4 * t.m4 + t.m5 * t.m5 + t.m6 * t.m6 +
+                                  t.m8 * t.m8 + t.m9 * t.m9 + t.m10 * t.m10);
+            const ::float16 columns = ::MatrixToFloatV(t);
+            std::memcpy(data[k].transform, columns.v, sizeof(data[k].transform));
+            data[k].tint[0] = copy.Tint.r / 255.0f;
+            data[k].tint[1] = copy.Tint.g / 255.0f;
+            data[k].tint[2] = copy.Tint.b / 255.0f;
+            data[k].tint[3] = copy.Tint.a / 255.0f;
+        }
+        for (int m = 0; m < model.meshCount; ++m) {
+            const int slot = MeshMaterialSlot(model.meshMaterial[m], model.materialCount);
+            const BRITE::GltfMaterialInfo* file = FileMaterial(cmd.Model, slot);
+            if (MeshTranslucent(proxy, slot, model.materials[slot].maps[MATERIAL_MAP_DIFFUSE].color.a) ||
+                (file != nullptr && file->Unlit))
+                continue;
+            const bool fileMasks = file != nullptr && file->AlphaMode == BRITE::GltfAlphaMode::Mask;
+            InstancedCaster caster{i,
+                                   m,
+                                   slot,
+                                   cmd.Material.AlphaMask || fileMasks,
+                                   cmd.Material.AlphaMask ? cmd.Material.AlphaCutoff
+                                   : fileMasks            ? file->AlphaCutoff
+                                                          : 0.0f,
+                                   {},
+                                   {}};
+            const MeshSphere& sphere = spheres[static_cast<std::size_t>(m)];
+            caster.centres.resize(cmd.Instances.size());
+            caster.radii.resize(cmd.Instances.size());
+            for (std::size_t k = 0; k < cmd.Instances.size(); ++k) {
+                const ::Vector3 world =
+                    ::Vector3Transform({sphere.centre.x, sphere.centre.y, sphere.centre.z}, transforms[k]);
+                caster.centres[k] = ::Vector3Transform(world, lightView);
+                caster.radii[k] = sphere.radius * scales[k];
+            }
+            instancedCasters.push_back(std::move(caster));
+        }
+    }
+    // Which copies of each instanced caster reach each cascade.
+    std::vector<std::array<std::vector<std::uint32_t>, Cascades::MaxCascades>> copiesReaching(instancedCasters.size());
+
     auto frame = std::make_shared<ShadowFrame>();
     frame->cascades = cascades;
     frame->forward[0] = forward.x;
@@ -1512,6 +1822,20 @@ bool RaylibRenderBackend::RenderShadows(const BRITE::RenderPass& pass, int targe
                 continue;
             ++draws;
             sunward = std::max(sunward, caster.centre.z + caster.radius);
+        }
+        for (std::size_t k = 0; k < instancedCasters.size(); ++k) {
+            const InstancedCaster& caster = instancedCasters[k];
+            std::vector<std::uint32_t>& reached = copiesReaching[k][static_cast<std::size_t>(c)];
+            for (std::size_t copy = 0; copy < caster.centres.size(); ++copy) {
+                const ::Vector3& at = caster.centres[copy];
+                if (!Cascades::CasterReachesCascade({at.x, at.y, at.z}, caster.radii[copy],
+                                                    {centre.x, centre.y, centre.z}, radius))
+                    continue;
+                reached.push_back(static_cast<std::uint32_t>(copy));
+                sunward = std::max(sunward, at.z + caster.radii[copy]);
+            }
+            if (!reached.empty())
+                ++draws; // one draw for all the copies of this mesh that reach the cascade
         }
         // The light's view looks down -z: the box spans depths from the sunward caster to the slice's far side.
         projections[static_cast<std::size_t>(c)] = ::MatrixOrtho(
@@ -1604,6 +1928,61 @@ bool RaylibRenderBackend::RenderShadows(const BRITE::RenderPass& pass, int targe
     }
     if (leanReady)
         ::rlDisableShader();
+
+    // The instanced casters: for each mesh and cascade, the copies that reach it, in one draw. A cut-out's albedo map
+    // and colour go to the depth shader for its alpha test, as DrawMesh gives them to a model draw's.
+    if (!instancedCasters.empty()) {
+        if (!m_instances)
+            m_instances = std::make_shared<InstanceStream>();
+        const ::Shader& shader = *static_cast<::Shader*>(m_shaders[m_shadowDepthInstancedShader]);
+        std::vector<InstanceData> reaching;
+        for (std::size_t k = 0; k < instancedCasters.size(); ++k) {
+            const InstancedCaster& caster = instancedCasters[k];
+            const BRITE::InstancedModelDrawCommand& cmd = pass.InstancedModelCommands[caster.command];
+            const ::Model& model = *static_cast<::Model*>(m_models[cmd.Model]);
+            const ::Mesh& mesh = model.meshes[caster.mesh];
+            PoseForDraw(cmd.Model, BRITE::ModelPose{}, InstancedPoseIndex);
+            ::Texture2D albedo = model.materials[caster.slot].maps[MATERIAL_MAP_ALBEDO].texture;
+            if (cmd.Material.AlbedoMap != BRITE::NullTextureHandle) {
+                auto texture = m_textures.find(cmd.Material.AlbedoMap);
+                if (texture != m_textures.end() && !texture->second.isRenderTexture)
+                    albedo = *static_cast<::Texture2D*>(texture->second.ptr);
+            }
+            const ::Color own = model.materials[caster.slot].maps[MATERIAL_MAP_DIFFUSE].color;
+            const float colour[4] = {1.0f, 1.0f, 1.0f,
+                                     static_cast<float>((static_cast<int>(own.a) * cmd.Material.AlbedoTint.a) / 255) /
+                                         255.0f};
+            const int cutOut = caster.cutOut ? 1 : 0;
+            for (int c = 0; c < cascades; ++c) {
+                const std::vector<std::uint32_t>& reached = copiesReaching[k][static_cast<std::size_t>(c)];
+                if (reached.empty())
+                    continue;
+                reaching.clear();
+                for (const std::uint32_t copy : reached)
+                    reaching.push_back(instancedData[caster.command][copy]);
+                m_shadowAtlas->Tile(c % tilesAcross, c / tilesAcross, mapSize);
+                ::rlEnableShader(shader.id);
+                ::rlSetUniform(m_shadowDepthInstancedAlphaMask, &cutOut, RL_SHADER_UNIFORM_INT, 1);
+                ::rlSetUniform(m_shadowDepthInstancedAlphaCutoff, &caster.cutoff, RL_SHADER_UNIFORM_FLOAT, 1);
+                if (shader.locs[SHADER_LOC_COLOR_DIFFUSE] != -1)
+                    ::rlSetUniform(shader.locs[SHADER_LOC_COLOR_DIFFUSE], colour, SHADER_UNIFORM_VEC4, 1);
+                ::rlSetUniformMatrix(shader.locs[SHADER_LOC_MATRIX_MVP],
+                                     ::MatrixMultiply(lightView, projections[static_cast<std::size_t>(c)]));
+                if (caster.cutOut && albedo.id != 0) {
+                    const int unit = 0;
+                    ::rlActiveTextureSlot(unit);
+                    ::rlEnableTexture(albedo.id);
+                    if (shader.locs[SHADER_LOC_MAP_DIFFUSE] != -1)
+                        ::rlSetUniform(shader.locs[SHADER_LOC_MAP_DIFFUSE], &unit, SHADER_UNIFORM_INT, 1);
+                }
+                m_instances->Draw(mesh.vaoId, mesh.indices != nullptr, mesh.triangleCount * 3, mesh.vertexCount,
+                                  reaching.data(), static_cast<int>(reaching.size()));
+                if (caster.cutOut && albedo.id != 0)
+                    ::rlDisableTexture();
+                ::rlDisableShader();
+            }
+        }
+    }
     m_shadowAtlas->End();
     ::rlSetMatrixProjection(savedProjection);
     ::rlSetMatrixModelview(savedModelview);
@@ -1631,27 +2010,44 @@ void RaylibRenderBackend::EnsurePbrShader(const PbrVariant& variant) {
                           "\n#define BRITE_SHADOW_FILTER " + std::to_string(variant.shadowFilter) +
                           "\n#define BRITE_REFLECTIONS " + std::to_string(variant.reflections ? 1 : 0) + "\n";
     fragment.insert(fragment.find('\n') + 1, defines);
-    m_pbrShader = LoadShaderFromMemory(EmbeddedShaders::PBR_VERTEX, fragment.c_str());
+    // The vertex stage's one feature: an instanced draw (pbr.vs). A variant without it is the source as it stands.
+    std::string vertex = EmbeddedShaders::PBR_VERTEX;
+    if (variant.instanced)
+        vertex.insert(vertex.find('\n') + 1, "#define BRITE_INSTANCED 1\n");
+    if (m_refuseInstancedShadowsForTest && variant.instanced && variant.shadowCascades > 0)
+        vertex.insert(vertex.find('\n') + 1, "#error refused for a test\n");
+    m_pbrShader = LoadShaderFromMemory(vertex.c_str(), fragment.c_str());
     m_pbrLocs = {};
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_pbrShader]);
-    if (shader->id == ::rlGetShaderIdDefault() && variant.shadowCascades > 0) {
-        // The shadows are what the device refused: the same features without them, rather than raylib's default.
-        spdlog::error("BRITE: the lit shader with {} shadow cascades failed to compile; the pass is drawn without "
-                      "shadows",
-                      variant.shadowCascades);
-        m_shadowVariantsRefused.push_back(ShadowVariantKey(variant.shadowCascades, variant.shadowFilter));
+    if (ShaderRefused(*shader) && variant.shadowCascades > 0) {
+        // The shadows are what the device refused: the same features without them, rather than no program. Only
+        // a model draw's variant refuses these shadows for the passes after it; an instanced one's refusal drops them
+        // for the instanced copies alone, since every other draw, and the depth pass, still have them.
+        if (variant.instanced) {
+            spdlog::error("BRITE: the instanced lit shader with {} shadow cascades failed to compile; instanced copies "
+                          "are drawn without shadows",
+                          variant.shadowCascades);
+        } else {
+            spdlog::error("BRITE: the lit shader with {} shadow cascades failed to compile; the pass is drawn without "
+                          "shadows",
+                          variant.shadowCascades);
+            m_shadowVariantsRefused.push_back(ShadowVariantKey(variant.shadowCascades, variant.shadowFilter));
+        }
         PbrVariant without = variant;
         without.shadowCascades = 0;
         EnsurePbrShader(without);
         m_pbrVariants[key] = {m_pbrShader, m_pbrLocs};
         return;
     }
-    if (shader->id == ::rlGetShaderIdDefault()) {
-        // raylib falls back to its default shader when compilation fails, which
-        // draws the model unlit and white -- visibly wrong, but not a crash. The
-        // compiler's own messages precede this line in the raylib log.
-        spdlog::error("BRITE: the embedded PBR shader failed to compile; models will draw with raylib's default "
-                      "shader");
+    if (ShaderRefused(*shader)) {
+        // The device refused the lit shader: it left no program, or raylib's default (ShaderRefused). The compiler's
+        // own messages precede this line in the raylib log.
+        if (variant.instanced)
+            spdlog::error(
+                "BRITE: the embedded PBR shader's instanced variant was refused; instanced copies are skipped");
+        else
+            spdlog::error("BRITE: the embedded PBR shader was refused (no program, or raylib's default one); the "
+                          "compiler's messages are above");
     }
 
     shader->locs[SHADER_LOC_MAP_ALBEDO] = ::GetShaderLocation(*shader, "albedoMap");
@@ -2116,8 +2512,8 @@ bool RaylibRenderBackend::EnsureAuthoredColourShader() {
     m_authoredColourShader =
         LoadShaderFromMemory(EmbeddedShaders::AUTHORED_COLOUR_VERTEX, EmbeddedShaders::AUTHORED_COLOUR_FRAGMENT);
     ::Shader* shader = static_cast<::Shader*>(m_shaders[m_authoredColourShader]);
-    // raylib falls back to its default shader when compilation fails; its log says why.
-    m_authoredColourWorks = shader->id != ::rlGetShaderIdDefault();
+    // A refused shader is no program, or raylib's default one (ShaderRefused); raylib's log says why.
+    m_authoredColourWorks = !ShaderRefused(*shader);
     if (!m_authoredColourWorks)
         spdlog::error(
             "BRITE: the authored-colour shader failed to compile; every HDR pass is drawn as if Hdr were off");

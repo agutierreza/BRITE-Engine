@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 
 namespace BRITE::Backends::Raylib {
 
@@ -580,6 +581,51 @@ void ShadowAtlas::Begin() {
     glDisable(GL_CULL_FACE);
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(1.5f, 2.0f);
+}
+
+// ---------------------------------------------------------------------------
+// The instance stream
+// ---------------------------------------------------------------------------
+
+InstanceStream::~InstanceStream() {
+    // As the chain's and the atlas's: no GL call once the window, and its context, are gone.
+    if (m_buffer != 0 && ::IsWindowReady())
+        glDeleteBuffers(1, &m_buffer);
+}
+
+void InstanceStream::Draw(unsigned int vao, bool indexed, int elements, int vertices, const InstanceData* data,
+                          int count) {
+    if (vao == 0 || data == nullptr || count <= 0)
+        return;
+    if (m_buffer == 0)
+        glGenBuffers(1, &m_buffer);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_buffer);
+    // A fresh store every draw: the driver gives a new one rather than wait for the draw still reading the last.
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(sizeof(InstanceData)) * count, data, GL_STREAM_DRAW);
+    const GLsizei stride = static_cast<GLsizei>(sizeof(InstanceData));
+    for (int column = 0; column < 4; ++column) {
+        const GLuint location = static_cast<GLuint>(InstanceTransformLocation + column);
+        glEnableVertexAttribArray(location);
+        glVertexAttribPointer(location, 4, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(sizeof(float) * 4 * static_cast<std::size_t>(column)));
+        glVertexAttribDivisor(location, 1);
+    }
+    glEnableVertexAttribArray(InstanceTintLocation);
+    glVertexAttribPointer(InstanceTintLocation, 4, GL_FLOAT, GL_FALSE, stride,
+                          reinterpret_cast<const void*>(offsetof(InstanceData, tint)));
+    glVertexAttribDivisor(InstanceTintLocation, 1);
+    if (indexed)
+        ::rlDrawVertexArrayElementsInstanced(0, elements, nullptr, count);
+    else
+        ::rlDrawVertexArrayInstanced(0, vertices, count);
+    // The mesh's vertex array is drawn without instances everywhere else: the attributes are turned off again.
+    for (int location = InstanceTransformLocation; location <= InstanceTintLocation; ++location) {
+        glVertexAttribDivisor(static_cast<GLuint>(location), 0);
+        glDisableVertexAttribArray(static_cast<GLuint>(location));
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
 }
 
 void ShadowAtlas::Tile(int x, int y, int size) {
