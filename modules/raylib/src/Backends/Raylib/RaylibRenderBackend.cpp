@@ -1877,6 +1877,10 @@ int RaylibRenderBackend::PlanarReflectionTargetsHeld() const {
     return m_planar ? static_cast<int>(m_planar->slots.size()) : 0;
 }
 
+int RaylibRenderBackend::LastPlanarReflectionMinFilter() const {
+    return m_planarThisPass && m_planar ? TextureMinFilter(m_planar->Current().colour) : 0;
+}
+
 bool RaylibRenderBackend::LastPlanarReflectionBlurred() const {
     return m_planarThisPass && m_planarBlurredThisPass;
 }

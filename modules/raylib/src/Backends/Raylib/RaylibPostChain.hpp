@@ -40,6 +40,8 @@ void DestroyTarget(TargetObjects& target);
 // A multisampled target's samples averaged into its single-sample colour, and its depth copied when readable. A
 // single-sample target needs nothing and is left alone.
 void ResolveTarget(const TargetObjects& target);
+// A texture's minifying filter, as GL holds it (GL_LINEAR, GL_LINEAR_MIPMAP_NEAREST, ...). For tests.
+int TextureMinFilter(unsigned int texture);
 // The target's colour read back, linear and unclamped, RGBA, bottom row first as OpenGL holds it.
 bool ReadTargetFloats(const TargetObjects& target, std::vector<float>& rgba);
 // Clears whatever framebuffer is bound to this colour, as floats (a float target keeps light above 1), and its depth.

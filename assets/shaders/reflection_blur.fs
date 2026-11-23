@@ -10,7 +10,7 @@ in vec2 uv;
 out vec4 o;
 
 uniform sampler2D source;
-uniform vec2 step;     // one tap, in uv: a texel of the level read, along the pass's axis
+uniform vec2 texelStep; // one tap, in uv: a texel of the level read, along the pass's axis
 uniform float lod;     // the level read
 uniform float spread;  // the Gaussian's standard deviation, in taps
 uniform int taps;      // reads either side
@@ -30,7 +30,7 @@ void main()
     for (int i = 1; i <= taps; ++i)
     {
         float w = exp(falloff*float(i*i));
-        sum += w*(Sample(uv + step*float(i)) + Sample(uv - step*float(i)));
+        sum += w*(Sample(uv + texelStep*float(i)) + Sample(uv - texelStep*float(i)));
         total += 2.0*w;
     }
     o = sum/total;

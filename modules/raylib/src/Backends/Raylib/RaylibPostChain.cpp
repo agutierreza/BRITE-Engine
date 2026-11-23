@@ -262,6 +262,14 @@ void ResolveTarget(const TargetObjects& target) {
                           GL_NEAREST);
 }
 
+int TextureMinFilter(unsigned int texture) {
+    GLint filter = 0;
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &filter);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return static_cast<int>(filter);
+}
+
 bool ReadTargetFloats(const TargetObjects& target, std::vector<float>& rgba) {
     if (target.colour == 0)
         return false;
@@ -1044,7 +1052,7 @@ void ReflectionBlurPasses::Blur(const TargetObjects& reflection, const TargetObj
         }
         glBindFramebuffer(GL_FRAMEBUFFER, to.framebuffer);
         glViewport(0, 0, to.width, to.height);
-        glUniform2f(Uniform(m_program, "step"), across ? p.Step : 0.0f, across ? 0.0f : p.Step);
+        glUniform2f(Uniform(m_program, "texelStep"), across ? p.Step : 0.0f, across ? 0.0f : p.Step);
         glUniform1f(Uniform(m_program, "lod"), static_cast<float>(p.Level));
         glUniform1f(Uniform(m_program, "spread"), p.Spread);
         glUniform1i(Uniform(m_program, "taps"), p.Taps);

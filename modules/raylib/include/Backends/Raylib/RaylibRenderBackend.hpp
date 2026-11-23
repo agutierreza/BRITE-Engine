@@ -69,6 +69,9 @@ class RaylibRenderBackend : public IRenderBackend {
     bool ReflectionBlurProgramAsked() const {
         return m_reflectionBlur != nullptr;
     }
+    // The last pass's planar reflection's minifying filter, as GL holds it -- what the reflecting draws read it with --
+    // or 0 when the last pass drew none. For tests.
+    int LastPlanarReflectionMinFilter() const;
     void RefuseReflectionBlurForTest();
     void RefuseReflectionBlurTargetsForTest() {
         m_refuseReflectionBlurTargetsForTest = true;
