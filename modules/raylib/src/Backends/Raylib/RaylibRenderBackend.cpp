@@ -251,14 +251,14 @@ struct RaylibRenderBackend::FormattedTarget {
     BRITE::TextureHandle depth = BRITE::NullTextureHandle; // the readable depth's own handle, or none
 };
 
-// What a pass's shadow pass leaves for its lit draws (RenderShadows): per cascade, the light's view and projection, the
-// tile's rectangle in the atlas's uv, the far edge along the view and a texel's size in world units.
 // The instanced draws' copies as the last Draw3D streamed them, one list per InstancedModelDrawCommand: motion blur's
 // velocity draw takes each copy's placement now from here rather than work it out a second time.
 struct RaylibRenderBackend::DrawnInstances {
     std::vector<std::vector<InstanceData>> data;
 };
 
+// What a pass's shadow pass leaves for its lit draws (RenderShadows): per cascade, the light's view and projection, the
+// tile's rectangle in the atlas's uv, the far edge along the view and a texel's size in world units.
 struct RaylibRenderBackend::ShadowFrame {
     int cascades = 0;
     float forward[3] = {0.0f, 0.0f, -1.0f};

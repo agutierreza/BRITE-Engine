@@ -565,19 +565,59 @@ TEST_F(MotionBlurPass, ADeviceThatCannotMakeItsTargetsDrawsWithoutIt) {
 }
 
 // THE TARGETS ARE KEPT: three passes at one size make one set, and a change of MaxLength alone -- the gather's tile --
-// remakes only the tile's three targets, not the set.
-// Mutation: a change of tile freeing the whole set makes 2.
+// remakes only the tile's three targets, not the set. And they ARE remade: at 16 the tiles are 4 x 4 of 16 pixels, and
+// the quad's right edge (column 39) lies in the third column of tiles, which a 2 x 2 set of 32-pixel tiles kept from
+// before does not hold. Under the camera's -4 (2 pixels each way), the field 1 pixel beyond either edge -- columns 23
+// and 40 -- takes the red quad's light.
+// Mutation: a change of tile freeing the whole set makes 2; the tile's three not remade (the 32-pixel ones kept, the
+// tile changed) leaves column 40 black.
 TEST_F(MotionBlurPass, TheTargetsAreKeptAcrossPassesAndAChangeOfTile) {
     const std::vector<BRITE::ModelDrawCommand> draws = {
         Field(), Unlit(Quad(-0.5f, -0.5f, 0.5f, 0.5f, 0.0f), {240, 40, 40, 255})};
+    std::vector<BRITE::Color> picture;
     for (const float longest : {32.0f, 32.0f, 16.0f}) {
         BRITE::RenderPass pass = Pass(draws, 0.25f);
         pass.Post.MotionBlur.MaxLength = longest;
-        Picture(pass);
+        picture = Picture(pass);
         EXPECT_NEAR(MotionX(Motion(), 0.0f, 0.0f), -4.0f, 0.05f) << longest;
     }
     EXPECT_EQ(m_backend.MotionBlurTargetSetsMade(), 1);
     EXPECT_EQ(m_backend.MotionBlurTargetSetsHeld(), 1);
+    EXPECT_GT(picture[static_cast<std::size_t>(32 * SIZE + 23)].r, 20);
+    EXPECT_GT(picture[static_cast<std::size_t>(32 * SIZE + 40)].r, 20);
+}
+
+// THE TARGETS ARE FREED WHEN IDLE, and made again at a new size. One blurred pass, then IdlePasses + 1 passes without
+// motion blur: the set was last used on the first pass, so on the last it has stood unused for IdlePasses + 1 passes,
+// more than IdlePasses, and is freed. Then a blurred pass on a 32 x 32 target makes a second set.
+// Mutation: the idle set not freed in ForgetIdle leaves one held.
+TEST_F(MotionBlurPass, TheTargetsAreFreedWhenIdleAndMadeAgainAtANewSize) {
+    const std::vector<BRITE::ModelDrawCommand> draws = {
+        Field(), Unlit(Quad(-0.5f, -0.5f, 0.5f, 0.5f, 0.0f), {240, 40, 40, 255})};
+    BRITE::RenderPass blurred = Pass(draws, 0.25f);
+    Picture(blurred);
+    EXPECT_EQ(m_backend.MotionBlurTargetSetsHeld(), 1);
+    const BRITE::TextureHandle small = m_backend.LoadRenderTexture(32, 32);
+    const std::uint64_t idle = BRITE::Backends::Raylib::RaylibRenderBackend::HdrIdlePasses();
+    for (std::uint64_t i = 0; i < idle + 1; ++i) {
+        BRITE::RenderPass plain; // no 3D camera, no blur: a pass that only counts
+        plain.TargetFramebuffer = small;
+        m_backend.SubmitRenderPass(plain);
+    }
+    EXPECT_EQ(m_backend.MotionBlurTargetSetsHeld(), 0);
+
+    BRITE::RenderPass again = Pass(draws, 0.25f);
+    BRITE::Camera3D camera = HiddenWindow::Camera();
+    again.TargetFramebuffer = small;
+    again.Camera3DPtr = &camera;
+    m_backend.SubmitRenderPass(again);
+    int width = 0, height = 0;
+    std::vector<float> rgba;
+    EXPECT_TRUE(m_backend.ReadLastMotionVectors(width, height, rgba));
+    EXPECT_EQ(width, 32);
+    EXPECT_EQ(m_backend.MotionBlurTargetSetsMade(), 2);
+    EXPECT_EQ(m_backend.MotionBlurTargetSetsHeld(), 1);
+    m_backend.UnloadRenderTexture(small);
 }
 
 // THE PATHS IT TAKES THROUGH THE CHAIN. Under HDR: the same -4 pixels, and the blur smears linear light, before the
