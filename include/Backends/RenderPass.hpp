@@ -4,9 +4,18 @@
 #include "ModelPose.hpp"
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <vector>
 
 namespace BRITE {
+
+// Where a draw stood LAST FRAME, for motion blur (MotionBlurSettings): placed as its draw places it -- scaled, then
+// rotated, then moved, after the model's own transform. The caller keeps it; the engine keeps no history of its own.
+struct Placement {
+    Vector3 Position = {0.0f, 0.0f, 0.0f};
+    Quaternion Rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+    Vector3 Scale = {1.0f, 1.0f, 1.0f};
+};
 
 enum class Primitive3DType { Cube, CubeWires, Sphere, SphereWires, Grid };
 
@@ -33,6 +42,12 @@ struct ModelDrawCommand {
     // meshes cast, and only when it writes its depth: a translucent mesh, an additive one and a layer (DepthWrite off)
     // never do. A cut-out casts the shape it cuts. A skinned mesh casts in the draw's pose.
     bool CastsShadow = true;
+    // MOTION BLUR (MotionBlurSettings), read only when the pass blurs. Previous: where the draw stood last frame; with
+    // none it moves with the camera alone, as a still object does. A skinned draw is blurred by its placement only --
+    // how its pose moved is not known. MotionBlurred off: the draw is never smeared and never smeared into what passes
+    // it -- for small bright lights, which a blur draws out into streaks that read as rain.
+    std::optional<Placement> Previous;
+    bool MotionBlurred = true;
 };
 
 // One copy of an instanced draw's model (InstancedModelDrawCommand): placed as a ModelDrawCommand places its model --
@@ -43,6 +58,8 @@ struct ModelInstance {
     Quaternion Rotation = {0.0f, 0.0f, 0.0f, 1.0f};
     Vector3 Scale = {1.0f, 1.0f, 1.0f};
     Color Tint = White;
+    // Where this copy stood last frame, for motion blur, as ModelDrawCommand::Previous: none moves with the camera.
+    std::optional<Placement> Previous;
 };
 
 // MANY COPIES OF ONE MODEL IN ONE DRAW PER MESH: windows, lanterns, grass, debris. Each mesh of the model is drawn once
@@ -64,6 +81,8 @@ struct InstancedModelDrawCommand {
     PBRMaterial Material;
     std::vector<ModelInstance> Instances;
     bool CastsShadow = true;
+    // As ModelDrawCommand::MotionBlurred, for every copy of the draw.
+    bool MotionBlurred = true;
 };
 
 struct SpriteDrawCommand {
@@ -164,8 +183,9 @@ struct FogSettings {
 // models, then lines. There is no order-independent transparency.
 //
 // With PostSettings::Hdr on (below), steps 1 to 3 -- the background callbacks and every 3D draw, in the same order --
-// are drawn in linear light into the backend's own float target; then bloom, then the tone map onto the pass's
-// target; then step 4, the 2D draws and callbacks, over the tone-mapped picture, exactly as without HDR.
+// are drawn in linear light into the backend's own float target; then motion blur (MotionBlurSettings), then bloom,
+// then the tone map onto the pass's target; then step 4, the 2D draws and callbacks, over the tone-mapped picture,
+// exactly as without HDR.
 
 // BLOOM: light above Threshold spread over the picture, as a lens and an eye spread a bright light. A chain of
 // half-size copies of the pass's linear light: the first takes only what is above the threshold, each next one is a
@@ -274,6 +294,54 @@ struct ReflectionSettings {
     float Resolution = 0.5f;
 };
 
+// MOTION BLUR: what moved during the frame smeared along its motion, as a camera's open shutter smears it -- the
+// camera's own motion, from the depth the 3D world left and the camera of last frame, and each model draw's (and each
+// copy's of an instanced draw) from where it stood last frame. OFF BY DEFAULT, and off costs nothing: no target is
+// made, no shader compiled, no pass drawn, and the picture is exactly the one drawn without it.
+//
+// The caller supplies last frame: PreviousCamera, and each moving draw's Previous (ModelDrawCommand). The engine keeps
+// no history -- what moved is the caller's state. A pass with no PreviousCamera has no camera motion (a first frame):
+// both ends of a moving draw's motion are then seen through this frame's camera. A draw with no Previous moves with
+// the camera only, as a still object does. A pass where nothing moved -- no PreviousCamera, or one equal to this
+// camera, and no draw whose Previous differs from where it is -- is drawn exactly as with motion blur off.
+//
+// It runs where the picture is still the 3D world alone: under HDR in linear light, before bloom and the tone map, so a
+// light past white streaks as light; with Hdr off, on the colours the screen shows, through the chain the
+// display-referred bloom takes (BloomSettings) -- so a pass with Hdr off draws its 3D world into the backend's own
+// target with PostSettings::Samples, as that bloom does, on the frames it blurs. The 2D draws come after and are never
+// blurred; shadows and reflections are drawn before and are unchanged.
+//
+// What a pixel smears is its motion over the last frame, in pixels of the pass's target, times Shutter, held to
+// MaxLength: the streak is centred on where the pixel is drawn, half before, half after. The gather (McGuire, Hennessy,
+// Bukowski and Osman, "A Reconstruction Filter for Plausible Motion Blur", 2012) reaches past a moving object's own
+// silhouette, so a draw crossing a still view streaks over what lies behind it, and what lies in front of it stays
+// sharp. A translucent mesh writes no motion of its own: it takes the motion of what is behind it.
+//
+// A draw with MotionBlurred off is never smeared and never smeared into what passes it: a small bright light stays a
+// point, where a blur would draw it out into streaks.
+//
+// A CUT draws the frame unblurred, exactly as with motion blur off: Cut set by the caller; a camera whose motion at the
+// middle of the view, or half way to its edges, is beyond CutLength pixels; a point there behind last frame's camera;
+// or a change of projection. A device that cannot make the targets, or whose compiler refuses the blur's shaders, draws
+// every pass as if Enabled were off, and logs why once.
+struct MotionBlurSettings {
+    bool Enabled = false;
+    // How much of the frame's motion is smeared: 1 the whole frame (a 360-degree shutter), 0.5 half of it (180
+    // degrees, a film camera's), 0 none. Held to 0..1.
+    float Shutter = 0.5f;
+    // The longest streak, in pixels of the pass's target: a faster motion is smeared this far and no further. It is
+    // also the tile the gather looks across, so it costs as it grows. Held to 1..64.
+    float MaxLength = 32.0f;
+    // Taps along each streak: more is smoother and costs as it grows. Held to 2..32.
+    int Samples = 8;
+    // The caller says this frame is a cut: drawn unblurred.
+    bool Cut = false;
+    // Camera motion beyond which a frame counts as a cut, in pixels of the pass's target (above): a jump, not a pan.
+    float CutLength = 300.0f;
+    // Last frame's camera. None: no camera motion.
+    std::optional<Camera3D> PreviousCamera;
+};
+
 // HDR: a pass whose 3D world is drawn in linear light and shown through a tone curve, so light can go beyond white --
 // a sun, a lamp, glints on water -- and roll off softly into it instead of clipping. OFF BY DEFAULT: a pass that never
 // touches its Post draws exactly as it always has (the lit shader's own Reinhard curve, into whatever target the pass
@@ -336,6 +404,8 @@ struct PostSettings {
     // moved by it (above).
     float Exposure = 1.0f;
     BloomSettings Bloom;
+    // Off unless MotionBlur.Enabled is set (MotionBlurSettings).
+    MotionBlurSettings MotionBlur;
 };
 
 struct RenderPass {

@@ -289,13 +289,16 @@ if(BRITE_BUILD_RAYLIB)
     # place here -- GLSL has no include of its own -- so the curve is written once for every shader that needs it.
     set(BRITE_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders")
     file(READ "${BRITE_SHADER_DIR}/tone_curve.glsl" BRITE_TONE_CURVE_GLSL)
+    file(READ "${BRITE_SHADER_DIR}/motion_depth.glsl" BRITE_MOTION_DEPTH_GLSL)
     function(brite_read_shader variable file)
         file(READ "${BRITE_SHADER_DIR}/${file}" source)
         string(REPLACE "#include \"tone_curve.glsl\"" "${BRITE_TONE_CURVE_GLSL}" source "${source}")
+        string(REPLACE "#include \"motion_depth.glsl\"" "${BRITE_MOTION_DEPTH_GLSL}" source "${source}")
         set(${variable} "${source}" PARENT_SCOPE)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BRITE_SHADER_DIR}/${file}")
     endfunction()
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BRITE_SHADER_DIR}/tone_curve.glsl")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BRITE_SHADER_DIR}/motion_depth.glsl")
     brite_read_shader(BRITE_PBR_VS pbr.vs)
     brite_read_shader(BRITE_PBR_FS pbr.fs)
     configure_file(modules/raylib/src/Backends/Raylib/PbrShaderSource.hpp.in
@@ -308,6 +311,11 @@ if(BRITE_BUILD_RAYLIB)
     brite_read_shader(BRITE_AUTHORED_COLOUR_FS authored_colour.fs)
     brite_read_shader(BRITE_SHADOW_DEPTH_VS shadow_depth.vs)
     brite_read_shader(BRITE_SHADOW_DEPTH_FS shadow_depth.fs)
+    brite_read_shader(BRITE_MOTION_VELOCITY_VS motion_velocity.vs)
+    brite_read_shader(BRITE_MOTION_VELOCITY_FS motion_velocity.fs)
+    brite_read_shader(BRITE_MOTION_RESOLVE_FS motion_resolve.fs)
+    brite_read_shader(BRITE_MOTION_TILES_FS motion_tiles.fs)
+    brite_read_shader(BRITE_MOTION_GATHER_FS motion_gather.fs)
     configure_file(modules/raylib/src/Backends/Raylib/PostShaderSource.hpp.in
                    "${CMAKE_CURRENT_BINARY_DIR}/generated/Backends/Raylib/PostShaderSource.hpp" @ONLY)
     target_include_directories(BRITERaylib PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -487,6 +495,7 @@ if(BRITE_BUILD_TESTS)
             tests/RenderTargetTests.cpp
             tests/HdrPassTests.cpp
             tests/BloomTests.cpp
+            tests/MotionBlurTests.cpp
             tests/AdditiveBlendTests.cpp
             tests/SunShadowTests.cpp
             tests/ReflectionTests.cpp

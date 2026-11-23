@@ -56,6 +56,17 @@ class RaylibRenderBackend : public IRenderBackend {
     // size) are held now: they are freed after as many unused passes as the chain's sets. For tests and tools.
     bool ReadLastPlanarReflection(int& width, int& height, std::vector<float>& rgba) const;
     int PlanarReflectionTargetsHeld() const;
+    // MOTION BLUR (RenderPass.hpp, MotionBlurSettings): the last pass's streaks -- x and y in pixels, +y up, 1 in blue
+    // for an exempt pixel, the distance along the view in alpha -- and its blurred picture before bloom and the tone
+    // map (premultiplied, as the scene is), each read back bottom row first; false when the last pass drew no blur. How
+    // many sets of its targets are held (0 or 1). And, RefuseMotionBlurForTest, its shaders refused from now on, as on
+    // a device whose compiler refuses them. For tests and tools.
+    bool ReadLastMotionVectors(int& width, int& height, std::vector<float>& rgba) const;
+    bool ReadLastMotionBlurred(int& width, int& height, std::vector<float>& rgba) const;
+    int MotionBlurTargetSetsHeld() const;
+    void RefuseMotionBlurForTest() {
+        m_refuseMotionBlurForTest = true;
+    }
 
     // What the last pass with shadows drew, one entry per cascade, nearest first; empty when the last pass drew none.
     // For tests and tools: the cascade's square in the light's view (its centre, snapped to whole texels, and its
@@ -336,6 +347,13 @@ class RaylibRenderBackend : public IRenderBackend {
     bool m_projectionOverride = false;
     float m_projection[16] = {};
     bool RenderPlanarReflection(const BRITE::RenderPass& pass, int targetWidth, int targetHeight, bool hdr);
+
+    // MOTION BLUR (MotionBlurSettings): whether the pass blurs this frame -- enabled, not a cut, and something moves --
+    // and the blur itself, drawn after the scene is resolved and before its bloom: the moving and exempt draws'
+    // velocity re-drawn, then the chain's full-screen passes.
+    bool WantsMotionBlur(const BRITE::RenderPass& pass, int targetWidth, int targetHeight) const;
+    void RenderMotionBlur(const BRITE::RenderPass& pass, int targetWidth, int targetHeight);
+    bool m_refuseMotionBlurForTest = false;
 
     // To cleanly separate Texture2D vs RenderTexture2D, we store a boolean.
     // Real implementation would just use a wrapper struct allocated on heap.

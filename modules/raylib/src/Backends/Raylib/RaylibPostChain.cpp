@@ -5,6 +5,7 @@
 // program and texture unit 0.
 #include "external/glad.h"
 
+#include "Backends/MotionBlur.hpp"
 #include "Backends/Raylib/PostShaderSource.hpp"
 #include "RaylibPostChain.hpp"
 
@@ -90,9 +91,11 @@ unsigned int CompileStage(GLenum stage, const char* source, const char* name) {
     return id;
 }
 
-// A program of the full-screen vertex stage and one fragment stage; 0, logged, when either is refused.
-unsigned int MakeProgram(const char* fragment, const char* name) {
-    const unsigned int vs = CompileStage(GL_VERTEX_SHADER, EmbeddedShaders::POST_FULLSCREEN_VERTEX, "full-screen");
+// A program of a vertex stage -- the full-screen one unless given -- and one fragment stage; 0, logged, when either is
+// refused.
+unsigned int MakeProgram(const char* fragment, const char* name,
+                         const char* vertex = EmbeddedShaders::POST_FULLSCREEN_VERTEX) {
+    const unsigned int vs = CompileStage(GL_VERTEX_SHADER, vertex, name);
     const unsigned int fs = CompileStage(GL_FRAGMENT_SHADER, fragment, name);
     unsigned int program = 0;
     if (vs != 0 && fs != 0) {
@@ -290,6 +293,14 @@ PostChain::~PostChain() {
             glDeleteProgram(program);
     if (m_vao != 0)
         glDeleteVertexArrays(1, &m_vao);
+    FreeMotion();
+    for (unsigned int program : {m_velocity, m_velocityInstanced, m_resolve, m_tiles, m_gather})
+        if (program != 0)
+            glDeleteProgram(program);
+    if (m_velocityVao != 0)
+        glDeleteVertexArrays(1, &m_velocityVao);
+    if (m_velocityInstances != 0)
+        glDeleteBuffers(1, &m_velocityInstances);
 }
 
 bool PostChain::Ready() {
@@ -350,6 +361,7 @@ bool PostChain::BeginScene(int width, int height, int samples, bool clear, const
         }
     }
     m_sceneUsed = pass;
+    m_blurredThisPass = false;
     ::RenderTexture2D surface{};
     surface.id = m_scene.msFramebuffer != 0 ? m_scene.msFramebuffer : m_scene.framebuffer;
     surface.texture.id = m_scene.colour;
@@ -402,6 +414,8 @@ void PostChain::ForgetIdle(std::uint64_t pass) {
         m_scene = {};
         FreeLevels();
     }
+    if (m_motion.velocity.framebuffer != 0 && idle(m_motion.used))
+        FreeMotion();
 }
 
 void PostChain::FreeLevels() {
@@ -443,7 +457,7 @@ void PostChain::Bloom(const BloomSettings& settings) {
     glUniform1i(Uniform(m_down, "source"), 0);
     const float knee = std::max(settings.Knee * settings.Threshold, 1.0e-4f);
     glUniform4f(Uniform(m_down, "knee"), settings.Threshold, settings.Threshold - knee, 2.0f * knee, 0.25f / knee);
-    unsigned int source = m_scene.colour;
+    unsigned int source = PostSource();
     int sourceWidth = m_scene.width, sourceHeight = m_scene.height;
     for (std::size_t i = 0; i < m_levels.size(); ++i) {
         const TargetObjects& level = m_levels[i];
@@ -503,9 +517,9 @@ void PostChain::Composite(float exposure, const BloomSettings& settings, bool re
     glUniform1i(Uniform(m_tonemap, "displayReferred"), displayReferred ? 1 : 0);
     glUniform1i(Uniform(m_tonemap, "overlay"), replace ? 0 : 1);
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, bloom ? m_levels.front().colour : m_scene.colour);
+    glBindTexture(GL_TEXTURE_2D, bloom ? m_levels.front().colour : PostSource());
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_scene.colour);
+    glBindTexture(GL_TEXTURE_2D, PostSource());
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -518,6 +532,288 @@ bool PostChain::ReadBloomFloats(std::vector<float>& rgba, int& width, int& heigh
     width = m_levels.front().width;
     height = m_levels.front().height;
     return ReadTargetFloats(m_levels.front(), rgba);
+}
+
+// ---------------------------------------------------------------------------
+// Motion blur
+// ---------------------------------------------------------------------------
+
+// What BeginMotion found bound and set, put back by EndMotion before the full-screen draws.
+struct PostChain::SavedMotionState {
+    GLint draw = 0, read = 0;
+    std::array<GLint, 4> viewport{};
+    GLboolean depthMask = GL_TRUE;
+    FullScreenState state;
+};
+
+namespace {
+
+// A colour-only target of the motion set: RGBA16F, sampled by texel, or LINEAR for the picture the bloom reads.
+bool MakeColourTarget(int width, int height, GLenum filter, TargetObjects& out) {
+    out = {};
+    out.width = width;
+    out.height = height;
+    out.format = RenderTargetFormat::RGBA16F;
+    out.colour = MakeTexture(width, height, GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, filter);
+    glGenFramebuffers(1, &out.framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, out.framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, out.colour, 0);
+    return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+}
+
+// A mesh's positions at location 0 of the bound vertex array, its 16-bit indices bound, and the draw.
+void BindPositions(unsigned int positions, unsigned int indices) {
+    glBindBuffer(GL_ARRAY_BUFFER, positions);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices);
+}
+
+} // namespace
+
+bool PostChain::MotionReady() {
+    if (m_refuseMotionForTest) {
+        if (!m_motionFailureLogged)
+            spdlog::error("BRITE: this device cannot run motion blur; every pass is drawn without it");
+        m_motionFailureLogged = true;
+        return false;
+    }
+    if (m_motionTried)
+        return m_motionReady;
+    m_motionTried = true;
+    std::string instanced = EmbeddedShaders::MOTION_VELOCITY_VERTEX;
+    instanced.insert(instanced.find('\n') + 1, "#define BRITE_INSTANCED 1\n");
+    m_velocity = MakeProgram(EmbeddedShaders::MOTION_VELOCITY_FRAGMENT, "motion velocity",
+                             EmbeddedShaders::MOTION_VELOCITY_VERTEX);
+    m_velocityInstanced =
+        MakeProgram(EmbeddedShaders::MOTION_VELOCITY_FRAGMENT, "instanced motion velocity", instanced.c_str());
+    m_resolve = MakeProgram(EmbeddedShaders::MOTION_RESOLVE_FRAGMENT, "motion");
+    m_tiles = MakeProgram(EmbeddedShaders::MOTION_TILES_FRAGMENT, "motion tiles");
+    m_gather = MakeProgram(EmbeddedShaders::MOTION_GATHER_FRAGMENT, "motion gather");
+    glGenVertexArrays(1, &m_velocityVao);
+    glGenBuffers(1, &m_velocityInstances);
+    m_motionReady = m_velocity != 0 && m_velocityInstanced != 0 && m_resolve != 0 && m_tiles != 0 && m_gather != 0 &&
+                    m_velocityVao != 0 && m_velocityInstances != 0;
+    if (!m_motionReady && !m_motionFailureLogged)
+        spdlog::error("BRITE: this device cannot run motion blur; every pass is drawn without it");
+    m_motionFailureLogged = m_motionFailureLogged || !m_motionReady;
+    return m_motionReady;
+}
+
+void PostChain::FreeMotion() {
+    for (TargetObjects* target : {&m_motion.velocity, &m_motion.motion, &m_motion.rows, &m_motion.tiles,
+                                  &m_motion.neighbours, &m_motion.blurred})
+        DestroyTarget(*target);
+    if (m_motion.depthFramebuffer != 0)
+        glDeleteFramebuffers(1, &m_motion.depthFramebuffer);
+    if (m_motion.depthTexture != 0)
+        glDeleteTextures(1, &m_motion.depthTexture);
+    m_motion = {};
+}
+
+bool PostChain::BeginMotion(int tile, std::uint64_t pass) {
+    if (m_scene.framebuffer == 0)
+        return false;
+    const int width = m_scene.width, height = m_scene.height;
+    if (m_motion.velocity.framebuffer == 0 || m_motion.width != width || m_motion.height != height ||
+        m_motion.tile != tile) {
+        FreeMotion();
+        const SavedBinding saved;
+        const int tilesWide = (width + tile - 1) / tile, tilesHigh = (height + tile - 1) / tile;
+        m_motion.depthTexture =
+            MakeTexture(width, height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_FLOAT, GL_NEAREST);
+        glGenFramebuffers(1, &m_motion.depthFramebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_motion.depthFramebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_motion.depthTexture, 0);
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
+        bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        complete = MakeColourTarget(width, height, GL_NEAREST, m_motion.velocity) && complete;
+        complete = MakeColourTarget(width, height, GL_NEAREST, m_motion.motion) && complete;
+        complete = MakeColourTarget(tilesWide, height, GL_NEAREST, m_motion.rows) && complete;
+        complete = MakeColourTarget(tilesWide, tilesHigh, GL_NEAREST, m_motion.tiles) && complete;
+        complete = MakeColourTarget(tilesWide, tilesHigh, GL_NEAREST, m_motion.neighbours) && complete;
+        complete = MakeColourTarget(width, height, GL_LINEAR, m_motion.blurred) && complete;
+        if (!complete) {
+            if (!m_motionFailureLogged)
+                spdlog::error(
+                    "BRITE: a pass cannot make its {}x{} motion blur targets; it is drawn without motion blur", width,
+                    height);
+            m_motionFailureLogged = true;
+            FreeMotion();
+            return false;
+        }
+        m_motion.width = width;
+        m_motion.height = height;
+        m_motion.tile = tile;
+    }
+    m_motion.used = pass;
+    // The depth the scene left, where a shader can read it.
+    CopySceneDepth(m_motion.depthFramebuffer);
+
+    ::rlDrawRenderBatchActive();
+    auto saved = std::make_shared<SavedMotionState>();
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &saved->draw);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &saved->read);
+    glGetIntegerv(GL_VIEWPORT, saved->viewport.data());
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &saved->depthMask);
+    saved->state = BeginFullScreen(m_velocityVao);
+    glDepthMask(GL_FALSE);
+    m_motionState = std::move(saved);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_motion.velocity.framebuffer);
+    glViewport(0, 0, width, height);
+    // Nothing written: alpha 0 -- the pixel takes the camera's motion.
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindTexture(GL_TEXTURE_2D, m_motion.depthTexture);
+    return true;
+}
+
+void PostChain::UseVelocity(bool instanced, bool exempt, const float depthRange[3]) {
+    m_velocityProgram = instanced ? m_velocityInstanced : m_velocity;
+    glUseProgram(m_velocityProgram);
+    glUniform1i(Uniform(m_velocityProgram, "sceneDepth"), 0);
+    glUniform2f(Uniform(m_velocityProgram, "size"), static_cast<float>(m_motion.width),
+                static_cast<float>(m_motion.height));
+    glUniform1i(Uniform(m_velocityProgram, "exempt"), exempt ? 1 : 0);
+    glUniform3f(Uniform(m_velocityProgram, "depthRange"), depthRange[0], depthRange[1], depthRange[2]);
+}
+
+void PostChain::DrawVelocity(unsigned int positions, unsigned int indices, int elements, int vertices,
+                             const float mvpNow[16], const float mvpBefore[16]) {
+    if (positions == 0)
+        return;
+    glUniformMatrix4fv(Uniform(m_velocityProgram, "mvpNow"), 1, GL_FALSE, mvpNow);
+    glUniformMatrix4fv(Uniform(m_velocityProgram, "mvpBefore"), 1, GL_FALSE, mvpBefore);
+    BindPositions(positions, indices);
+    if (indices != 0)
+        glDrawElements(GL_TRIANGLES, elements, GL_UNSIGNED_SHORT, nullptr);
+    else
+        glDrawArrays(GL_TRIANGLES, 0, vertices);
+}
+
+void PostChain::DrawVelocityInstanced(unsigned int positions, unsigned int indices, int elements, int vertices,
+                                      const float* placements, int count, const float viewProjectionNow[16],
+                                      const float viewProjectionBefore[16]) {
+    if (positions == 0 || placements == nullptr || count <= 0)
+        return;
+    glUniformMatrix4fv(Uniform(m_velocityProgram, "viewProjectionNow"), 1, GL_FALSE, viewProjectionNow);
+    glUniformMatrix4fv(Uniform(m_velocityProgram, "viewProjectionBefore"), 1, GL_FALSE, viewProjectionBefore);
+    BindPositions(positions, indices);
+    glBindBuffer(GL_ARRAY_BUFFER, m_velocityInstances);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(sizeof(float) * 32) * count, placements, GL_STREAM_DRAW);
+    const GLsizei stride = static_cast<GLsizei>(sizeof(float) * 32);
+    for (GLuint column = 0; column < 8; ++column) {
+        glEnableVertexAttribArray(1 + column);
+        glVertexAttribPointer(1 + column, 4, GL_FLOAT, GL_FALSE, stride,
+                              reinterpret_cast<const void*>(sizeof(float) * 4 * static_cast<std::size_t>(column)));
+        glVertexAttribDivisor(1 + column, 1);
+    }
+    if (indices != 0)
+        glDrawElementsInstanced(GL_TRIANGLES, elements, GL_UNSIGNED_SHORT, nullptr, count);
+    else
+        glDrawArraysInstanced(GL_TRIANGLES, 0, vertices, count);
+    for (GLuint column = 0; column < 8; ++column) {
+        glVertexAttribDivisor(1 + column, 0);
+        glDisableVertexAttribArray(1 + column);
+    }
+}
+
+void PostChain::EndMotion(const MotionBlurSettings& settings, const float reprojection[16], bool cameraMoves,
+                          const float depthRange[3]) {
+    if (!m_motionState)
+        return;
+    const MotionTargets& t = m_motion;
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); // the motion set's own vertex array is still bound: its binding
+
+    // Each pixel's streak.
+    glUseProgram(m_resolve);
+    glBindFramebuffer(GL_FRAMEBUFFER, t.motion.framebuffer);
+    glViewport(0, 0, t.width, t.height);
+    glUniform1i(Uniform(m_resolve, "velocity"), 0);
+    glUniform1i(Uniform(m_resolve, "sceneDepth"), 1);
+    glUniformMatrix4fv(Uniform(m_resolve, "reprojection"), 1, GL_FALSE, reprojection);
+    glUniform1i(Uniform(m_resolve, "cameraMoves"), cameraMoves ? 1 : 0);
+    glUniform2f(Uniform(m_resolve, "size"), static_cast<float>(t.width), static_cast<float>(t.height));
+    glUniform1f(Uniform(m_resolve, "shutter"), std::clamp(settings.Shutter, 0.0f, 1.0f));
+    glUniform1f(Uniform(m_resolve, "maxLength"),
+                std::clamp(settings.MaxLength, MotionBlur::LeastMaxLength, MotionBlur::MostMaxLength));
+    glUniform3f(Uniform(m_resolve, "depthRange"), depthRange[0], depthRange[1], depthRange[2]);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, t.depthTexture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, t.velocity.colour);
+    glBindVertexArray(m_vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    // The tiles' longest streaks, across the rows then down the columns, then each tile's neighbours'.
+    glUseProgram(m_tiles);
+    glUniform1i(Uniform(m_tiles, "source"), 0);
+    glUniform1i(Uniform(m_tiles, "tile"), t.tile);
+    const TargetObjects* steps[3][2] = {{&t.motion, &t.rows}, {&t.rows, &t.tiles}, {&t.tiles, &t.neighbours}};
+    for (int step = 0; step < 3; ++step) {
+        const TargetObjects& from = *steps[step][0];
+        const TargetObjects& to = *steps[step][1];
+        glBindFramebuffer(GL_FRAMEBUFFER, to.framebuffer);
+        glViewport(0, 0, to.width, to.height);
+        glUniform1i(Uniform(m_tiles, "step"), step);
+        glUniform2i(Uniform(m_tiles, "sourceSize"), from.width, from.height);
+        glBindTexture(GL_TEXTURE_2D, from.colour);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+
+    // The gather, into the picture the bloom and the tone map read.
+    glUseProgram(m_gather);
+    glBindFramebuffer(GL_FRAMEBUFFER, t.blurred.framebuffer);
+    glViewport(0, 0, t.width, t.height);
+    glUniform1i(Uniform(m_gather, "scene"), 0);
+    glUniform1i(Uniform(m_gather, "motion"), 1);
+    glUniform1i(Uniform(m_gather, "neighbourMax"), 2);
+    glUniform1i(Uniform(m_gather, "tile"), t.tile);
+    glUniform1i(Uniform(m_gather, "samples"),
+                std::clamp(settings.Samples, MotionBlur::LeastSamples, MotionBlur::MostSamples));
+    glUniform2i(Uniform(m_gather, "size"), t.width, t.height);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, t.neighbours.colour);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, t.motion.colour);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_scene.colour);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    for (GLenum unit : {GL_TEXTURE2, GL_TEXTURE1}) {
+        glActiveTexture(unit);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    // Back as BeginMotion found it.
+    const SavedMotionState& saved = *m_motionState;
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(saved.draw));
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(saved.read));
+    glViewport(saved.viewport[0], saved.viewport[1], saved.viewport[2], saved.viewport[3]);
+    glDepthMask(saved.depthMask);
+    EndFullScreen(saved.state);
+    m_motionState.reset();
+    m_blurredThisPass = true;
+}
+
+bool PostChain::ReadMotionFloats(std::vector<float>& rgba, int& width, int& height) const {
+    if (!m_blurredThisPass)
+        return false;
+    width = m_motion.width;
+    height = m_motion.height;
+    return ReadTargetFloats(m_motion.motion, rgba);
+}
+
+bool PostChain::ReadBlurredFloats(std::vector<float>& rgba, int& width, int& height) const {
+    if (!m_blurredThisPass)
+        return false;
+    width = m_motion.width;
+    height = m_motion.height;
+    return ReadTargetFloats(m_motion.blurred, rgba);
 }
 
 // ---------------------------------------------------------------------------

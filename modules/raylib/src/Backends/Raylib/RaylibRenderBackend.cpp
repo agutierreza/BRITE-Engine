@@ -1,4 +1,5 @@
 ﻿#include "Backends/Raylib/RaylibRenderBackend.hpp"
+#include "Backends/MotionBlur.hpp"
 #include "Backends/Raylib/PbrShaderSource.hpp"
 #include "Backends/Raylib/PostShaderSource.hpp"
 #include "Backends/ShadowCascades.hpp"
@@ -647,8 +648,19 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     if (m_post)
         m_post->ForgetIdle(m_passSerial);
     const bool canChain = pass.Camera3DPtr != nullptr && targetWidth > 0 && targetHeight > 0;
+    // MOTION BLUR (RenderPass.hpp, MotionBlurSettings) runs in the chain, under HDR or, with Hdr off, on the road the
+    // display-referred bloom takes -- only on a frame that has something to blur and is not a cut, so every other frame
+    // is drawn exactly as with it off.
+    bool blur = canChain && WantsMotionBlur(pass, targetWidth, targetHeight);
+    if (blur) {
+        if (!m_post)
+            m_post = std::make_shared<PostChain>();
+        if (m_refuseMotionBlurForTest)
+            m_post->RefuseMotionForTest();
+        blur = m_post->Ready() && m_post->MotionReady();
+    }
     bool hdr = pass.Post.Hdr && canChain;
-    bool displayBloom = !pass.Post.Hdr && pass.Post.Bloom.Enabled && canChain;
+    bool displayBloom = !pass.Post.Hdr && (pass.Post.Bloom.Enabled || blur) && canChain;
     if (hdr || displayBloom) {
         if (!m_post)
             m_post = std::make_shared<PostChain>();
@@ -699,6 +711,8 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
         m_premultipliedScene = false;
         UseBlend(false);
         m_post->EndScene();
+        if (blur)
+            RenderMotionBlur(pass, targetWidth, targetHeight);
         m_post->Bloom(pass.Post.Bloom);
     }
 
@@ -1434,6 +1448,213 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
 // ---------------------------------------------------------------------------
 // The planar reflection
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Motion blur (RenderPass.hpp, MotionBlurSettings)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A camera's view and projection as BeginMode3D makes them on a target `aspect` wide (raylib's rcore.c): a frustum of
+// the vertical angle fovy, or an orthographic box fovy high, between the cull distances.
+void CameraMatrices(const BRITE::Camera3D& camera, float aspect, ::Matrix& view, ::Matrix& projection) {
+    view = ::MatrixLookAt({camera.position.x, camera.position.y, camera.position.z},
+                          {camera.target.x, camera.target.y, camera.target.z}, {camera.up.x, camera.up.y, camera.up.z});
+    const double nearPlane = ::rlGetCullDistanceNear(), farPlane = ::rlGetCullDistanceFar();
+    if (camera.projection == BRITE::Math::CameraProjection::Perspective) {
+        const double top = nearPlane * std::tan(camera.fovy * 0.5 * DEG2RAD), right = top * aspect;
+        projection = ::MatrixFrustum(-right, right, -top, top, nearPlane, farPlane);
+    } else {
+        const double top = camera.fovy / 2.0, right = top * aspect;
+        projection = ::MatrixOrtho(-right, right, -top, top, nearPlane, farPlane);
+    }
+}
+
+std::array<float, 16> Columns(const ::Matrix& m) {
+    const ::float16 v = ::MatrixToFloatV(m);
+    std::array<float, 16> out{};
+    std::memcpy(out.data(), v.v, sizeof(v.v));
+    return out;
+}
+
+} // namespace
+
+bool RaylibRenderBackend::WantsMotionBlur(const BRITE::RenderPass& pass, int targetWidth, int targetHeight) const {
+    const BRITE::MotionBlurSettings& settings = pass.Post.MotionBlur;
+    if (!settings.Enabled || pass.Camera3DPtr == nullptr ||
+        BRITE::MotionBlur::IsCut(settings, *pass.Camera3DPtr, targetWidth, targetHeight))
+        return false;
+    // Something must move -- the camera, or a draw that stood elsewhere last frame -- or the pass is drawn exactly as
+    // with motion blur off, even where blurring it would take it through the chain.
+    namespace MB = BRITE::MotionBlur;
+    if (settings.PreviousCamera && MB::Moved(*settings.PreviousCamera, *pass.Camera3DPtr))
+        return true;
+    for (const BRITE::ModelDrawCommand& cmd : pass.ModelCommands)
+        if (cmd.MotionBlurred && cmd.Previous && MB::Moved(*cmd.Previous, {cmd.Position, cmd.Rotation, cmd.Scale}))
+            return true;
+    for (const BRITE::InstancedModelDrawCommand& cmd : pass.InstancedModelCommands)
+        if (cmd.MotionBlurred)
+            for (const BRITE::ModelInstance& copy : cmd.Instances)
+                if (copy.Previous && MB::Moved(*copy.Previous, {copy.Position, copy.Rotation, copy.Scale}))
+                    return true;
+    return false;
+}
+
+void RaylibRenderBackend::RenderMotionBlur(const BRITE::RenderPass& pass, int targetWidth, int targetHeight) {
+    const BRITE::MotionBlurSettings& settings = pass.Post.MotionBlur;
+    const BRITE::Camera3D& camera = *pass.Camera3DPtr;
+    const BRITE::Camera3D& before = settings.PreviousCamera ? *settings.PreviousCamera : camera;
+    const float aspect = static_cast<float>(targetWidth) / static_cast<float>(targetHeight);
+    ::Matrix viewNow, projectionNow, viewBefore, projectionBefore;
+    CameraMatrices(camera, aspect, viewNow, projectionNow);
+    CameraMatrices(before, aspect, viewBefore, projectionBefore);
+    const ::Matrix viewProjectionNow = ::MatrixMultiply(viewNow, projectionNow);
+    const ::Matrix viewProjectionBefore = ::MatrixMultiply(viewBefore, projectionBefore);
+    const float depthRange[3] = {static_cast<float>(::rlGetCullDistanceNear()),
+                                 static_cast<float>(::rlGetCullDistanceFar()),
+                                 camera.projection == BRITE::Math::CameraProjection::Perspective ? 1.0f : 0.0f};
+    const int tile =
+        std::clamp(static_cast<int>(std::ceil(settings.MaxLength)), static_cast<int>(BRITE::MotionBlur::LeastMaxLength),
+                   static_cast<int>(BRITE::MotionBlur::MostMaxLength));
+    if (!m_post->BeginMotion(tile, m_passSerial))
+        return;
+
+    // Whether one mesh of a draw is translucent, as the lit draw judged it: a translucent mesh writes no motion.
+    auto translucent = [&](const BRITE::ModelDrawCommand& cmd, const ::Model& model, int m) {
+        const int slot = MeshMaterialSlot(model.meshMaterial[m], model.materialCount);
+        return MeshTranslucent(cmd, slot, model.materials[slot].maps[MATERIAL_MAP_DIFFUSE].color.a);
+    };
+    auto modelOf = [&](BRITE::ModelHandle handle) -> const ::Model* {
+        auto it = m_models.find(handle);
+        return it == m_models.end() ? nullptr : static_cast<const ::Model*>(it->second);
+    };
+    auto drawMesh = [&](const ::Mesh& mesh, const std::array<float, 16>& now, const std::array<float, 16>& was) {
+        if (mesh.vboId == nullptr)
+            return;
+        const unsigned int indices =
+            mesh.indices != nullptr ? mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_INDICES] : 0;
+        m_post->DrawVelocity(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION], indices, mesh.triangleCount * 3,
+                             mesh.vertexCount, now.data(), was.data());
+    };
+    auto drawInstanced = [&](const ::Mesh& mesh, const std::vector<float>& placements, std::size_t copies) {
+        if (mesh.vboId == nullptr)
+            return;
+        const unsigned int indices =
+            mesh.indices != nullptr ? mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_INDICES] : 0;
+        m_post->DrawVelocityInstanced(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION], indices,
+                                      mesh.triangleCount * 3, mesh.vertexCount, placements.data(),
+                                      static_cast<int>(copies), Columns(viewProjectionNow).data(),
+                                      Columns(viewProjectionBefore).data());
+    };
+    // An instanced draw's copies, now and then -- a copy with no Previous then where it is now -- 32 floats a copy; and
+    // the proxy its translucency is judged by, as its lit draw judged it (the faintest copy's tint).
+    auto placementsOf = [&](const BRITE::InstancedModelDrawCommand& cmd, const ::Model& model, bool still) {
+        std::vector<float> placements(cmd.Instances.size() * 32);
+        for (std::size_t k = 0; k < cmd.Instances.size(); ++k) {
+            const BRITE::ModelInstance& copy = cmd.Instances[k];
+            BRITE::ModelDrawCommand placed;
+            placed.Position = copy.Position;
+            placed.Rotation = copy.Rotation;
+            placed.Scale = copy.Scale;
+            const std::array<float, 16> now = Columns(DrawTransform(model, placed));
+            if (copy.Previous && !still) {
+                placed.Position = copy.Previous->Position;
+                placed.Rotation = copy.Previous->Rotation;
+                placed.Scale = copy.Previous->Scale;
+            }
+            const std::array<float, 16> was = Columns(DrawTransform(model, placed));
+            std::memcpy(&placements[k * 32], now.data(), sizeof(float) * 16);
+            std::memcpy(&placements[k * 32 + 16], was.data(), sizeof(float) * 16);
+        }
+        return placements;
+    };
+    auto instancedProxy = [](const BRITE::InstancedModelDrawCommand& cmd) {
+        BRITE::ModelDrawCommand proxy;
+        proxy.Model = cmd.Model;
+        proxy.Material = cmd.Material;
+        int faintest = 255;
+        for (const BRITE::ModelInstance& copy : cmd.Instances)
+            faintest = std::min(faintest, static_cast<int>(copy.Tint.a));
+        proxy.Material.AlbedoTint.a =
+            static_cast<unsigned char>((static_cast<int>(cmd.Material.AlbedoTint.a) * faintest) / 255);
+        return proxy;
+    };
+
+    // The moving draws: each opaque mesh's motion, from where the draw stood to where it stands, under last frame's
+    // camera and this one's.
+    m_post->UseVelocity(false, false, depthRange);
+    for (std::size_t i = 0; i < pass.ModelCommands.size(); ++i) {
+        const BRITE::ModelDrawCommand& cmd = pass.ModelCommands[i];
+        const ::Model* model = modelOf(cmd.Model);
+        if (!cmd.MotionBlurred || !cmd.Previous || model == nullptr)
+            continue;
+        BRITE::ModelDrawCommand was = cmd;
+        was.Position = cmd.Previous->Position;
+        was.Rotation = cmd.Previous->Rotation;
+        was.Scale = cmd.Previous->Scale;
+        const std::array<float, 16> mvpNow = Columns(::MatrixMultiply(DrawTransform(*model, cmd), viewProjectionNow));
+        const std::array<float, 16> mvpBefore =
+            Columns(::MatrixMultiply(DrawTransform(*model, was), viewProjectionBefore));
+        PoseForDraw(cmd.Model, cmd.Pose, i);
+        for (int m = 0; m < model->meshCount; ++m)
+            if (!translucent(cmd, *model, m))
+                drawMesh(model->meshes[m], mvpNow, mvpBefore);
+    }
+    m_post->UseVelocity(true, false, depthRange);
+    for (const BRITE::InstancedModelDrawCommand& cmd : pass.InstancedModelCommands) {
+        const ::Model* model = modelOf(cmd.Model);
+        const bool moves = std::any_of(cmd.Instances.begin(), cmd.Instances.end(),
+                                       [](const BRITE::ModelInstance& copy) { return copy.Previous.has_value(); });
+        if (!cmd.MotionBlurred || !moves || model == nullptr)
+            continue;
+        const std::vector<float> placements = placementsOf(cmd, *model, false);
+        const BRITE::ModelDrawCommand proxy = instancedProxy(cmd);
+        PoseForDraw(cmd.Model, BRITE::ModelPose{}, InstancedPoseIndex);
+        for (int m = 0; m < model->meshCount; ++m)
+            if (!translucent(proxy, *model, m))
+                drawInstanced(model->meshes[m], placements, cmd.Instances.size());
+    }
+
+    // The exempt draws, over them: every mesh, opaque or translucent, marked wherever it shows.
+    m_post->UseVelocity(false, true, depthRange);
+    for (std::size_t i = 0; i < pass.ModelCommands.size(); ++i) {
+        const BRITE::ModelDrawCommand& cmd = pass.ModelCommands[i];
+        const ::Model* model = modelOf(cmd.Model);
+        if (cmd.MotionBlurred || model == nullptr)
+            continue;
+        const std::array<float, 16> mvp = Columns(::MatrixMultiply(DrawTransform(*model, cmd), viewProjectionNow));
+        PoseForDraw(cmd.Model, cmd.Pose, i);
+        for (int m = 0; m < model->meshCount; ++m)
+            drawMesh(model->meshes[m], mvp, mvp);
+    }
+    m_post->UseVelocity(true, true, depthRange);
+    for (const BRITE::InstancedModelDrawCommand& cmd : pass.InstancedModelCommands) {
+        const ::Model* model = modelOf(cmd.Model);
+        if (cmd.MotionBlurred || model == nullptr || cmd.Instances.empty())
+            continue;
+        const std::vector<float> placements = placementsOf(cmd, *model, true);
+        PoseForDraw(cmd.Model, BRITE::ModelPose{}, InstancedPoseIndex);
+        for (int m = 0; m < model->meshCount; ++m)
+            drawInstanced(model->meshes[m], placements, cmd.Instances.size());
+    }
+
+    // A point's clip position now, back through this frame's view-projection and forward through last frame's.
+    const std::array<float, 16> reprojection =
+        Columns(::MatrixMultiply(::MatrixInvert(viewProjectionNow), viewProjectionBefore));
+    m_post->EndMotion(settings, reprojection.data(), settings.PreviousCamera.has_value(), depthRange);
+}
+
+bool RaylibRenderBackend::ReadLastMotionVectors(int& width, int& height, std::vector<float>& rgba) const {
+    return m_post && m_post->ReadMotionFloats(rgba, width, height);
+}
+
+bool RaylibRenderBackend::ReadLastMotionBlurred(int& width, int& height, std::vector<float>& rgba) const {
+    return m_post && m_post->ReadBlurredFloats(rgba, width, height);
+}
+
+int RaylibRenderBackend::MotionBlurTargetSetsHeld() const {
+    return m_post ? m_post->MotionSetsHeld() : 0;
+}
 
 bool RaylibRenderBackend::RenderPlanarReflection(const BRITE::RenderPass& pass, int targetWidth, int targetHeight,
                                                  bool hdr) {
