@@ -972,4 +972,90 @@ void ShadowAtlas::End() {
     glViewport(m_savedViewport[0], m_savedViewport[1], m_savedViewport[2], m_savedViewport[3]);
 }
 
+// ---------------------------------------------------------------------------
+// The planar reflection's blur
+// ---------------------------------------------------------------------------
+
+ReflectionBlurPasses::~ReflectionBlurPasses() {
+    if (!m_tried || !::IsWindowReady())
+        return;
+    if (m_program != 0)
+        glDeleteProgram(m_program);
+    if (m_vao != 0)
+        glDeleteVertexArrays(1, &m_vao);
+}
+
+bool ReflectionBlurPasses::Ready() {
+    if (m_refuseForTest) {
+        if (!m_failureLogged)
+            spdlog::error("BRITE: this device cannot blur a planar reflection; reflections are drawn sharp");
+        m_failureLogged = true;
+        return false;
+    }
+    if (m_tried)
+        return m_ready;
+    m_tried = true;
+    m_program = MakeProgram(EmbeddedShaders::REFLECTION_BLUR_FRAGMENT, "reflection blur");
+    glGenVertexArrays(1, &m_vao);
+    m_ready = m_program != 0 && m_vao != 0;
+    if (!m_ready && !m_failureLogged)
+        spdlog::error("BRITE: this device cannot blur a planar reflection; reflections are drawn sharp");
+    m_failureLogged = m_failureLogged || !m_ready;
+    return m_ready;
+}
+
+bool ReflectionBlurPasses::MakeScratch(int width, int height, RenderTargetFormat format, TargetObjects& out,
+                                       std::string& why) {
+    out = {};
+    if (width <= 0 || height <= 0) {
+        why = "its size is not positive";
+        return false;
+    }
+    const SavedBinding saved;
+    const ColourFormat colour = ColourFormatOf(format);
+    out.width = width;
+    out.height = height;
+    out.format = format;
+    out.colour = MakeTexture(width, height, colour.internal, colour.format, colour.type, GL_LINEAR);
+    glGenFramebuffers(1, &out.framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, out.framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, out.colour, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        why = "the device cannot draw into a target of that format";
+        DestroyTarget(out);
+        return false;
+    }
+    return true;
+}
+
+void ReflectionBlurPasses::Blur(const TargetObjects& reflection, const TargetObjects& scratch,
+                                const ReflectionBlur::Plan& plan) {
+    ::rlDrawRenderBatchActive();
+    const SavedBinding saved;
+    const FullScreenState was = BeginFullScreen(m_vao);
+    glUseProgram(m_program);
+    glUniform1i(Uniform(m_program, "source"), 0);
+    // One pass: `from` read at the pass's level -- its mipmaps made first when that is not its own -- into `to`.
+    auto pass = [&](unsigned int from, const TargetObjects& to, const ReflectionBlur::Pass& p, bool across) {
+        glBindTexture(GL_TEXTURE_2D, from);
+        if (p.Level > 0) {
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, to.framebuffer);
+        glViewport(0, 0, to.width, to.height);
+        glUniform2f(Uniform(m_program, "step"), across ? p.Step : 0.0f, across ? 0.0f : p.Step);
+        glUniform1f(Uniform(m_program, "lod"), static_cast<float>(p.Level));
+        glUniform1f(Uniform(m_program, "spread"), p.Spread);
+        glUniform1i(Uniform(m_program, "taps"), p.Taps);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        // Every other reader reads the texture at its own size, as it was made.
+        if (p.Level > 0)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    };
+    pass(reflection.colour, scratch, plan.AcrossPass, true);
+    pass(scratch.colour, reflection, plan.DownPass, false);
+    EndFullScreen(was);
+}
+
 } // namespace BRITE::Backends::Raylib

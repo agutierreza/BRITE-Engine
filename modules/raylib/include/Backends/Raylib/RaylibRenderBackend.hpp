@@ -15,6 +15,7 @@ namespace Raylib {
 class PostChain;
 class ShadowAtlas;
 class InstanceStream;
+class ReflectionBlurPasses;
 
 class RaylibRenderBackend : public IRenderBackend {
   public:
@@ -56,6 +57,22 @@ class RaylibRenderBackend : public IRenderBackend {
     // size) are held now: they are freed after as many unused passes as the chain's sets. For tests and tools.
     bool ReadLastPlanarReflection(int& width, int& height, std::vector<float>& rgba) const;
     int PlanarReflectionTargetsHeld() const;
+    // ITS BLUR (ReflectionBlurSettings): whether the last pass's planar reflection was blurred --
+    // ReadLastPlanarReflection then reads it blurred, as the reflecting draws read it; how many of the blur's scratch
+    // targets are held (one a reflection target blurred, freed with it) and how many have been made or tried; whether
+    // its program has been asked for at all. And, RefuseReflectionBlurForTest, its program refused from now on, as on a
+    // device whose compiler refuses it; RefuseReflectionBlurTargetsForTest, its targets, as on a device that cannot
+    // make them. For tests and tools.
+    bool LastPlanarReflectionBlurred() const;
+    int ReflectionBlurTargetsHeld() const;
+    int ReflectionBlurTargetsMade() const;
+    bool ReflectionBlurProgramAsked() const {
+        return m_reflectionBlur != nullptr;
+    }
+    void RefuseReflectionBlurForTest();
+    void RefuseReflectionBlurTargetsForTest() {
+        m_refuseReflectionBlurTargetsForTest = true;
+    }
     // MOTION BLUR (RenderPass.hpp, MotionBlurSettings): the last pass's streaks -- x and y in pixels, +y up, 1 in blue
     // for an exempt pixel, the distance along the view in alpha -- and its blurred picture before bloom and the tone
     // map (premultiplied, as the scene is), each read back bottom row first; false when the last pass drew no blur. How
@@ -347,6 +364,11 @@ class RaylibRenderBackend : public IRenderBackend {
     struct PlanarState;
     std::shared_ptr<PlanarState> m_planar;
     bool m_planarThisPass = false;
+    // Its blur (ReflectionBlurSettings): the program, made on the first pass that blurs, and whether this pass's
+    // reflection was blurred.
+    std::shared_ptr<ReflectionBlurPasses> m_reflectionBlur;
+    bool m_planarBlurredThisPass = false;
+    bool m_refuseReflectionBlurTargetsForTest = false;
     // The pass's lit draws have its environment map bound (ApplyPassLighting), to be unbound when they are done.
     bool m_environmentThisPass = false;
     // A projection Draw3D puts in place of its camera's own once BeginMode3D has made it: the mirrored camera's, with

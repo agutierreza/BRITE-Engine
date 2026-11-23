@@ -2,6 +2,7 @@
 #include "Backends/MotionBlur.hpp"
 #include "Backends/Raylib/PbrShaderSource.hpp"
 #include "Backends/Raylib/PostShaderSource.hpp"
+#include "Backends/ReflectionBlur.hpp"
 #include "Backends/ShadowCascades.hpp"
 #include "Backends/ToneCurve.hpp"
 #include "RaylibPostChain.hpp"
@@ -271,10 +272,12 @@ struct RaylibRenderBackend::ShadowFrame {
 // The planar reflection's targets and what the reflecting draws read the current one with. Kept by size and format,
 // as the chain keeps its sets (RaylibPostChain.hpp): two reflecting passes a frame at different sizes each keep their
 // own, and a target no pass has drawn into for PostChain::IdlePasses passes is freed, so a resize does not keep the old
-// size's for the application's life.
+// size's for the application's life. A slot blurred (ReflectionBlurSettings) keeps its blur's scratch target beside
+// it, made on the first blur and freed with it.
 struct RaylibRenderBackend::PlanarState {
     struct Slot {
         TargetObjects target;
+        TargetObjects scratch;  // the blur's, when a pass has blurred this slot
         std::uint64_t used = 0; // the pass that last drew into it
     };
     std::vector<Slot> slots; // most recently used last
@@ -282,9 +285,13 @@ struct RaylibRenderBackend::PlanarState {
     // The slot the current pass drew into (an index into slots), and its mirrored camera's view and projection.
     std::size_t current = 0;
     ::Matrix viewProjection = {};
-    // Sizes the device refused, not asked again; one log line for them all.
+    // Sizes the device refused, not asked again; one log line for them all. The same for the blur's scratch targets,
+    // and how many of those have been made or tried.
     std::vector<std::array<int, 3>> refused;
     bool failureLogged = false;
+    std::vector<std::array<int, 3>> scratchRefused;
+    bool scratchFailureLogged = false;
+    int scratchMade = 0;
 
     PlanarState() = default;
     PlanarState(const PlanarState&) = delete;
@@ -294,7 +301,12 @@ struct RaylibRenderBackend::PlanarState {
         if (!::IsWindowReady())
             return;
         for (Slot& slot : slots)
-            DestroyTarget(slot.target);
+            Free(slot);
+    }
+    static void Free(Slot& slot) {
+        DestroyTarget(slot.target);
+        if (slot.scratch.framebuffer != 0)
+            DestroyTarget(slot.scratch);
     }
     const TargetObjects& Current() const {
         return slots[current].target;
@@ -325,7 +337,7 @@ struct RaylibRenderBackend::PlanarState {
             return nullptr;
         }
         if (slots.size() >= MaxSlots) { // the least recently used goes
-            DestroyTarget(slots.front().target);
+            Free(slots.front());
             slots.erase(slots.begin());
         }
         slot.used = pass;
@@ -337,13 +349,40 @@ struct RaylibRenderBackend::PlanarState {
     void ForgetIdle(std::uint64_t pass) {
         for (std::size_t i = 0; i < slots.size();) {
             if (pass > slots[i].used && pass - slots[i].used > PostChain::IdlePasses) {
-                DestroyTarget(slots[i].target);
+                Free(slots[i]);
                 slots.erase(slots.begin() + static_cast<std::ptrdiff_t>(i));
             } else {
                 ++i;
             }
         }
         current = 0;
+    }
+    // The current slot's blur scratch, kept or made; null when the device cannot make it (`refuse`: as if it could
+    // not), logged once, and that size and format not asked again.
+    TargetObjects* Scratch(bool refuse) {
+        Slot& slot = slots[current];
+        if (slot.scratch.framebuffer != 0)
+            return &slot.scratch;
+        const std::array<int, 3> key = {slot.target.width, slot.target.height, static_cast<int>(slot.target.format)};
+        if (std::find(scratchRefused.begin(), scratchRefused.end(), key) != scratchRefused.end())
+            return nullptr;
+        ++scratchMade;
+        std::string why = "the device cannot draw into a target of that format";
+        if (refuse || !ReflectionBlurPasses::MakeScratch(slot.target.width, slot.target.height, slot.target.format,
+                                                         slot.scratch, why)) {
+            slot.scratch = {};
+            scratchRefused.push_back(key);
+            if (!scratchFailureLogged)
+                spdlog::error("BRITE: a {}x{} planar reflection cannot be blurred ({}); it is drawn sharp", key[0],
+                              key[1], why);
+            scratchFailureLogged = true;
+            return nullptr;
+        }
+        return &slot.scratch;
+    }
+    int ScratchHeld() const {
+        return static_cast<int>(
+            std::count_if(slots.begin(), slots.end(), [](const Slot& s) { return s.scratch.framebuffer != 0; }));
     }
 };
 
@@ -687,6 +726,7 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     // A PLANAR REFLECTION (ReflectionSettings) is the world drawn a second time, into its own target, before the scene
     // binds the chain's: in linear light for an HDR pass, in the colours the screen shows for any other.
     m_planarThisPass = false;
+    m_planarBlurredThisPass = false;
     if (m_planar)
         m_planar->ForgetIdle(m_passSerial);
     const bool planarHdr = hdr;
@@ -708,8 +748,10 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     }
     // A pass that fell back from HDR after its reflection was drawn in linear light would mix light as colour: it
     // reflects the sky instead.
-    if (planarHdr && !hdr)
+    if (planarHdr && !hdr) {
         m_planarThisPass = false;
+        m_planarBlurredThisPass = false;
+    }
     const bool chained = hdr || displayBloom;
     if (chained) {
         // The chain's scene is premultiplied: the colour blends as ever, and the alpha builds as coverage -- a layer of
@@ -1803,6 +1845,19 @@ bool RaylibRenderBackend::RenderPlanarReflection(const BRITE::RenderPass& pass, 
     m_projectionOverride = false;
     m_shadowFrame = std::move(shadows);
     ::EndTextureMode();
+    // Its blur (ReflectionBlurSettings), when asked and the device can: else the reflection stays sharp.
+    const BRITE::ReflectionBlur::Plan blur = BRITE::ReflectionBlur::PlanFor(settings.Blur, width, height);
+    if (blur.Blurs) {
+        if (!m_reflectionBlur)
+            m_reflectionBlur = std::make_shared<ReflectionBlurPasses>();
+        if (m_reflectionBlur->Ready()) {
+            const TargetObjects* scratch = m_planar->Scratch(m_refuseReflectionBlurTargetsForTest);
+            if (scratch != nullptr) {
+                m_reflectionBlur->Blur(m_planar->Current(), *scratch, blur);
+                m_planarBlurredThisPass = true;
+            }
+        }
+    }
     // A skinned draw of the mirrored list may have left its pose in a model's buffers under another command's index:
     // the pass's own draws are told to pose again.
     ++m_passSerial;
@@ -1820,6 +1875,24 @@ bool RaylibRenderBackend::ReadLastPlanarReflection(int& width, int& height, std:
 
 int RaylibRenderBackend::PlanarReflectionTargetsHeld() const {
     return m_planar ? static_cast<int>(m_planar->slots.size()) : 0;
+}
+
+bool RaylibRenderBackend::LastPlanarReflectionBlurred() const {
+    return m_planarThisPass && m_planarBlurredThisPass;
+}
+
+int RaylibRenderBackend::ReflectionBlurTargetsHeld() const {
+    return m_planar ? m_planar->ScratchHeld() : 0;
+}
+
+int RaylibRenderBackend::ReflectionBlurTargetsMade() const {
+    return m_planar ? m_planar->scratchMade : 0;
+}
+
+void RaylibRenderBackend::RefuseReflectionBlurForTest() {
+    if (!m_reflectionBlur)
+        m_reflectionBlur = std::make_shared<ReflectionBlurPasses>();
+    m_reflectionBlur->RefuseForTest();
 }
 
 // ---------------------------------------------------------------------------

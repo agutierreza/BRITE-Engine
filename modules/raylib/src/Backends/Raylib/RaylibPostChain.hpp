@@ -2,10 +2,11 @@
 
 // PRIVATE to the raylib render backend: render targets with a colour format and a readable depth, the HDR pass's
 // chain -- its float scene target, the bloom chain and the tone map (RenderPass.hpp, PostSettings) -- the sun-shadow
-// atlas, and the instanced draws' attribute stream. Raw OpenGL 3.3
+// atlas, the planar reflection's blur, and the instanced draws' attribute stream. Raw OpenGL 3.3
 // through raylib's own loader, glad, where rlgl has no call; no raylib type in this header.
 
 #include "Backends/IRenderBackend.hpp"
+#include "Backends/ReflectionBlur.hpp"
 #include "Backends/RenderPass.hpp"
 
 #include <array>
@@ -254,6 +255,38 @@ class ShadowAtlas {
     int m_savedFramebuffer = 0;
     int m_savedViewport[4] = {0, 0, 0, 0};
     void Free();
+};
+
+// THE PLANAR REFLECTION'S BLUR (RenderPass.hpp, ReflectionBlurSettings; ReflectionBlur.hpp): its program, compiled on
+// first use, and the two passes that blur a reflection in place -- across into a scratch target of its size and format,
+// then down back into the reflection. Its targets are the planar reflection's, kept and freed with it.
+class ReflectionBlurPasses {
+  public:
+    ReflectionBlurPasses() = default;
+    ~ReflectionBlurPasses();
+    ReflectionBlurPasses(const ReflectionBlurPasses&) = delete;
+    ReflectionBlurPasses& operator=(const ReflectionBlurPasses&) = delete;
+    // Compiles the program on first use. False, logged once, when the device refuses it: every reflection is then
+    // drawn sharp.
+    bool Ready();
+    // A colour target of this size and format, no depth: the blur's scratch. False, with `why` and nothing left made,
+    // when the device cannot make it.
+    static bool MakeScratch(int width, int height, RenderTargetFormat format, TargetObjects& out, std::string& why);
+    // `reflection` blurred in place by `plan`, through `scratch`, of the same size and format. Leaves the GL state as
+    // it found it, and the reflection read at its own size again.
+    void Blur(const TargetObjects& reflection, const TargetObjects& scratch, const ReflectionBlur::Plan& plan);
+    // For tests: the program refused from now on, as on a device whose compiler refuses it.
+    void RefuseForTest() {
+        m_refuseForTest = true;
+    }
+
+  private:
+    bool m_tried = false;
+    bool m_ready = false;
+    bool m_refuseForTest = false;
+    bool m_failureLogged = false;
+    unsigned int m_program = 0;
+    unsigned int m_vao = 0;
 };
 
 // THE INSTANCE STREAM (RenderPass.hpp, InstancedModelDrawCommand): an instanced draw's attributes, one set per copy --

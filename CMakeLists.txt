@@ -316,6 +316,7 @@ if(BRITE_BUILD_RAYLIB)
     brite_read_shader(BRITE_MOTION_RESOLVE_FS motion_resolve.fs)
     brite_read_shader(BRITE_MOTION_TILES_FS motion_tiles.fs)
     brite_read_shader(BRITE_MOTION_GATHER_FS motion_gather.fs)
+    brite_read_shader(BRITE_REFLECTION_BLUR_FS reflection_blur.fs)
     configure_file(modules/raylib/src/Backends/Raylib/PostShaderSource.hpp.in
                    "${CMAKE_CURRENT_BINARY_DIR}/generated/Backends/Raylib/PostShaderSource.hpp" @ONLY)
     target_include_directories(BRITERaylib PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -499,6 +500,7 @@ if(BRITE_BUILD_TESTS)
             tests/AdditiveBlendTests.cpp
             tests/SunShadowTests.cpp
             tests/ReflectionTests.cpp
+            tests/ReflectionBlurTests.cpp
             tests/InstancingTests.cpp
             tests/RaylibSceneAssetsTests.cpp
         )

@@ -286,12 +286,40 @@ struct ShadowSettings {
 //     freed once no pass has drawn one for a while. A device that cannot make one (said once in the log), an HDR pass
 //     that falls back to 8 bits after it was drawn, and a camera at or below the plane, which sees its underside,
 //     reflect the sky instead.
+//
+// THE PLANAR REFLECTION'S BLUR (Blur): the reflection softened before any surface reads it, and drawn out down the
+// screen further than across it, so a small bright light in it becomes a streak running toward the viewer -- as lights
+// smear on wet asphalt or a calm sea. OFF BY DEFAULT, and off costs nothing: no target is made, no shader compiled, no
+// pass drawn, and the picture is exactly the one drawn without it.
+//
+// The blur is a Gaussian, separable: across the screen, then down it, over the reflection as it was drawn -- in linear
+// light for an HDR pass, so a light past white streaks as light; in the colours the screen shows for any other. The
+// reflection's own up is the screen's up (the mirrored camera mirrors its up as well), so "down the screen" is down the
+// reflection, for a rolled camera too. Both spreads are fractions of the pass's height, so a blur looks the same at any
+// size of target and any Resolution -- but never less than one of the reflection's own texels across, so a reflection
+// drawn small reads soft rather than as blocks. A spread too wide to gather at the reflection's own size is gathered
+// from a coarser level of it (ReflectionBlur.hpp says how), the cost staying about the same.
+//
+// A device that cannot make the blur's target, or whose compiler refuses its shader, draws the sharp reflection and
+// logs why once. It never draws a black one.
+struct ReflectionBlurSettings {
+    bool Enabled = false;
+    // How soft: the spread across the screen, the Gaussian's standard deviation, as a fraction of the pass's height --
+    // 0.004 is about 4 pixels on a target 1080 high. Held to 0..0.01; 0 blurs nothing.
+    float Softness = 0.004f;
+    // How many times further the blur reaches down the screen than across it: 1 an even blur, 6 a light drawn out into
+    // a streak six times as long as it is wide. Held to 1..12.
+    float Stretch = 4.0f;
+};
+
 struct ReflectionSettings {
     Color SkyColor = {128, 170, 220, 255};
     bool Planar = false;
     float PlaneHeight = 0.0f;
     // The reflection's size, a fraction of the pass's target: 0.5 is a quarter of the pixels. Held to 0.05..1.
     float Resolution = 0.5f;
+    // Off unless Blur.Enabled is set (ReflectionBlurSettings).
+    ReflectionBlurSettings Blur;
 };
 
 // MOTION BLUR: what moved during the frame smeared along its motion, as a camera's open shutter smears it -- the
