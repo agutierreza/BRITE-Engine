@@ -393,10 +393,10 @@ TEST_F(ReflectionBlurPass, ItsTargetIsKeptWithTheReflectionsAndFreedWithIt) {
 }
 
 // THE REFLECTION IS READ AT ITS OWN SIZE AGAIN AFTER A PASS THAT READ A COARSER LEVEL OF IT. The lit shader reads the
-// reflection with texture(), its level from the read's own derivatives, so a reflection left filtering through mipmaps
-// would show a distorted or grazing read the stale levels the blur made. A 1700 x 1700 target at Resolution 1: a
-// reflection 1700 high, and a Softness of 0.01 spreads 17 texels across -- beyond 16, so the ACROSS pass, which reads
-// the reflection itself, reads its level 1 (17 <= 16 x 2). After the pass the reflection's minifying filter is
+// reflection with texture(), its level from the read's own derivatives. Were the reflection left filtering through
+// mipmaps, a distorted or grazing read would sample the stale levels the blur made. A 1700 x 1700 target at Resolution
+// 1: a reflection 1700 high, and a Softness of 0.01 spreads 17 texels across -- beyond 16, so the ACROSS pass, which
+// reads the reflection itself, reads its level 1 (17 <= 16 x 2). After the pass the reflection's minifying filter is
 // GL_LINEAR (0x2601), the filter it was made with, as before any blur. Mutation: the filter not put back after a pass
 // that read a coarser level -> GL_LINEAR_MIPMAP_NEAREST (0x2701), red.
 TEST_F(ReflectionBlurPass, TheReflectionIsReadAtItsOwnSizeAgain) {
