@@ -611,15 +611,22 @@ void PostChain::FreeMotion() {
     m_motion = {};
 }
 
-bool PostChain::BeginMotion(int tile, std::uint64_t pass) {
-    if (m_scene.framebuffer == 0)
-        return false;
-    const int width = m_scene.width, height = m_scene.height;
-    if (m_motion.velocity.framebuffer == 0 || m_motion.width != width || m_motion.height != height ||
-        m_motion.tile != tile) {
+void PostChain::FreeMotionTiles() {
+    for (TargetObjects* target : {&m_motion.rows, &m_motion.tiles, &m_motion.neighbours})
+        DestroyTarget(*target);
+    m_motion.tile = 0;
+}
+
+bool PostChain::PrepareMotion(int width, int height, int tile, std::uint64_t pass) {
+    const std::array<int, 3> size = {width, height, tile};
+    if (std::find(m_motionRefused.begin(), m_motionRefused.end(), size) != m_motionRefused.end())
+        return false; // refused once at this size and tile: not asked again
+    const SavedBinding saved;
+    bool complete = true;
+    // The targets of the pass's size: kept while it keeps its size.
+    if (m_motion.velocity.framebuffer == 0 || m_motion.width != width || m_motion.height != height) {
         FreeMotion();
-        const SavedBinding saved;
-        const int tilesWide = (width + tile - 1) / tile, tilesHigh = (height + tile - 1) / tile;
+        ++m_motionSetsMade;
         m_motion.depthTexture =
             MakeTexture(width, height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_FLOAT, GL_NEAREST);
         glGenFramebuffers(1, &m_motion.depthFramebuffer);
@@ -627,26 +634,41 @@ bool PostChain::BeginMotion(int tile, std::uint64_t pass) {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_motion.depthTexture, 0);
         glDrawBuffer(GL_NONE);
         glReadBuffer(GL_NONE);
-        bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
         complete = MakeColourTarget(width, height, GL_NEAREST, m_motion.velocity) && complete;
         complete = MakeColourTarget(width, height, GL_NEAREST, m_motion.motion) && complete;
-        complete = MakeColourTarget(tilesWide, height, GL_NEAREST, m_motion.rows) && complete;
-        complete = MakeColourTarget(tilesWide, tilesHigh, GL_NEAREST, m_motion.tiles) && complete;
-        complete = MakeColourTarget(tilesWide, tilesHigh, GL_NEAREST, m_motion.neighbours) && complete;
         complete = MakeColourTarget(width, height, GL_LINEAR, m_motion.blurred) && complete;
-        if (!complete) {
-            if (!m_motionFailureLogged)
-                spdlog::error(
-                    "BRITE: a pass cannot make its {}x{} motion blur targets; it is drawn without motion blur", width,
-                    height);
-            m_motionFailureLogged = true;
-            FreeMotion();
-            return false;
-        }
         m_motion.width = width;
         m_motion.height = height;
+    }
+    // The tile's three: remade alone when only the tile changes.
+    if (complete && m_motion.tile != tile) {
+        FreeMotionTiles();
+        const int tilesWide = (width + tile - 1) / tile, tilesHigh = (height + tile - 1) / tile;
+        complete = MakeColourTarget(tilesWide, height, GL_NEAREST, m_motion.rows);
+        complete = MakeColourTarget(tilesWide, tilesHigh, GL_NEAREST, m_motion.tiles) && complete;
+        complete = MakeColourTarget(tilesWide, tilesHigh, GL_NEAREST, m_motion.neighbours) && complete;
         m_motion.tile = tile;
     }
+    if (!complete || m_refuseMotionTargetsForTest) {
+        if (!m_motionFailureLogged)
+            spdlog::error("BRITE: a pass cannot make its {}x{} motion blur targets; it is drawn without motion blur",
+                          width, height);
+        m_motionFailureLogged = true;
+        m_motionRefused.push_back(size);
+        FreeMotion();
+        return false;
+    }
+    m_motion.used = pass;
+    return true;
+}
+
+bool PostChain::BeginMotion(std::uint64_t pass) {
+    // PrepareMotion made the targets at the pass's size, before the scene was drawn at the same size.
+    if (m_scene.framebuffer == 0 || m_motion.velocity.framebuffer == 0 || m_motion.width != m_scene.width ||
+        m_motion.height != m_scene.height)
+        return false;
+    const int width = m_scene.width, height = m_scene.height;
     m_motion.used = pass;
     // The depth the scene left, where a shader can read it.
     CopySceneDepth(m_motion.depthFramebuffer);
@@ -692,21 +714,34 @@ void PostChain::DrawVelocity(unsigned int positions, unsigned int indices, int e
         glDrawArrays(GL_TRIANGLES, 0, vertices);
 }
 
+void PostChain::UploadVelocityInstances(const float* placements, int count, bool withBefore) {
+    if (placements == nullptr || count <= 0)
+        return;
+    m_velocityWithBefore = withBefore;
+    glBindBuffer(GL_ARRAY_BUFFER, m_velocityInstances);
+    // A fresh store each draw: the driver gives a new one rather than wait for the draw still reading the last.
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(sizeof(float) * (withBefore ? 32 : 16)) * count, placements,
+                 GL_STREAM_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
 void PostChain::DrawVelocityInstanced(unsigned int positions, unsigned int indices, int elements, int vertices,
-                                      const float* placements, int count, const float viewProjectionNow[16],
+                                      int count, const float viewProjectionNow[16],
                                       const float viewProjectionBefore[16]) {
-    if (positions == 0 || placements == nullptr || count <= 0)
+    if (positions == 0 || count <= 0)
         return;
     glUniformMatrix4fv(Uniform(m_velocityProgram, "viewProjectionNow"), 1, GL_FALSE, viewProjectionNow);
     glUniformMatrix4fv(Uniform(m_velocityProgram, "viewProjectionBefore"), 1, GL_FALSE, viewProjectionBefore);
     BindPositions(positions, indices);
     glBindBuffer(GL_ARRAY_BUFFER, m_velocityInstances);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(sizeof(float) * 32) * count, placements, GL_STREAM_DRAW);
-    const GLsizei stride = static_cast<GLsizei>(sizeof(float) * 32);
+    // Columns 0-3 are the matrix now (locations 1-4), 4-7 last frame's (5-8); an upload of one matrix a copy gives
+    // both from the same four.
+    const GLsizei stride = static_cast<GLsizei>(sizeof(float) * (m_velocityWithBefore ? 32 : 16));
     for (GLuint column = 0; column < 8; ++column) {
+        const std::size_t source = m_velocityWithBefore ? column : column % 4;
         glEnableVertexAttribArray(1 + column);
         glVertexAttribPointer(1 + column, 4, GL_FLOAT, GL_FALSE, stride,
-                              reinterpret_cast<const void*>(sizeof(float) * 4 * static_cast<std::size_t>(column)));
+                              reinterpret_cast<const void*>(sizeof(float) * 4 * source));
         glVertexAttribDivisor(1 + column, 1);
     }
     if (indices != 0)
@@ -725,7 +760,8 @@ void PostChain::EndMotion(const MotionBlurSettings& settings, const float reproj
         return;
     const MotionTargets& t = m_motion;
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); // the motion set's own vertex array is still bound: its binding
+    // The motion set's own vertex array is still bound, so this clears its index binding, no mesh's.
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
     // Each pixel's streak.
     glUseProgram(m_resolve);

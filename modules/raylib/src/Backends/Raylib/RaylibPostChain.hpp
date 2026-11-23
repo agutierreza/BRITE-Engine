@@ -81,11 +81,14 @@ class PostChain {
     // compiled on first use: false, logged once, when the device refuses any of them -- every pass is then drawn as if
     // motion blur were off.
     bool MotionReady();
-    // Makes its targets at the scene's size (kept between passes, remade at another size or tile), copies the scene's
-    // depth where its shaders can read it, and binds the velocity target, cleared, for the velocity draws: no depth
-    // test, no blending, no culling. False, logged once, when the device cannot make the targets; nothing is then bound
-    // and the pass is drawn unblurred. `tile` is the gather's tile in pixels.
-    bool BeginMotion(int tile, std::uint64_t pass);
+    // Makes its targets for a pass of this size and tile (the gather's, in pixels), BEFORE the pass is drawn: kept
+    // between passes, the tile's three remade alone when only the tile changes. False, logged once, when the device
+    // cannot make them -- the pass is then drawn as with motion blur off -- and that size and tile is not asked again.
+    bool PrepareMotion(int width, int height, int tile, std::uint64_t pass);
+    // Copies the scene's depth where the blur's shaders can read it and binds the velocity target, cleared, for the
+    // velocity draws: no depth test, no blending, no culling. False, nothing bound, unless PrepareMotion made the
+    // targets at the scene's size.
+    bool BeginMotion(std::uint64_t pass);
     // The velocity program for the draws that follow: an instanced draw's or a model draw's, writing motion or, when
     // `exempt`, the exempt mark (motion_velocity.fs). `depthRange`: near, far, 1 for a perspective projection.
     void UseVelocity(bool instanced, bool exempt, const float depthRange[3]);
@@ -93,11 +96,12 @@ class PostChain {
     // one, its 16-bit index buffer; the two matrices column-major, the draw's model-view-projection now and last frame.
     void DrawVelocity(unsigned int positions, unsigned int indices, int elements, int vertices, const float mvpNow[16],
                       const float mvpBefore[16]);
-    // An instanced draw's mesh, once per copy: `placements` holds each copy's model matrix now and then, 32 floats a
-    // copy, column-major; the two view-projections the pass's.
-    void DrawVelocityInstanced(unsigned int positions, unsigned int indices, int elements, int vertices,
-                               const float* placements, int count, const float viewProjectionNow[16],
-                               const float viewProjectionBefore[16]);
+    // An instanced draw's copies, uploaded once for all its meshes: each copy's model matrix now and, `withBefore`,
+    // last frame's, column-major -- 32 floats a copy, or 16 read as both. Then each mesh of it drawn once per copy
+    // uploaded, through the pass's two view-projections.
+    void UploadVelocityInstances(const float* placements, int count, bool withBefore);
+    void DrawVelocityInstanced(unsigned int positions, unsigned int indices, int elements, int vertices, int count,
+                               const float viewProjectionNow[16], const float viewProjectionBefore[16]);
     // Ends the velocity draws, puts the state back, and blurs: each pixel's streak, the tiles, the gather into the
     // blurred picture, which the bloom and the tone map then read in place of the scene. `reprojection`: last frame's
     // view-projection times the inverse of this frame's, column-major; `cameraMoves` false leaves the camera still.
@@ -105,18 +109,30 @@ class PostChain {
                    const float depthRange[3]);
     // For tests: the last blurred pass's streaks (x, y in pixels, +y up; 1 for an exempt pixel; the distance along the
     // view) and its blurred picture, bottom row first; false when the last pass drew no blur. How many sets of motion
-    // targets are held (0 or 1). And, RefuseMotionForTest, the blur's programs refused from now on, as on a device
-    // whose compiler refuses them.
+    // targets are held (0 or 1). RefuseMotionForTest: the blur's programs refused from now on, as on a device whose
+    // compiler refuses them; RefuseMotionTargetsForTest: its targets refused, as on a device that cannot make them.
     bool ReadMotionFloats(std::vector<float>& rgba, int& width, int& height) const;
     bool ReadBlurredFloats(std::vector<float>& rgba, int& width, int& height) const;
     int MotionSetsHeld() const {
         return m_motion.velocity.framebuffer != 0 ? 1 : 0;
+    }
+    // How many times a set of the pass's size has been made, or tried: a pass at a size it holds, or at a size refused
+    // before, makes none, and a change of tile alone remakes only the tile's three.
+    int MotionSetsMade() const {
+        return m_motionSetsMade;
     }
     bool BlurredThisPass() const {
         return m_blurredThisPass;
     }
     void RefuseMotionForTest() {
         m_refuseMotionForTest = true;
+    }
+    void RefuseMotionTargetsForTest() {
+        m_refuseMotionTargetsForTest = true;
+    }
+    // Called as every pass begins: what the last pass blurred is no longer the last pass's.
+    void ForgetLastBlur() {
+        m_blurredThisPass = false;
     }
 
     // The bloom chain over the resolved scene, when the settings enable it; otherwise nothing.
@@ -175,10 +191,15 @@ class PostChain {
     bool m_motionTried = false;
     bool m_motionReady = false;
     bool m_refuseMotionForTest = false;
+    bool m_refuseMotionTargetsForTest = false;
+    int m_motionSetsMade = 0;
+    // Sizes and tiles (width, height, tile) the device refused motion blur's targets at: not asked again.
+    std::vector<std::array<int, 3>> m_motionRefused;
     bool m_motionFailureLogged = false;
     unsigned int m_velocity = 0, m_velocityInstanced = 0, m_resolve = 0, m_tiles = 0, m_gather = 0;
     unsigned int m_velocityVao = 0, m_velocityInstances = 0;
     unsigned int m_velocityProgram = 0; // the one UseVelocity bound
+    bool m_velocityWithBefore = true;   // the last upload's: each copy's matrix then, or its matrix now read twice
     struct MotionTargets {
         int width = 0, height = 0, tile = 0;
         unsigned int depthFramebuffer = 0, depthTexture = 0;
@@ -192,6 +213,7 @@ class PostChain {
         return m_blurredThisPass ? m_motion.blurred.colour : m_scene.colour;
     }
     void FreeMotion();
+    void FreeMotionTiles();
     struct SavedMotionState;
     std::shared_ptr<SavedMotionState> m_motionState;
 };

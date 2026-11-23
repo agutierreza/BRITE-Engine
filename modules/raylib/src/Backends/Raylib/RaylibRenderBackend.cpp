@@ -253,6 +253,12 @@ struct RaylibRenderBackend::FormattedTarget {
 
 // What a pass's shadow pass leaves for its lit draws (RenderShadows): per cascade, the light's view and projection, the
 // tile's rectangle in the atlas's uv, the far edge along the view and a texel's size in world units.
+// The instanced draws' copies as the last Draw3D streamed them, one list per InstancedModelDrawCommand: motion blur's
+// velocity draw takes each copy's placement now from here rather than work it out a second time.
+struct RaylibRenderBackend::DrawnInstances {
+    std::vector<std::vector<InstanceData>> data;
+};
+
 struct RaylibRenderBackend::ShadowFrame {
     int cascades = 0;
     float forward[3] = {0.0f, 0.0f, -1.0f};
@@ -622,6 +628,9 @@ void RaylibRenderBackend::UseBlend(bool additive) const {
 void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
     ++m_passSerial;
     m_modelDrawCalls = 0;
+    // What the last pass blurred is read back only as the last pass's.
+    if (m_post)
+        m_post->ForgetLastBlur();
     // The pass's own target, and its size: a render texture's, or the window's drawing surface.
     RenderTexture2D* targetTexture = nullptr;
     int targetWidth = ::GetRenderWidth();
@@ -657,7 +666,15 @@ void RaylibRenderBackend::SubmitRenderPass(const BRITE::RenderPass& pass) {
             m_post = std::make_shared<PostChain>();
         if (m_refuseMotionBlurForTest)
             m_post->RefuseMotionForTest();
-        blur = m_post->Ready() && m_post->MotionReady();
+        if (m_refuseMotionBlurTargetsForTest)
+            m_post->RefuseMotionTargetsForTest();
+        // Its programs and its targets are made, or refused, before the pass is routed: a pass that cannot blur is
+        // drawn as with motion blur off, not through the chain unblurred.
+        const int tile = std::clamp(static_cast<int>(std::ceil(pass.Post.MotionBlur.MaxLength)),
+                                    static_cast<int>(BRITE::MotionBlur::LeastMaxLength),
+                                    static_cast<int>(BRITE::MotionBlur::MostMaxLength));
+        blur = m_post->Ready() && m_post->MotionReady() &&
+               m_post->PrepareMotion(targetWidth, targetHeight, tile, m_passSerial);
     }
     bool hdr = pass.Post.Hdr && canChain;
     bool displayBloom = !pass.Post.Hdr && (pass.Post.Bloom.Enabled || blur) && canChain;
@@ -1127,7 +1144,10 @@ void RaylibRenderBackend::Draw3D(const BRITE::RenderPass& pass, bool hdr) {
     // order listed: a placement as a model draw's (the model's own transform, then scale, rotation, translation) and a
     // tint. A mesh is translucent by a model draw's rules applied to `proxies` -- the command's model and material, the
     // material's alpha times the faintest copy's -- so one faint copy makes the whole mesh translucent.
-    std::vector<std::vector<InstanceData>> instanceData(pass.InstancedModelCommands.size());
+    if (!m_drawnInstances)
+        m_drawnInstances = std::make_shared<DrawnInstances>();
+    std::vector<std::vector<InstanceData>>& instanceData = m_drawnInstances->data;
+    instanceData.assign(pass.InstancedModelCommands.size(), {});
     std::vector<BRITE::ModelDrawCommand> proxies(pass.InstancedModelCommands.size());
     for (std::size_t i = 0; i < pass.InstancedModelCommands.size(); ++i) {
         const BRITE::InstancedModelDrawCommand& cmd = pass.InstancedModelCommands[i];
@@ -1513,10 +1533,7 @@ void RaylibRenderBackend::RenderMotionBlur(const BRITE::RenderPass& pass, int ta
     const float depthRange[3] = {static_cast<float>(::rlGetCullDistanceNear()),
                                  static_cast<float>(::rlGetCullDistanceFar()),
                                  camera.projection == BRITE::Math::CameraProjection::Perspective ? 1.0f : 0.0f};
-    const int tile =
-        std::clamp(static_cast<int>(std::ceil(settings.MaxLength)), static_cast<int>(BRITE::MotionBlur::LeastMaxLength),
-                   static_cast<int>(BRITE::MotionBlur::MostMaxLength));
-    if (!m_post->BeginMotion(tile, m_passSerial))
+    if (!m_post->BeginMotion(m_passSerial))
         return;
 
     // Whether one mesh of a draw is translucent, as the lit draw judged it: a translucent mesh writes no motion.
@@ -1536,37 +1553,57 @@ void RaylibRenderBackend::RenderMotionBlur(const BRITE::RenderPass& pass, int ta
         m_post->DrawVelocity(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION], indices, mesh.triangleCount * 3,
                              mesh.vertexCount, now.data(), was.data());
     };
-    auto drawInstanced = [&](const ::Mesh& mesh, const std::vector<float>& placements, std::size_t copies) {
+    const std::array<float, 16> viewProjectionNowColumns = Columns(viewProjectionNow);
+    const std::array<float, 16> viewProjectionBeforeColumns = Columns(viewProjectionBefore);
+    auto drawInstanced = [&](const ::Mesh& mesh, int copies) {
         if (mesh.vboId == nullptr)
             return;
         const unsigned int indices =
             mesh.indices != nullptr ? mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_INDICES] : 0;
         m_post->DrawVelocityInstanced(mesh.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION], indices,
-                                      mesh.triangleCount * 3, mesh.vertexCount, placements.data(),
-                                      static_cast<int>(copies), Columns(viewProjectionNow).data(),
-                                      Columns(viewProjectionBefore).data());
+                                      mesh.triangleCount * 3, mesh.vertexCount, copies, viewProjectionNowColumns.data(),
+                                      viewProjectionBeforeColumns.data());
     };
-    // An instanced draw's copies, now and then -- a copy with no Previous then where it is now -- 32 floats a copy; and
-    // the proxy its translucency is judged by, as its lit draw judged it (the faintest copy's tint).
-    auto placementsOf = [&](const BRITE::InstancedModelDrawCommand& cmd, const ::Model& model, bool still) {
-        std::vector<float> placements(cmd.Instances.size() * 32);
+    // An instanced draw's copies, now and then, 32 floats a copy: for the moving draws only the copies that moved -- a
+    // still copy takes the camera's motion from the depth, as a still draw does -- and for an exempt draw every copy,
+    // marked where it is. Uploaded once for all the draw's meshes; how many.
+    // Each copy's placement now is the one its lit draw streamed (DrawnInstances); only last frame's is worked out
+    // here, and only for a copy that moved.
+    auto uploadCopies = [&](std::size_t index, const BRITE::InstancedModelDrawCommand& cmd, const ::Model& model,
+                            bool exempt) {
+        const std::vector<InstanceData>* drawn = m_drawnInstances && index < m_drawnInstances->data.size() &&
+                                                         m_drawnInstances->data[index].size() == cmd.Instances.size()
+                                                     ? &m_drawnInstances->data[index]
+                                                     : nullptr;
+        std::vector<float> placements;
+        placements.reserve(cmd.Instances.size() * (exempt ? 16 : 32));
         for (std::size_t k = 0; k < cmd.Instances.size(); ++k) {
             const BRITE::ModelInstance& copy = cmd.Instances[k];
+            if (!exempt && !(copy.Previous &&
+                             BRITE::MotionBlur::Moved(*copy.Previous, {copy.Position, copy.Rotation, copy.Scale})))
+                continue;
             BRITE::ModelDrawCommand placed;
-            placed.Position = copy.Position;
-            placed.Rotation = copy.Rotation;
-            placed.Scale = copy.Scale;
-            const std::array<float, 16> now = Columns(DrawTransform(model, placed));
-            if (copy.Previous && !still) {
-                placed.Position = copy.Previous->Position;
-                placed.Rotation = copy.Previous->Rotation;
-                placed.Scale = copy.Previous->Scale;
+            if (drawn != nullptr) {
+                const float* now = (*drawn)[k].transform;
+                placements.insert(placements.end(), now, now + 16);
+            } else {
+                placed.Position = copy.Position;
+                placed.Rotation = copy.Rotation;
+                placed.Scale = copy.Scale;
+                const std::array<float, 16> now = Columns(DrawTransform(model, placed));
+                placements.insert(placements.end(), now.begin(), now.end());
             }
+            if (exempt)
+                continue; // marked where it is: one placement a copy, read as now and as then
+            placed.Position = copy.Previous->Position;
+            placed.Rotation = copy.Previous->Rotation;
+            placed.Scale = copy.Previous->Scale;
             const std::array<float, 16> was = Columns(DrawTransform(model, placed));
-            std::memcpy(&placements[k * 32], now.data(), sizeof(float) * 16);
-            std::memcpy(&placements[k * 32 + 16], was.data(), sizeof(float) * 16);
+            placements.insert(placements.end(), was.begin(), was.end());
         }
-        return placements;
+        const int copies = static_cast<int>(placements.size() / (exempt ? 16 : 32));
+        m_post->UploadVelocityInstances(placements.data(), copies, !exempt);
+        return copies;
     };
     auto instancedProxy = [](const BRITE::InstancedModelDrawCommand& cmd) {
         BRITE::ModelDrawCommand proxy;
@@ -1586,8 +1623,9 @@ void RaylibRenderBackend::RenderMotionBlur(const BRITE::RenderPass& pass, int ta
     for (std::size_t i = 0; i < pass.ModelCommands.size(); ++i) {
         const BRITE::ModelDrawCommand& cmd = pass.ModelCommands[i];
         const ::Model* model = modelOf(cmd.Model);
-        if (!cmd.MotionBlurred || !cmd.Previous || model == nullptr)
-            continue;
+        if (!cmd.MotionBlurred || !cmd.Previous || model == nullptr ||
+            !BRITE::MotionBlur::Moved(*cmd.Previous, {cmd.Position, cmd.Rotation, cmd.Scale}))
+            continue; // a draw that did not move takes the camera's motion from the depth, as a still one does
         BRITE::ModelDrawCommand was = cmd;
         was.Position = cmd.Previous->Position;
         was.Rotation = cmd.Previous->Rotation;
@@ -1601,18 +1639,19 @@ void RaylibRenderBackend::RenderMotionBlur(const BRITE::RenderPass& pass, int ta
                 drawMesh(model->meshes[m], mvpNow, mvpBefore);
     }
     m_post->UseVelocity(true, false, depthRange);
-    for (const BRITE::InstancedModelDrawCommand& cmd : pass.InstancedModelCommands) {
+    for (std::size_t i = 0; i < pass.InstancedModelCommands.size(); ++i) {
+        const BRITE::InstancedModelDrawCommand& cmd = pass.InstancedModelCommands[i];
         const ::Model* model = modelOf(cmd.Model);
-        const bool moves = std::any_of(cmd.Instances.begin(), cmd.Instances.end(),
-                                       [](const BRITE::ModelInstance& copy) { return copy.Previous.has_value(); });
-        if (!cmd.MotionBlurred || !moves || model == nullptr)
+        if (!cmd.MotionBlurred || model == nullptr)
             continue;
-        const std::vector<float> placements = placementsOf(cmd, *model, false);
+        const int copies = uploadCopies(i, cmd, *model, false);
+        if (copies == 0)
+            continue;
         const BRITE::ModelDrawCommand proxy = instancedProxy(cmd);
         PoseForDraw(cmd.Model, BRITE::ModelPose{}, InstancedPoseIndex);
         for (int m = 0; m < model->meshCount; ++m)
             if (!translucent(proxy, *model, m))
-                drawInstanced(model->meshes[m], placements, cmd.Instances.size());
+                drawInstanced(model->meshes[m], copies);
     }
 
     // The exempt draws, over them: every mesh, opaque or translucent, marked wherever it shows.
@@ -1628,14 +1667,15 @@ void RaylibRenderBackend::RenderMotionBlur(const BRITE::RenderPass& pass, int ta
             drawMesh(model->meshes[m], mvp, mvp);
     }
     m_post->UseVelocity(true, true, depthRange);
-    for (const BRITE::InstancedModelDrawCommand& cmd : pass.InstancedModelCommands) {
+    for (std::size_t i = 0; i < pass.InstancedModelCommands.size(); ++i) {
+        const BRITE::InstancedModelDrawCommand& cmd = pass.InstancedModelCommands[i];
         const ::Model* model = modelOf(cmd.Model);
         if (cmd.MotionBlurred || model == nullptr || cmd.Instances.empty())
             continue;
-        const std::vector<float> placements = placementsOf(cmd, *model, true);
+        const int copies = uploadCopies(i, cmd, *model, true);
         PoseForDraw(cmd.Model, BRITE::ModelPose{}, InstancedPoseIndex);
         for (int m = 0; m < model->meshCount; ++m)
-            drawInstanced(model->meshes[m], placements, cmd.Instances.size());
+            drawInstanced(model->meshes[m], copies);
     }
 
     // A point's clip position now, back through this frame's view-projection and forward through last frame's.
@@ -1654,6 +1694,10 @@ bool RaylibRenderBackend::ReadLastMotionBlurred(int& width, int& height, std::ve
 
 int RaylibRenderBackend::MotionBlurTargetSetsHeld() const {
     return m_post ? m_post->MotionSetsHeld() : 0;
+}
+
+int RaylibRenderBackend::MotionBlurTargetSetsMade() const {
+    return m_post ? m_post->MotionSetsMade() : 0;
 }
 
 bool RaylibRenderBackend::RenderPlanarReflection(const BRITE::RenderPass& pass, int targetWidth, int targetHeight,

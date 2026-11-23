@@ -60,12 +60,19 @@ class RaylibRenderBackend : public IRenderBackend {
     // for an exempt pixel, the distance along the view in alpha -- and its blurred picture before bloom and the tone
     // map (premultiplied, as the scene is), each read back bottom row first; false when the last pass drew no blur. How
     // many sets of its targets are held (0 or 1). And, RefuseMotionBlurForTest, its shaders refused from now on, as on
-    // a device whose compiler refuses them. For tests and tools.
+    // a device whose compiler refuses them; RefuseMotionBlurTargetsForTest, its targets, as on a device that cannot
+    // make them. For tests and tools.
     bool ReadLastMotionVectors(int& width, int& height, std::vector<float>& rgba) const;
     bool ReadLastMotionBlurred(int& width, int& height, std::vector<float>& rgba) const;
     int MotionBlurTargetSetsHeld() const;
+    // How many times a set of them has been made or tried at a new size: a size it holds, a size refused before, or a
+    // change of MaxLength alone makes none. For tests.
+    int MotionBlurTargetSetsMade() const;
     void RefuseMotionBlurForTest() {
         m_refuseMotionBlurForTest = true;
+    }
+    void RefuseMotionBlurTargetsForTest() {
+        m_refuseMotionBlurTargetsForTest = true;
     }
 
     // What the last pass with shadows drew, one entry per cascade, nearest first; empty when the last pass drew none.
@@ -354,6 +361,10 @@ class RaylibRenderBackend : public IRenderBackend {
     bool WantsMotionBlur(const BRITE::RenderPass& pass, int targetWidth, int targetHeight) const;
     void RenderMotionBlur(const BRITE::RenderPass& pass, int targetWidth, int targetHeight);
     bool m_refuseMotionBlurForTest = false;
+    bool m_refuseMotionBlurTargetsForTest = false;
+    // The instanced copies' placements as the last Draw3D streamed them, for the velocity draw.
+    struct DrawnInstances;
+    std::shared_ptr<DrawnInstances> m_drawnInstances;
 
     // To cleanly separate Texture2D vs RenderTexture2D, we store a boolean.
     // Real implementation would just use a wrapper struct allocated on heap.

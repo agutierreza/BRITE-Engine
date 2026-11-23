@@ -320,6 +320,14 @@ struct ReflectionSettings {
 // A draw with MotionBlurred off is never smeared and never smeared into what passes it: a small bright light stays a
 // point, where a blur would draw it out into streaks.
 //
+// A moving draw's motion is written where it IS the surface the pass drew: where its depth matches the depth the
+// scene left, within four steps of the 24-bit depth buffer at that depth plus twice its slope across a pixel. A
+// perspective depth step at a distance z is about z^2 / (near x 2^24) -- with the backend's near plane of 0.05, four
+// steps are 0.00012 at 5, 0.048 at 100 and 4.8 at 1000 -- so the tolerance follows the depth buffer's own precision: a
+// mover always finds itself, however far, and a surface standing in front of it by more than that keeps its own
+// motion. Two surfaces closer than that are one to the depth buffer, and the moving one's motion is written on both.
+// An orthographic view's steps are even: four are 4 x (far - near) / 2^24 at any distance.
+//
 // A CUT draws the frame unblurred, exactly as with motion blur off: Cut set by the caller; a camera whose motion at the
 // middle of the view, or half way to its edges, is beyond CutLength pixels; a point there behind last frame's camera;
 // or a change of projection. A device that cannot make the targets, or whose compiler refuses the blur's shaders, draws

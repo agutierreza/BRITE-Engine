@@ -315,21 +315,51 @@ TEST_F(MotionBlurPass, WithoutAPreviousCameraADrawMovesThroughThisFramesView) {
 }
 
 // TWO SURFACES CLOSE IN DEPTH: a moving quad (x -1 to 1) 0.008 behind a still one (x -0.5 to 0.5), 5 and 5.008 from
-// the camera, 0.16% apart. Where the still one stands it keeps its zero; the moving one's motion, +8, shows only
-// around it. The velocity draw's slack is four steps of the 24-bit depth buffer -- on this view, whose depth runs
-// linearly over the 3999.95 between the near and far planes, 4 x 3999.95 / 2^24 = 0.00095 -- plus twice the
-// fragment's slope across a pixel, zero for a quad facing the camera.
-// Mutation: the slack as 0.2% of the distance (0.01 here) lets the moving quad's motion through the still one.
+// the camera, 0.16% apart, under a camera stepped 0.25 (-4 pixels). Where the still one stands it keeps the camera's
+// -4; the moving one's motion, +8 of its own and -4 of the camera's, +4, shows only around it. The velocity draw's
+// slack is four steps of the 24-bit depth buffer -- on this view, whose depth runs linearly over the 3999.95 between
+// the near and far planes, 4 x 3999.95 / 2^24 = 0.00095 -- plus twice the fragment's slope across a pixel, zero for a
+// quad facing the camera.
+// Mutation: the slack as 0.2% of the distance (0.01 here) lets the moving quad's +4 through the still one.
 TEST_F(MotionBlurPass, AMovingDrawJustBehindAStillOneDoesNotShowThroughIt) {
     BRITE::ModelDrawCommand behind = Unlit(Quad(-1.0f, -1.0f, 1.0f, 1.0f, -0.008f), {240, 240, 240, 255});
     behind.Previous = BRITE::Placement{{-0.5f, 0.0f, 0.0f}, {0, 0, 0, 1}, {1, 1, 1}};
     BRITE::RenderPass pass =
-        Pass({Field(), Unlit(Quad(-0.5f, -0.5f, 0.5f, 0.5f, 0.0f), {40, 200, 40, 255}), behind}, 0.0f);
+        Pass({Field(), Unlit(Quad(-0.5f, -0.5f, 0.5f, 0.5f, 0.0f), {40, 200, 40, 255}), behind}, 0.25f);
     Picture(pass);
     const std::vector<float> m = Motion();
-    EXPECT_NEAR(MotionX(m, 0.0f, 0.0f), 0.0f, 0.01f);
-    EXPECT_NEAR(MotionX(m, 0.3f, -0.3f), 0.0f, 0.01f);
-    EXPECT_NEAR(MotionX(m, 0.75f, 0.0f), 8.0f, 0.05f);
+    EXPECT_NEAR(MotionX(m, 0.0f, 0.0f), -4.0f, 0.05f);
+    EXPECT_NEAR(MotionX(m, 0.3f, -0.3f), -4.0f, 0.05f);
+    EXPECT_NEAR(MotionX(m, 0.75f, 0.0f), 4.0f, 0.05f);
+}
+
+// A FAR MOVER FINDS ITSELF: a quad 1000 along a 90-degree perspective view, from the camera at the origin looking down
+// -z, moved 100 along x. At 1000 the view is tan(45) x 1000 = 1000 each way, so it moved 100 / 1000 = 0.1 in ndc, 0.1
+// x 0.5 x 64 = +3.2 pixels. There a depth step is about 1000^2 / (0.05 x 2^24) = 1.19, and the slack, four of them,
+// follows it: the quad's own depth, computed again for its motion, still matches what the scene stored.
+// Mutation: last frame's camera made from an empty one reads no motion. (The slack without its depth steps does not
+// turn it red: here the mover's depth and the scene's agree exactly, and it is the near cases the steps keep green.)
+TEST_F(MotionBlurPass, AFarMovingDrawFindsItsOwnDepth) {
+    BRITE::ModelDrawCommand far = Unlit(Quad(-800.0f, -800.0f, 800.0f, 800.0f, -1000.0f), {240, 240, 240, 255});
+    far.Previous = BRITE::Placement{{-100.0f, 0.0f, 0.0f}, {0, 0, 0, 1}, {1, 1, 1}};
+    BRITE::RenderPass pass;
+    pass.Post.Samples = 1;
+    pass.Post.MotionBlur.Enabled = true;
+    pass.Post.MotionBlur.Shutter = 1.0f;
+    pass.ModelCommands = {far};
+    BRITE::Camera3D camera = Perspective({0, 0, 0}, {0, 0, -1}, 90.0f);
+    const BRITE::TextureHandle target = m_backend.LoadRenderTexture(SIZE, SIZE);
+    pass.TargetFramebuffer = target;
+    pass.Camera3DPtr = &camera;
+    m_backend.SubmitRenderPass(pass);
+    m_backend.UnloadRenderTexture(target);
+    const std::vector<float> m = Motion();
+    // The quad reaches ndc +-0.8 (800 / 1000), columns and rows 6.4 to 57.6: every pixel from 8 to 55 is on it.
+    int found = 0;
+    for (int row = 8; row < SIZE - 8; ++row)
+        for (int column = 8; column < SIZE - 8; ++column)
+            found += std::fabs(m[static_cast<std::size_t>(row * SIZE + column) * 4] - 3.2f) < 0.05f ? 1 : 0;
+    EXPECT_EQ(found, (SIZE - 16) * (SIZE - 16));
 }
 
 // AN OBJECT'S MOTION, under a still camera: a quad that stood 0.5 to the left last frame has moved 0.5 x 16 = +8
@@ -443,6 +473,8 @@ TEST_F(MotionBlurPass, AnOptedOutDrawIsNotSmearedIntoADrawPassingInFrontOfIt) {
 TEST_F(MotionBlurPass, ACutDrawsTheFrameUnblurred) {
     const std::vector<BRITE::ModelDrawCommand> draws = {
         Field({20, 30, 60, 255}), Unlit(Quad(-0.5f, -0.5f, 0.5f, 0.5f, 0.0f), {240, 40, 40, 255})};
+    BRITE::RenderPass blurred = Pass(draws, 0.25f);
+    Picture(blurred); // a blurred pass first, so a read-back after the cut cannot be this one's
     BRITE::RenderPass off = Pass(draws, 0.25f);
     off.Post.MotionBlur.Enabled = false;
     const std::vector<BRITE::Color> unblurred = Picture(off);
@@ -506,6 +538,48 @@ TEST_F(MotionBlurPass, ADeviceThatRefusesItDrawsWithoutIt) {
     EXPECT_FALSE(m_backend.ReadLastMotionVectors(width, height, rgba));
 }
 
+// A DEVICE THAT CANNOT MAKE ITS TARGETS: the pass, with Hdr off and no bloom, is drawn exactly as with motion blur
+// off -- never through the chain unblurred -- the size is not asked again, and nothing is held.
+// Mutation: the targets made only once the scene is drawn (readiness decided after routing) sends the pass through
+// the chain: its 4-sample target makes a set the HDR chain holds.
+TEST_F(MotionBlurPass, ADeviceThatCannotMakeItsTargetsDrawsWithoutIt) {
+    const std::vector<BRITE::ModelDrawCommand> draws = {
+        Field({20, 30, 60, 255}), Unlit(Quad(-0.5f, -0.5f, 0.5f, 0.5f, 0.0f), {240, 40, 40, 255})};
+    BRITE::RenderPass off = Pass(draws, 0.25f);
+    off.Post.MotionBlur.Enabled = false;
+    const std::vector<BRITE::Color> unblurred = Picture(off);
+    m_backend.RefuseMotionBlurTargetsForTest();
+    for (int frame = 0; frame < 2; ++frame) {
+        BRITE::RenderPass on = Pass(draws, 0.25f);
+        on.Post.Samples = 4;
+        EXPECT_TRUE(Same(Picture(on), unblurred)) << frame;
+    }
+    int width = 0, height = 0;
+    std::vector<float> rgba;
+    EXPECT_FALSE(m_backend.ReadLastMotionVectors(width, height, rgba));
+    EXPECT_EQ(m_backend.MotionBlurTargetSetsHeld(), 0);
+    EXPECT_EQ(m_backend.HdrTargetSetsHeld(), 0);
+    // Refused once at this size, it was not asked again on the second frame.
+    // Mutation: the refusal not remembered tries again every frame, 2.
+    EXPECT_EQ(m_backend.MotionBlurTargetSetsMade(), 1);
+}
+
+// THE TARGETS ARE KEPT: three passes at one size make one set, and a change of MaxLength alone -- the gather's tile --
+// remakes only the tile's three targets, not the set.
+// Mutation: a change of tile freeing the whole set makes 2.
+TEST_F(MotionBlurPass, TheTargetsAreKeptAcrossPassesAndAChangeOfTile) {
+    const std::vector<BRITE::ModelDrawCommand> draws = {
+        Field(), Unlit(Quad(-0.5f, -0.5f, 0.5f, 0.5f, 0.0f), {240, 40, 40, 255})};
+    for (const float longest : {32.0f, 32.0f, 16.0f}) {
+        BRITE::RenderPass pass = Pass(draws, 0.25f);
+        pass.Post.MotionBlur.MaxLength = longest;
+        Picture(pass);
+        EXPECT_NEAR(MotionX(Motion(), 0.0f, 0.0f), -4.0f, 0.05f) << longest;
+    }
+    EXPECT_EQ(m_backend.MotionBlurTargetSetsMade(), 1);
+    EXPECT_EQ(m_backend.MotionBlurTargetSetsHeld(), 1);
+}
+
 // THE PATHS IT TAKES THROUGH THE CHAIN. Under HDR: the same -4 pixels, and the blur smears linear light, before the
 // tone map: a quad of emission 4 (light past white) streaks as light.
 TEST_F(MotionBlurPass, UnderHdrItBlursLinearLight) {
@@ -557,4 +631,28 @@ TEST_F(MotionBlurPass, AnInstancedDrawCarriesEachCopysMotion) {
     const std::vector<float> m = Motion();
     EXPECT_NEAR(MotionX(m, -1.0f, 0.0f), 8.0f, 0.05f);
     EXPECT_NEAR(MotionX(m, 1.0f, 0.0f), 0.0f, 0.01f);
+}
+
+// AN INSTANCED DRAW CAN OPT OUT, every copy: two small copies with MotionBlurred off under the camera's pan are marked
+// exempt where each stands -- each copy's placement uploaded once and read as now and as then -- and the field between
+// them keeps the camera's -4. The copies are 0.5 wide at x -1 and 1: columns 12 to 19 and 44 to 51.
+// Mutation: the one-matrix upload read with a 32-float stride marks the second copy nowhere it stands.
+TEST_F(MotionBlurPass, AnInstancedDrawCanOptOut) {
+    BRITE::InstancedModelDrawCommand lights;
+    lights.Model = Quad(-0.25f, -0.25f, 0.25f, 0.25f, 0.0f);
+    lights.Material.Unlit = true;
+    lights.Material.DoubleSided = true;
+    lights.MotionBlurred = false;
+    BRITE::ModelInstance left, right;
+    left.Position = {-1.0f, 0.0f, 0.0f};
+    right.Position = {1.0f, 0.0f, 0.0f};
+    lights.Instances = {left, right};
+    BRITE::RenderPass pass = Pass({Field()}, 0.25f);
+    pass.InstancedModelCommands = {lights};
+    Picture(pass);
+    const std::vector<float> m = Motion();
+    EXPECT_EQ(m[AtLinear(-1.0f, 0.0f) + 2], 1.0f);
+    EXPECT_EQ(m[AtLinear(1.0f, 0.0f) + 2], 1.0f);
+    EXPECT_EQ(m[AtLinear(0.0f, 0.0f) + 2], 0.0f);
+    EXPECT_NEAR(MotionX(m, 0.0f, 0.0f), -4.0f, 0.05f);
 }
