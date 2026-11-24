@@ -46,8 +46,11 @@ int TextureMinFilter(unsigned int texture);
 bool ReadTargetFloats(const TargetObjects& target, std::vector<float>& rgba);
 // Clears whatever framebuffer is bound to this colour, as floats (a float target keeps light above 1), and its depth.
 void ClearBound(float r, float g, float b, float a);
-// The most samples the device can give a render target.
+// The most samples the device can give a render target -- no more than SetMostSamplesCapForTest's cap, when one is set.
 int MostSamples();
+// For tests: every render target asked for more samples than `most` is made with `most`, as on a device whose most that
+// is; 0 lifts the cap. Process-wide, as the device is.
+void SetMostSamplesCapForTest(int most);
 
 // THE HDR CHAIN. One per backend, made on the first HDR pass, its targets kept between passes and remade when a pass
 // asks for another size or sample count.

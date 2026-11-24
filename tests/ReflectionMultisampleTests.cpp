@@ -24,7 +24,14 @@
 
 #include "HiddenWindowScene.hpp"
 
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+
+#include <algorithm>
 #include <cmath>
+#include <memory>
+#include <sstream>
+#include <string>
 #include <vector>
 
 namespace {
@@ -56,6 +63,46 @@ Red RedOf(const std::vector<float>& rgba) {
     }
     return red;
 }
+
+// Every line logged through the default logger while it lives, counted by what it says.
+class LogCapture {
+  public:
+    LogCapture() : m_sink(std::make_shared<spdlog::sinks::ostream_sink_mt>(m_lines)) {
+        spdlog::default_logger()->sinks().push_back(m_sink);
+    }
+    ~LogCapture() {
+        auto& sinks = spdlog::default_logger()->sinks();
+        sinks.erase(std::remove(sinks.begin(), sinks.end(), m_sink), sinks.end());
+    }
+    LogCapture(const LogCapture&) = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+    int Count(const std::string& text) {
+        m_sink->flush();
+        std::istringstream lines(m_lines.str());
+        int count = 0;
+        for (std::string line; std::getline(lines, line);)
+            if (line.find(text) != std::string::npos)
+                ++count;
+        return count;
+    }
+
+  private:
+    std::ostringstream m_lines; // before the sink, which writes into it
+    std::shared_ptr<spdlog::sinks::ostream_sink_mt> m_sink;
+};
+
+// The device's most samples capped for as long as it lives (RaylibRenderBackend::CapMostSamplesForTest), and lifted.
+struct MostSamplesCap {
+    explicit MostSamplesCap(int most) {
+        BRITE::Backends::Raylib::RaylibRenderBackend::CapMostSamplesForTest(most);
+    }
+    ~MostSamplesCap() {
+        BRITE::Backends::Raylib::RaylibRenderBackend::CapMostSamplesForTest(0);
+    }
+};
+
+// What the backend logs when it cannot multisample a reflection.
+constexpr const char* CannotMultisample = "planar reflection cannot be multisampled";
 
 class ReflectionMultisample : public HiddenWindow::Scene {
   protected:
@@ -212,12 +259,14 @@ TEST_F(ReflectionMultisample, ItIsHeldToWhatTheDeviceGives) {
 }
 
 // A DEVICE THAT CANNOT MAKE A MULTISAMPLED TARGET draws the single-sample reflection, exactly as with Samples off,
-// frame after frame, and is not asked again at that size. Mutations: the refusal not answered with the single-sample
-// target -> no reflection, red; the refused size not remembered -> 2 tried, red.
+// frame after frame, and is not asked again at that size; a second size is asked once more, and the refusals are
+// logged once between them. Mutations: the refusal not answered with the single-sample target -> no reflection, red;
+// the refused size not remembered -> 3 tried, red; the log not kept to once -> 2 lines, red.
 TEST_F(ReflectionMultisample, ADeviceThatCannotMakeItDrawsTheSingleSampleReflection) {
     BRITE::RenderPass offPass = Lake(true, 1);
     std::vector<float> off, refused;
     const std::vector<BRITE::Color> picture = Draw(offPass, &off);
+    LogCapture log;
     m_backend.RefuseReflectionMultisampleForTest();
     for (int frame = 0; frame < 2; ++frame) {
         BRITE::RenderPass pass = Lake(true, 4);
@@ -226,6 +275,34 @@ TEST_F(ReflectionMultisample, ADeviceThatCannotMakeItDrawsTheSingleSampleReflect
         EXPECT_EQ(m_backend.LastPlanarReflectionSamples(), 1) << frame;
     }
     EXPECT_EQ(m_backend.PlanarReflectionMultisampleTargetsTried(), 1);
+    BRITE::RenderPass smaller = Lake(true, 4);
+    Draw(smaller, nullptr, BIG / 2);
+    EXPECT_EQ(m_backend.LastPlanarReflectionSamples(), 1);
+    EXPECT_EQ(m_backend.PlanarReflectionMultisampleTargetsTried(), 2) << "a second size is asked once";
+    EXPECT_EQ(log.Count(CannotMultisample), 1) << "two sizes refused, one line";
+}
+
+// A DEVICE WHOSE MOST IS ONE SAMPLE -- one that cannot multisample at all -- is asked for a multisampled reflection
+// once, logs it once, and draws the single-sample reflection, exactly as with Samples off, frame after frame. Its
+// target comes back with the one sample the device has, not the 2 asked for (the least a multisampled reflection asks
+// for), and is refused for that. Mutations: the target's samples not checked against those asked -> the one-sample
+// target taken as the multisampled one, never matched again, made anew each frame: 2 tried and 3 targets held, red;
+// the floor of 2 dropped -> 4 asked of a device whose most is 1 asks for 1: no try and no line, red.
+TEST_F(ReflectionMultisample, ADeviceWhoseMostIsOneSampleIsAskedOnceAndDrawsTheSingleSampleReflection) {
+    BRITE::RenderPass offPass = Lake(true, 1);
+    std::vector<float> off, capped;
+    const std::vector<BRITE::Color> picture = Draw(offPass, &off);
+    const MostSamplesCap cap(1);
+    LogCapture log;
+    for (int frame = 0; frame < 2; ++frame) {
+        BRITE::RenderPass pass = Lake(true, 4);
+        EXPECT_TRUE(Same(Draw(pass, &capped), picture)) << frame;
+        EXPECT_EQ(capped, off) << frame;
+        EXPECT_EQ(m_backend.LastPlanarReflectionSamples(), 1) << frame;
+    }
+    EXPECT_EQ(m_backend.PlanarReflectionMultisampleTargetsTried(), 1);
+    EXPECT_EQ(m_backend.PlanarReflectionTargetsHeld(), 1) << "the single-sample reflection's, shared with Samples off";
+    EXPECT_EQ(log.Count(CannotMultisample), 1);
 }
 
 // ITS TARGETS ARE KEPT BY THEIR SAMPLES: a pass with 1, then one with 4, then one with 1 again, at one size, draw with

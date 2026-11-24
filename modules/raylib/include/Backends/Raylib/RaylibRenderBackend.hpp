@@ -82,6 +82,10 @@ class RaylibRenderBackend : public IRenderBackend {
     void RefuseReflectionMultisampleForTest() {
         m_refuseReflectionMultisampleForTest = true;
     }
+    // For tests: every target the backend makes for itself -- the planar reflection's, the HDR chain's -- asked for
+    // more samples than `most` is made with `most`, as on a device whose most that is; 0 lifts the cap. Process-wide,
+    // as the device is: a test that sets it lifts it.
+    static void CapMostSamplesForTest(int most);
     void RefuseReflectionBlurTargetsForTest() {
         m_refuseReflectionBlurTargetsForTest = true;
     }

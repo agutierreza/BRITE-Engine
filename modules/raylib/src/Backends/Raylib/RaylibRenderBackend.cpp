@@ -286,8 +286,9 @@ struct RaylibRenderBackend::PlanarState {
     // The slot the current pass drew into (an index into slots), and its mirrored camera's view and projection.
     std::size_t current = 0;
     ::Matrix viewProjection = {};
-    // Sizes the device refused, not asked again; one log line for them all. The same for the blur's scratch targets,
-    // and how many of those have been made or tried.
+    // The sizes, formats and samples the device refused, not asked again; one log line for the single-sample ones and
+    // one for the multisampled. The same for the blur's scratch targets, and how many of those have been made or
+    // tried.
     std::vector<std::array<int, 4>> refused;
     bool failureLogged = false;
     // Whether a multisampled target's refusal has been logged, and how many have been made or tried.
@@ -1917,6 +1918,10 @@ bool RaylibRenderBackend::LastPlanarReflectionBlurred() const {
 
 int RaylibRenderBackend::LastPlanarReflectionSamples() const {
     return m_planarThisPass && m_planar ? m_planar->Current().samples : 0;
+}
+
+void RaylibRenderBackend::CapMostSamplesForTest(int most) {
+    SetMostSamplesCapForTest(most);
 }
 
 int RaylibRenderBackend::PlanarReflectionMultisampleTargetsTried() const {

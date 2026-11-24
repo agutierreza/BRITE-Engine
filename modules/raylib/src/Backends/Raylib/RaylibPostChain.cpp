@@ -175,10 +175,19 @@ void ClearBound(float r, float g, float b, float a) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
 
+namespace {
+int s_mostSamplesCapForTest = 0; // 0: none -- see SetMostSamplesCapForTest
+} // namespace
+
 int MostSamples() {
     GLint most = 0;
     glGetIntegerv(GL_MAX_SAMPLES, &most);
-    return static_cast<int>(most);
+    return s_mostSamplesCapForTest > 0 ? std::min(static_cast<int>(most), s_mostSamplesCapForTest)
+                                       : static_cast<int>(most);
+}
+
+void SetMostSamplesCapForTest(int most) {
+    s_mostSamplesCapForTest = std::max(0, most);
 }
 
 bool CreateTarget(const RenderTargetDescription& description, TargetObjects& out, std::string& why) {
