@@ -73,6 +73,15 @@ class RaylibRenderBackend : public IRenderBackend {
     // or 0 when the last pass drew none. For tests.
     int LastPlanarReflectionMinFilter() const;
     void RefuseReflectionBlurForTest();
+    // ITS MULTISAMPLING (ReflectionSettings::Samples): how many samples a texel the last pass's planar reflection was
+    // drawn with (1 for none, 0 when the last pass drew none); how many multisampled reflection targets have been made
+    // or tried. And, RefuseReflectionMultisampleForTest, every multisampled reflection target refused from now on, as
+    // on a device that cannot make one. For tests and tools.
+    int LastPlanarReflectionSamples() const;
+    int PlanarReflectionMultisampleTargetsTried() const;
+    void RefuseReflectionMultisampleForTest() {
+        m_refuseReflectionMultisampleForTest = true;
+    }
     void RefuseReflectionBlurTargetsForTest() {
         m_refuseReflectionBlurTargetsForTest = true;
     }
@@ -372,6 +381,7 @@ class RaylibRenderBackend : public IRenderBackend {
     std::shared_ptr<ReflectionBlurPasses> m_reflectionBlur;
     bool m_planarBlurredThisPass = false;
     bool m_refuseReflectionBlurTargetsForTest = false;
+    bool m_refuseReflectionMultisampleForTest = false;
     // The pass's lit draws have its environment map bound (ApplyPassLighting), to be unbound when they are done.
     bool m_environmentThisPass = false;
     // A projection Draw3D puts in place of its camera's own once BeginMode3D has made it: the mirrored camera's, with

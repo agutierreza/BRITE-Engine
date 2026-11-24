@@ -273,7 +273,8 @@ struct RaylibRenderBackend::ShadowFrame {
 // as the chain keeps its sets (RaylibPostChain.hpp): two reflecting passes a frame at different sizes each keep their
 // own, and a target no pass has drawn into for PostChain::IdlePasses passes is freed, so a resize does not keep the old
 // size's for the application's life. A slot blurred (ReflectionBlurSettings) keeps its blur's scratch target beside
-// it, made on the first blur and freed with it.
+// it, made on the first blur and freed with it. A slot is kept by its samples too (ReflectionSettings::Samples): a
+// multisampled one draws into its multisampled framebuffer and is resolved into its colour before anything reads it.
 struct RaylibRenderBackend::PlanarState {
     struct Slot {
         TargetObjects target;
@@ -287,8 +288,11 @@ struct RaylibRenderBackend::PlanarState {
     ::Matrix viewProjection = {};
     // Sizes the device refused, not asked again; one log line for them all. The same for the blur's scratch targets,
     // and how many of those have been made or tried.
-    std::vector<std::array<int, 3>> refused;
+    std::vector<std::array<int, 4>> refused;
     bool failureLogged = false;
+    // Whether a multisampled target's refusal has been logged, and how many have been made or tried.
+    bool multisampleFailureLogged = false;
+    int multisampleTried = 0;
     std::vector<std::array<int, 3>> scratchRefused;
     bool scratchFailureLogged = false;
     int scratchMade = 0;
@@ -311,11 +315,14 @@ struct RaylibRenderBackend::PlanarState {
     const TargetObjects& Current() const {
         return slots[current].target;
     }
-    // The target of this size and format, kept or made, stamped with `pass`; null when the device cannot make it.
-    TargetObjects* Acquire(int width, int height, RenderTargetFormat format, std::uint64_t pass) {
+    // The target of this size, format and samples, kept or made, stamped with `pass`; null when the device cannot make
+    // it. A multisampled one the device cannot make (`refuseMultisample`: as if it could not) is logged once and the
+    // single-sample one is acquired instead.
+    TargetObjects* Acquire(int width, int height, RenderTargetFormat format, int samples, std::uint64_t pass,
+                           bool refuseMultisample) {
         for (std::size_t i = 0; i < slots.size(); ++i) {
             const TargetObjects& t = slots[i].target;
-            if (t.width == width && t.height == height && t.format == format) {
+            if (t.width == width && t.height == height && t.format == format && t.samples == samples) {
                 std::rotate(slots.begin() + static_cast<std::ptrdiff_t>(i),
                             slots.begin() + static_cast<std::ptrdiff_t>(i) + 1, slots.end());
                 current = slots.size() - 1;
@@ -323,13 +330,28 @@ struct RaylibRenderBackend::PlanarState {
                 return &slots[current].target;
             }
         }
-        const std::array<int, 3> key = {width, height, static_cast<int>(format)};
+        const std::array<int, 4> key = {width, height, static_cast<int>(format), samples};
         if (std::find(refused.begin(), refused.end(), key) != refused.end())
-            return nullptr;
+            return samples > 1 ? Acquire(width, height, format, 1, pass, refuseMultisample) : nullptr;
         Slot slot;
-        std::string why;
-        if (!CreateTarget({width, height, format, 1, false}, slot.target, why)) {
+        std::string why = "the device cannot draw into a multisampled target of that format";
+        if (samples > 1)
+            ++multisampleTried;
+        const bool made = !(samples > 1 && refuseMultisample) &&
+                          CreateTarget({width, height, format, samples, false}, slot.target, why) &&
+                          slot.target.samples == samples;
+        if (!made) {
+            if (slot.target.framebuffer != 0)
+                DestroyTarget(slot.target);
             refused.push_back(key);
+            if (samples > 1) {
+                if (!multisampleFailureLogged)
+                    spdlog::error("BRITE: a {}x{} planar reflection cannot be multisampled at {} samples ({}); it is "
+                                  "drawn with one",
+                                  width, height, samples, why);
+                multisampleFailureLogged = true;
+                return Acquire(width, height, format, 1, pass, refuseMultisample);
+            }
             if (!failureLogged)
                 spdlog::error("BRITE: a {}x{} planar reflection could not be made ({}); the sky is reflected instead",
                               width, height, why);
@@ -1773,9 +1795,13 @@ bool RaylibRenderBackend::RenderPlanarReflection(const BRITE::RenderPass& pass, 
     const int width = std::max(1, static_cast<int>(static_cast<float>(targetWidth) * scale));
     const int height = std::max(1, static_cast<int>(static_cast<float>(targetHeight) * scale));
     const RenderTargetFormat format = hdr ? RenderTargetFormat::RGBA16F : RenderTargetFormat::RGBA8;
+    // Its samples (ReflectionSettings::Samples): 1 or less none, and no more than the device gives -- but 2 at the
+    // least once asked, so a device that gives none is refused, says so once, and draws the single-sample reflection.
+    const int samples = settings.Samples > 1 ? std::min(settings.Samples, std::max(2, MostSamples())) : 1;
     if (!m_planar)
         m_planar = std::make_shared<PlanarState>();
-    TargetObjects* acquired = m_planar->Acquire(width, height, format, m_passSerial);
+    TargetObjects* acquired =
+        m_planar->Acquire(width, height, format, samples, m_passSerial, m_refuseReflectionMultisampleForTest);
     if (acquired == nullptr)
         return false;
     const TargetObjects& target = *acquired;
@@ -1826,8 +1852,9 @@ bool RaylibRenderBackend::RenderPlanarReflection(const BRITE::RenderPass& pass, 
     mirrored.Primitive3DCommands = pass.Primitive3DCommands;
     mirrored.Line3DCommands = pass.Line3DCommands;
 
+    // A multisampled reflection is drawn into its multisampled framebuffer, and resolved below.
     ::RenderTexture2D surface{};
-    surface.id = target.framebuffer;
+    surface.id = target.msFramebuffer != 0 ? target.msFramebuffer : target.framebuffer;
     surface.texture.id = target.colour;
     surface.texture.width = width;
     surface.texture.height = height;
@@ -1845,6 +1872,9 @@ bool RaylibRenderBackend::RenderPlanarReflection(const BRITE::RenderPass& pass, 
     m_projectionOverride = false;
     m_shadowFrame = std::move(shadows);
     ::EndTextureMode();
+    // Resolved to one colour a texel before the blur reads it, and every reflecting draw: nothing for a single-sample
+    // reflection.
+    ResolveTarget(target);
     // Its blur (ReflectionBlurSettings), when asked and the device can: else the reflection stays sharp.
     const BRITE::ReflectionBlur::Plan blur = BRITE::ReflectionBlur::PlanFor(settings.Blur, width, height);
     if (blur.Blurs) {
@@ -1883,6 +1913,14 @@ int RaylibRenderBackend::LastPlanarReflectionMinFilter() const {
 
 bool RaylibRenderBackend::LastPlanarReflectionBlurred() const {
     return m_planarThisPass && m_planarBlurredThisPass;
+}
+
+int RaylibRenderBackend::LastPlanarReflectionSamples() const {
+    return m_planarThisPass && m_planar ? m_planar->Current().samples : 0;
+}
+
+int RaylibRenderBackend::PlanarReflectionMultisampleTargetsTried() const {
+    return m_planar ? m_planar->multisampleTried : 0;
 }
 
 int RaylibRenderBackend::ReflectionBlurTargetsHeld() const {

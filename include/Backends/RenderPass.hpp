@@ -318,6 +318,15 @@ struct ReflectionSettings {
     float PlaneHeight = 0.0f;
     // The reflection's size, a fraction of the pass's target: 0.5 is a quarter of the pixels. Held to 0.05..1.
     float Resolution = 0.5f;
+    // Samples per texel of the reflection's target: multisample anti-aliasing for the reflection, as
+    // PostSettings::Samples is for the scene. Without it a thin line or an edge in the reflection is drawn in steps of
+    // its texels however large the reflection is, and a blur only smears the steps. 1 or less is none, which is the
+    // default and costs nothing: the target is the single-sample one it has always been and the picture is exactly the
+    // one drawn without this. A count the device cannot give is lowered to its most. Each reflection drawn is resolved
+    // to one colour a texel before anything reads it -- its blur, and every reflecting draw -- so all of them read the
+    // smoothed picture. A device that cannot make a multisampled target draws the single-sample reflection, and logs
+    // why once.
+    int Samples = 1;
     // Off unless Blur.Enabled is set (ReflectionBlurSettings).
     ReflectionBlurSettings Blur;
 };

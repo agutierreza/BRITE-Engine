@@ -501,6 +501,7 @@ if(BRITE_BUILD_TESTS)
             tests/SunShadowTests.cpp
             tests/ReflectionTests.cpp
             tests/ReflectionBlurTests.cpp
+            tests/ReflectionMultisampleTests.cpp
             tests/InstancingTests.cpp
             tests/RaylibSceneAssetsTests.cpp
         )
