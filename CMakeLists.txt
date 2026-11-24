@@ -503,8 +503,12 @@ if(BRITE_BUILD_TESTS)
             tests/ReflectionBlurTests.cpp
             tests/InstancingTests.cpp
             tests/RaylibSceneAssetsTests.cpp
-            tests/RaylibInputBackendTests.cpp
         )
+        # The wheel case calls GLFW itself, which links only from a static raylib on its Desktop (GLFW) platform.
+        get_target_property(BRITE_RAYLIB_TYPE raylib TYPE)
+        if(BRITE_RAYLIB_TYPE STREQUAL "STATIC_LIBRARY" AND (NOT PLATFORM OR PLATFORM STREQUAL "Desktop"))
+            list(APPEND BRITE_TEST_SOURCES tests/RaylibInputBackendTests.cpp)
+        endif()
     endif()
     if(BRITE_BUILD_BOX2D)
         # The backend and the area of interest, each driven on a registry with no window or application.
