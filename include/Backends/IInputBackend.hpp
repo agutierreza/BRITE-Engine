@@ -26,6 +26,22 @@ class IInputBackend {
     virtual float GetMouseY() = 0;
     virtual float GetMouseDeltaX() = 0;
     virtual float GetMouseDeltaY() = 0;
+    // The mouse wheel's movement since the backend last polled its platform, in
+    // notches: 1.0 for one notch of a notched wheel, fractions from a smooth
+    // wheel or a touchpad. Positive y is the wheel turned away from the user
+    // (scrolling up); positive x is the wheel pushed or tilted to the left. Both
+    // point toward the top left of a page, which is GLFW's convention on every
+    // platform it supports (it inverts Windows' horizontal wheel to match macOS
+    // and X11). Each axis is reported on its own: a wheel with no horizontal
+    // axis reports none on x.
+    // Not pure, so a backend without a wheel need not answer; one that does not
+    // override them reports no movement, which is what it has.
+    virtual float GetMouseWheelMoveX() {
+        return 0.0f;
+    }
+    virtual float GetMouseWheelMoveY() {
+        return 0.0f;
+    }
 
     // Gamepad
     virtual bool IsGamepadButtonDown(GamepadButtonCode button) = 0;

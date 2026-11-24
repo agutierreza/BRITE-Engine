@@ -503,6 +503,7 @@ if(BRITE_BUILD_TESTS)
             tests/ReflectionBlurTests.cpp
             tests/InstancingTests.cpp
             tests/RaylibSceneAssetsTests.cpp
+            tests/RaylibInputBackendTests.cpp
         )
     endif()
     if(BRITE_BUILD_BOX2D)

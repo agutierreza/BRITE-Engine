@@ -194,6 +194,13 @@ struct MouseMoveEvent {
     float absY;
 };
 
+// The mouse wheel's movement in one frame, queued only for a frame in which it
+// moved; the fixed tick sums every one queued since the last tick.
+struct MouseWheelEvent {
+    float deltaX;
+    float deltaY;
+};
+
 struct GamepadButtonDownEvent {
     GamepadButtonCode button;
 };

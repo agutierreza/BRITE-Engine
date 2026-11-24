@@ -98,6 +98,14 @@ class FakeInputBackend : public BRITE::Backends::IInputBackend {
     std::string GetGamepadName() override {
         return padName;
     }
+    // The wheel's movement this frame, as a backend reports it once a frame.
+    float wheelX = 0.0f, wheelY = 0.0f;
+    float GetMouseWheelMoveX() override {
+        return wheelX;
+    }
+    float GetMouseWheelMoveY() override {
+        return wheelY;
+    }
 
     void Clear() {
         keysPressed.clear();
@@ -106,6 +114,57 @@ class FakeInputBackend : public BRITE::Backends::IInputBackend {
         padReleased.clear();
         mousePressed.clear();
         mouseReleased.clear();
+        wheelX = 0.0f;
+        wheelY = 0.0f;
+    }
+};
+
+/// Answers only what IInputBackend makes pure, so every default it has is the
+/// one reported.
+class SilentInputBackend : public BRITE::Backends::IInputBackend {
+  public:
+    void PollEvents() override {}
+    bool IsKeyDown(KeyCode) override {
+        return false;
+    }
+    bool IsKeyPressed(KeyCode) override {
+        return false;
+    }
+    bool IsKeyReleased(KeyCode) override {
+        return false;
+    }
+    bool IsMouseButtonDown(MouseButtonCode) override {
+        return false;
+    }
+    bool IsMouseButtonPressed(MouseButtonCode) override {
+        return false;
+    }
+    bool IsMouseButtonReleased(MouseButtonCode) override {
+        return false;
+    }
+    float GetMouseX() override {
+        return 0.0f;
+    }
+    float GetMouseY() override {
+        return 0.0f;
+    }
+    float GetMouseDeltaX() override {
+        return 0.0f;
+    }
+    float GetMouseDeltaY() override {
+        return 0.0f;
+    }
+    bool IsGamepadButtonDown(GamepadButtonCode) override {
+        return false;
+    }
+    bool IsGamepadButtonPressed(GamepadButtonCode) override {
+        return false;
+    }
+    bool IsGamepadButtonReleased(GamepadButtonCode) override {
+        return false;
+    }
+    float GetGamepadAxis(BRITE::GamepadAxisCode axis) override {
+        return BRITE::GamepadAxisRestValue(axis);
     }
 };
 
@@ -460,54 +519,127 @@ TEST(GamepadAvailability, ABackendThatDoesNotSayReportsNoGamepad) {
     // IsGamepadAvailable is not pure, so a backend written before it -- or one
     // with no gamepad support -- still builds, and reports what it has: none.
     // MUTATION: a default of true -- red.
-    class Silent : public BRITE::Backends::IInputBackend {
-      public:
-        void PollEvents() override {}
-        bool IsKeyDown(KeyCode) override {
-            return false;
-        }
-        bool IsKeyPressed(KeyCode) override {
-            return false;
-        }
-        bool IsKeyReleased(KeyCode) override {
-            return false;
-        }
-        bool IsMouseButtonDown(MouseButtonCode) override {
-            return false;
-        }
-        bool IsMouseButtonPressed(MouseButtonCode) override {
-            return false;
-        }
-        bool IsMouseButtonReleased(MouseButtonCode) override {
-            return false;
-        }
-        float GetMouseX() override {
-            return 0.0f;
-        }
-        float GetMouseY() override {
-            return 0.0f;
-        }
-        float GetMouseDeltaX() override {
-            return 0.0f;
-        }
-        float GetMouseDeltaY() override {
-            return 0.0f;
-        }
-        bool IsGamepadButtonDown(GamepadButtonCode) override {
-            return false;
-        }
-        bool IsGamepadButtonPressed(GamepadButtonCode) override {
-            return false;
-        }
-        bool IsGamepadButtonReleased(GamepadButtonCode) override {
-            return false;
-        }
-        float GetGamepadAxis(BRITE::GamepadAxisCode axis) override {
-            return BRITE::GamepadAxisRestValue(axis);
-        }
-    } silent;
+    SilentInputBackend silent;
     EXPECT_FALSE(silent.IsGamepadAvailable());
     // GetGamepadName is not pure either, and names no gamepad by default.
     // MUTATION: a default returning any text -- red.
     EXPECT_TRUE(silent.GetGamepadName().empty());
+}
+
+// The mouse wheel: each frame's movement polled with the other inputs and summed
+// by the fixed tick, and a claim the layers that read it pass between them.
+// Inputs arrive as in a running application: the backend reports a frame's
+// movement, PollVariable queues it, FlushFixed applies it.
+namespace {
+class MouseWheel : public InputManagerDevices {
+  protected:
+    // One render frame whose wheel moved (x, y).
+    void Frame(float x, float y) {
+        m_backend.wheelX = x;
+        m_backend.wheelY = y;
+        InputManager::PollVariable(m_dispatcher);
+        m_backend.Clear();
+    }
+};
+} // namespace
+
+TEST_F(MouseWheel, TheMovementOfEveryFramePolledBeforeATickIsSummed) {
+    // Three frames drawn before one tick, the wheel turned 1, then 2, then half
+    // a notch: the tick reads 1 + 2 + 0.5 = 3.5 notches -- none of them lost.
+    // MUTATION: the tick keeping the last frame's movement (= for +=) -- 0.5, red;
+    // keeping only the first frame's -- 1, red.
+    Frame(0.0f, 1.0f);
+    Frame(0.0f, 2.0f);
+    Frame(0.0f, 0.5f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), 3.5f);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveX(), 0.0f);
+}
+
+TEST_F(MouseWheel, ASecondTickInTheSameFrameReadsNoMovement) {
+    // One frame turned the wheel 3 notches, and that frame ran two ticks. The
+    // first reads 3; the second follows no new frame and reads 0 -- the turn is
+    // not applied twice.
+    // MUTATION: FlushFixed not clearing the sum -- the second tick reads 3, red.
+    Frame(0.0f, 3.0f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), 3.0f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), 0.0f);
+}
+
+TEST_F(MouseWheel, AFrameWithNoMovementReadsNone) {
+    // A tick after a frame that turned it 2 notches reads 2; the tick after the
+    // next frame, which did not turn it, reads 0, not the 2 of before.
+    // MUTATION: FlushFixed not clearing the sum -- 2, red.
+    Frame(-2.0f, 2.0f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveX(), -2.0f);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), 2.0f);
+    Frame(0.0f, 0.0f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveX(), 0.0f);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), 0.0f);
+}
+
+TEST_F(MouseWheel, TheTwoAxesAreIndependent) {
+    // A frame moving only x reads on x alone, one moving only y on y alone, and
+    // one moving both reads each on its own axis: 1.5 on x then 0; 0 then -2 on
+    // y; and (0.25, -0.75) as (0.25, -0.75).
+    // MUTATION: queuing a frame only when BOTH axes moved (&& for ||) -- the
+    // first two ticks read 0, red; a frame's y added into x -- the third reads
+    // x = 0.25 - 0.75 = -0.5, red.
+    Frame(1.5f, 0.0f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveX(), 1.5f);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), 0.0f);
+    Frame(0.0f, -2.0f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveX(), 0.0f);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), -2.0f);
+    Frame(0.25f, -0.75f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveX(), 0.25f);
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), -0.75f);
+}
+
+TEST_F(MouseWheel, AClaimIsSeenByASecondReaderAndTheRawReadsStillReportTheMovement) {
+    // Two layers read the wheel in one tick, the upper first. Nothing has
+    // claimed it when the upper reads, so it scrolls and claims; the lower then
+    // sees the claim and leaves the turn alone. The movement itself is still
+    // there to read, which is how the upper reads it after claiming.
+    // MUTATION: ClaimMouseWheel doing nothing -- the second reader sees no claim,
+    // red; a claim zeroing the movement -- the raw read is 0, red.
+    Frame(0.0f, 1.0f);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FALSE(InputManager::IsMouseWheelClaimed()) << "nothing has claimed it yet";
+    InputManager::ClaimMouseWheel(); // the upper layer scrolled on it
+    EXPECT_TRUE(InputManager::IsMouseWheelClaimed()) << "the lower layer must see the claim";
+    EXPECT_FLOAT_EQ(InputManager::GetMouseWheelMoveY(), 1.0f) << "the raw read still reports the turn";
+}
+
+TEST_F(MouseWheel, AClaimLastsUntilTheNextFixedTick) {
+    // MUTATION: FlushFixed not clearing the claim -- still claimed, red.
+    InputManager::ClaimMouseWheel();
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FALSE(InputManager::IsMouseWheelClaimed());
+}
+
+TEST(MouseWheelDefault, ABackendWithoutAWheelReportsNone) {
+    // The wheel's reads are not pure, so a backend written before them -- or one
+    // for a platform with no wheel -- still builds, and reports what it has: no
+    // movement, on either axis, to the manager too.
+    // MUTATION: a default of 1.0 -- red.
+    SilentInputBackend silent;
+    EXPECT_FLOAT_EQ(silent.GetMouseWheelMoveX(), 0.0f);
+    EXPECT_FLOAT_EQ(silent.GetMouseWheelMoveY(), 0.0f);
+    entt::dispatcher dispatcher;
+    InputManager::Initialize(&silent);
+    InputManager::PollVariable(dispatcher);
+    InputManager::FlushFixed(dispatcher);
+    const float x = InputManager::GetMouseWheelMoveX();
+    const float y = InputManager::GetMouseWheelMoveY();
+    InputManager::Initialize(nullptr);
+    EXPECT_FLOAT_EQ(x, 0.0f);
+    EXPECT_FLOAT_EQ(y, 0.0f);
 }

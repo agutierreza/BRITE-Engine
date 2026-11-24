@@ -80,6 +80,22 @@ class InputManager {
     static float GetMouseDeltaX();
     static float GetMouseDeltaY();
 
+    // The mouse wheel's movement since the previous fixed tick, in the backend's
+    // units and signs: notches, positive y turned away from the user (scrolling
+    // up), positive x to the left -- see IInputBackend::GetMouseWheelMoveY. Each
+    // axis on its own.
+    //
+    // It is the SUM over every frame polled since the previous tick, so a tick
+    // that follows several frames loses none of their movement; and it is zero
+    // for a tick that follows no new frame, so when one frame runs several ticks
+    // only the first of them reads that frame's movement. Why: a fixed tick reads
+    // input as what happened since the last tick, so a list scrolls as far for
+    // one turn of the wheel whatever the frame rate and the tick rate are, and a
+    // frame's turn is never applied twice. GetMouseDeltaX and GetMouseDeltaY are
+    // counted the same way.
+    static float GetMouseWheelMoveX();
+    static float GetMouseWheelMoveY();
+
     // Claiming an input.
     //
     // A layer drawn over the rest of the application -- a menu, a text field, a
@@ -99,12 +115,24 @@ class InputManager {
     // A claim lasts until the next FlushFixed. A layer that owns inputs for as
     // long as it is open claims them on every tick it is open, BEFORE anything
     // reads the actions bound to them that tick.
+    //
+    // ClaimMouseWheel claims the wheel, both of its axes, for the rest of this
+    // fixed tick. No action is bound to the wheel, so there is nothing for the
+    // claim to hide it from: it is a word between the layers that read it. A
+    // layer that scrolls on the wheel reads it only while IsMouseWheelClaimed()
+    // is false, and claims it when it scrolls, so a layer under it that reads
+    // later in the same tick leaves the turn alone. GetMouseWheelMoveX and
+    // GetMouseWheelMoveY still report the movement after a claim -- the raw
+    // reads, as IsKeyDown is for a claimed key -- which is how the layer that
+    // claimed it reads it. It lasts until the next FlushFixed, as every claim.
     static void ClaimKey(KeyCode key);
     static bool IsKeyClaimed(KeyCode key);
     static void ClaimGamepadButton(GamepadButtonCode button);
     static bool IsGamepadButtonClaimed(GamepadButtonCode button);
     static void ClaimMouseButton(MouseButtonCode button);
     static bool IsMouseButtonClaimed(MouseButtonCode button);
+    static void ClaimMouseWheel();
+    static bool IsMouseWheelClaimed();
 
     // Action Mapping
     template <typename TEnum> static void BindAction(TEnum action, KeyCode key) {
@@ -174,6 +202,7 @@ class InputManager {
     static void OnMouseDown(const MouseButtonDownEvent& event);
     static void OnMouseUp(const MouseButtonUpEvent& event);
     static void OnMouseMove(const MouseMoveEvent& event);
+    static void OnMouseWheel(const MouseWheelEvent& event);
 
     static void OnGamepadButtonDown(const GamepadButtonDownEvent& event);
     static void OnGamepadButtonUp(const GamepadButtonUpEvent& event);
@@ -209,6 +238,9 @@ class InputManager {
     static float s_mouseY;
     static float s_mouseDeltaX;
     static float s_mouseDeltaY;
+    static float s_mouseWheelX; // summed since the last FlushFixed -- see GetMouseWheelMoveX
+    static float s_mouseWheelY;
+    static bool s_mouseWheelClaimedThisTick; // see ClaimMouseWheel
 
     static Backends::IInputBackend* s_backend;
 };

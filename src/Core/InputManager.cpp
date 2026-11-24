@@ -29,6 +29,9 @@ float InputManager::s_mouseX = 0.0f;
 float InputManager::s_mouseY = 0.0f;
 float InputManager::s_mouseDeltaX = 0.0f;
 float InputManager::s_mouseDeltaY = 0.0f;
+float InputManager::s_mouseWheelX = 0.0f;
+float InputManager::s_mouseWheelY = 0.0f;
+bool InputManager::s_mouseWheelClaimedThisTick = false;
 Backends::IInputBackend* InputManager::s_backend = nullptr;
 
 void InputManager::Initialize(Backends::IInputBackend* backend) {
@@ -79,6 +82,14 @@ void InputManager::PollVariable(entt::dispatcher& dispatcher) {
         dispatcher.enqueue<MouseMoveEvent>(MouseMoveEvent{dx, dy, s_backend->GetMouseX(), s_backend->GetMouseY()});
     }
 
+    // Read once a frame, as the backend reports it once a frame; the tick sums
+    // the frames -- see GetMouseWheelMoveX.
+    const float wheelX = s_backend->GetMouseWheelMoveX();
+    const float wheelY = s_backend->GetMouseWheelMoveY();
+    if (wheelX != 0.0f || wheelY != 0.0f) {
+        dispatcher.enqueue<MouseWheelEvent>(MouseWheelEvent{wheelX, wheelY});
+    }
+
     for (GamepadButtonCode btn : AllGamepadButtons) {
         if (s_backend->IsGamepadButtonPressed(btn))
             dispatcher.enqueue<GamepadButtonDownEvent>(GamepadButtonDownEvent{btn});
@@ -107,12 +118,16 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     s_buttonsClaimedThisTick.clear();
     s_mouseDeltaX = 0.0f;
     s_mouseDeltaY = 0.0f;
+    s_mouseWheelX = 0.0f; // the movement since the last tick, and this is the tick -- see GetMouseWheelMoveX
+    s_mouseWheelY = 0.0f;
+    s_mouseWheelClaimedThisTick = false; // claims last one fixed tick -- see ClaimMouseWheel
 
     dispatcher.sink<KeyDownEvent>().connect<&InputManager::OnKeyDown>();
     dispatcher.sink<KeyUpEvent>().connect<&InputManager::OnKeyUp>();
     dispatcher.sink<MouseButtonDownEvent>().connect<&InputManager::OnMouseDown>();
     dispatcher.sink<MouseButtonUpEvent>().connect<&InputManager::OnMouseUp>();
     dispatcher.sink<MouseMoveEvent>().connect<&InputManager::OnMouseMove>();
+    dispatcher.sink<MouseWheelEvent>().connect<&InputManager::OnMouseWheel>();
     dispatcher.sink<GamepadButtonDownEvent>().connect<&InputManager::OnGamepadButtonDown>();
     dispatcher.sink<GamepadButtonUpEvent>().connect<&InputManager::OnGamepadButtonUp>();
     dispatcher.sink<GamepadAxisEvent>().connect<&InputManager::OnGamepadAxisMove>();
@@ -123,6 +138,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     dispatcher.update<MouseButtonDownEvent>();
     dispatcher.update<MouseButtonUpEvent>();
     dispatcher.update<MouseMoveEvent>();
+    dispatcher.update<MouseWheelEvent>();
     dispatcher.update<GamepadButtonDownEvent>();
     dispatcher.update<GamepadButtonUpEvent>();
     dispatcher.update<GamepadAxisEvent>();
@@ -133,6 +149,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     dispatcher.sink<MouseButtonDownEvent>().disconnect<&InputManager::OnMouseDown>();
     dispatcher.sink<MouseButtonUpEvent>().disconnect<&InputManager::OnMouseUp>();
     dispatcher.sink<MouseMoveEvent>().disconnect<&InputManager::OnMouseMove>();
+    dispatcher.sink<MouseWheelEvent>().disconnect<&InputManager::OnMouseWheel>();
     dispatcher.sink<GamepadButtonDownEvent>().disconnect<&InputManager::OnGamepadButtonDown>();
     dispatcher.sink<GamepadButtonUpEvent>().disconnect<&InputManager::OnGamepadButtonUp>();
     dispatcher.sink<GamepadAxisEvent>().disconnect<&InputManager::OnGamepadAxisMove>();
@@ -174,6 +191,11 @@ void InputManager::OnMouseMove(const MouseMoveEvent& event) {
     s_mouseDeltaY += event.deltaY;
     s_mouseX = event.absX;
     s_mouseY = event.absY;
+}
+
+void InputManager::OnMouseWheel(const MouseWheelEvent& event) {
+    s_mouseWheelX += event.deltaX;
+    s_mouseWheelY += event.deltaY;
 }
 
 void InputManager::OnGamepadButtonDown(const GamepadButtonDownEvent& event) {
@@ -238,6 +260,15 @@ bool InputManager::IsMouseButtonClaimed(MouseButtonCode button) {
     const auto it = s_buttonsClaimedThisTick.find(button);
     return it != s_buttonsClaimedThisTick.end() && it->second;
 }
+
+void InputManager::ClaimMouseWheel() {
+    s_mouseWheelClaimedThisTick = true;
+}
+
+bool InputManager::IsMouseWheelClaimed() {
+    return s_mouseWheelClaimedThisTick;
+}
+
 bool InputManager::IsMouseButtonPressed(MouseButtonCode button) {
     return s_buttonsPressedThisTick[button];
 }
@@ -284,6 +315,12 @@ float InputManager::GetMouseDeltaX() {
 }
 float InputManager::GetMouseDeltaY() {
     return s_mouseDeltaY;
+}
+float InputManager::GetMouseWheelMoveX() {
+    return s_mouseWheelX;
+}
+float InputManager::GetMouseWheelMoveY() {
+    return s_mouseWheelY;
 }
 
 } // namespace BRITE

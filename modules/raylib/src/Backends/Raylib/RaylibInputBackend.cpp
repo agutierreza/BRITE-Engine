@@ -358,6 +358,18 @@ float RaylibInputBackend::GetMouseDeltaY() {
     return ::GetMouseDelta().y;
 }
 
+// raylib keeps GLFW's scroll offsets as they come, x as x and y as y, and that
+// is already the interface's convention -- positive y away from the user,
+// positive x to the left -- so they pass through unchanged. raylib holds one
+// frame's movement and clears it at its next poll.
+float RaylibInputBackend::GetMouseWheelMoveX() {
+    return ::GetMouseWheelMoveV().x;
+}
+
+float RaylibInputBackend::GetMouseWheelMoveY() {
+    return ::GetMouseWheelMoveV().y;
+}
+
 bool RaylibInputBackend::IsGamepadButtonDown(GamepadButtonCode button) {
     if (!::IsGamepadAvailable(0))
         return false;

@@ -21,6 +21,8 @@ class RaylibInputBackend : public IInputBackend {
     float GetMouseY() override;
     float GetMouseDeltaX() override;
     float GetMouseDeltaY() override;
+    float GetMouseWheelMoveX() override;
+    float GetMouseWheelMoveY() override;
 
     bool IsGamepadButtonDown(GamepadButtonCode button) override;
     bool IsGamepadButtonPressed(GamepadButtonCode button) override;
