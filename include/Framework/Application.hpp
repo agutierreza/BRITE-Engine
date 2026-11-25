@@ -58,7 +58,31 @@ class Application {
     }
     virtual ~Application();
 
+    // Running the application.
+    //
+    //   Run       the loop a native program hands its main to: starts the
+    //             application, runs frames until Quit is called or the window
+    //             asks to close, and returns then. It is exactly
+    //             `while (RunFrame()) {}` from a fresh start, so a run
+    //             application and a stepped one see the same frames, ticks and
+    //             fractions on the same clock.
+    //   RunFrame  for a host that owns the loop and gives the application one
+    //             frame at a time -- a browser, which asks for a frame and must
+    //             get control back after it, or an embedding runtime. Runs ONE
+    //             frame: the window's changes and sizes, the scene actions
+    //             queued, the input poll, the fixed ticks the clock owes and
+    //             the render, and returns. The first call starts the
+    //             application before its frame, as Run does: the clock's first
+    //             instant is read and OnStart runs. Returns false, having run
+    //             no frame, once the application has stopped -- Quit was
+    //             called or the window asked to close -- and keeps returning
+    //             false after that: a stepped application is started once.
+    //             The host stops calling it then.
+    //
+    // Run always starts afresh, as it did before stepping existed: a second Run
+    // starts the application again, OnStart included.
     void Run();
+    bool RunFrame();
     void Quit();
 
     // Note: uses raylib's SetTargetFPS internally to unlock or lock framerate
@@ -226,6 +250,20 @@ class Application {
     // frame, at its top, and once as the window is created.
     void ApplyWindowRequests();
     void ReadSizes();
+    // What Run did before its loop, and what its loop did per pass: split so
+    // that RunFrame can do each on its own.
+    void StartRunning();
+    bool KeepsRunning();
+    void Frame();
+
+    // Where a run is: not started, running frames, or stopped. A stepped run
+    // starts on the first RunFrame and, once stopped, stays stopped.
+    enum class RunState { NotStarted, Running, Stopped };
+    RunState m_runState = RunState::NotStarted;
+    // The clock's instant at the previous frame (at the start, for the first
+    // frame): what each frame's length is measured from. Kept between frames
+    // because frames are no longer passes of one loop inside one call.
+    double m_previousTime = 0.0;
 
     std::string m_title;
     ApplicationOptions m_options;

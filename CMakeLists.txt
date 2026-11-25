@@ -471,6 +471,7 @@ if(BRITE_BUILD_TESTS)
         tests/InputManagerTests.cpp
         tests/HeldRepeatTests.cpp
         tests/TickFractionTests.cpp
+        tests/FrameStepTests.cpp
         tests/ApplicationLifetimeTests.cpp
         tests/SceneStackTests.cpp
         tests/FixedTickHookTests.cpp

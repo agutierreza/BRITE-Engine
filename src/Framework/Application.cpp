@@ -226,207 +226,235 @@ void Application::Quit() {
 }
 
 void Application::Run() {
+    // A fresh start every time, as Run has always been.
+    m_runState = RunState::NotStarted;
+    while (RunFrame()) {
+    }
+}
+
+bool Application::RunFrame() {
+    if (m_runState == RunState::Stopped) {
+        return false;
+    }
+    if (m_runState == RunState::NotStarted) {
+        StartRunning();
+    }
+    // Checked before each frame, the first included -- as the loop's condition
+    // was -- so an application that quits in OnStart runs no frame.
+    if (!KeepsRunning()) {
+        m_runState = RunState::Stopped;
+        return false;
+    }
+    Frame();
+    return true;
+}
+
+void Application::StartRunning() {
+    m_runState = RunState::Running;
     m_running = true;
     m_accumulator = 0.0;
     m_tickFraction = 0.0;
-    double previousTime = m_appBackend ? m_appBackend->GetTime() : 0.0;
+    m_previousTime = m_appBackend ? m_appBackend->GetTime() : 0.0;
 
     OnStart(); // Let the user game configure the initial scene
+}
 
-    while (m_running && (!m_appBackend || !m_appBackend->WindowShouldClose())) {
-        // The window first: whatever was asked of it last frame, then the
-        // sizes every phase of this frame reads.
-        ApplyWindowRequests();
-        ReadSizes();
+bool Application::KeepsRunning() {
+    return m_running && (!m_appBackend || !m_appBackend->WindowShouldClose());
+}
 
-        // Handle Scene Transitions
-        for (auto& action : m_pendingActions) {
-            if (action.type == SceneActionType::Push) {
-                if (action.scene) {
-                    m_sceneStack.push_back(action.scene);
-                    action.scene->OnStart();
-                }
-            } else if (action.type == SceneActionType::Pop) {
-                if (!m_sceneStack.empty()) {
-                    m_sceneStack.back()->OnShutdown();
-                    m_sceneStack.pop_back();
-                }
-            } else if (action.type == SceneActionType::Change) {
-                for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
-                    (*it)->OnShutdown();
-                }
-                m_sceneStack.clear();
-                if (action.scene) {
-                    m_sceneStack.push_back(action.scene);
-                    action.scene->OnStart();
-                }
+void Application::Frame() {
+    // The window first: whatever was asked of it last frame, then the
+    // sizes every phase of this frame reads.
+    ApplyWindowRequests();
+    ReadSizes();
+
+    // Handle Scene Transitions
+    for (auto& action : m_pendingActions) {
+        if (action.type == SceneActionType::Push) {
+            if (action.scene) {
+                m_sceneStack.push_back(action.scene);
+                action.scene->OnStart();
+            }
+        } else if (action.type == SceneActionType::Pop) {
+            if (!m_sceneStack.empty()) {
+                m_sceneStack.back()->OnShutdown();
+                m_sceneStack.pop_back();
+            }
+        } else if (action.type == SceneActionType::Change) {
+            for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
+                (*it)->OnShutdown();
+            }
+            m_sceneStack.clear();
+            if (action.scene) {
+                m_sceneStack.push_back(action.scene);
+                action.scene->OnStart();
             }
         }
-        m_pendingActions.clear();
+    }
+    m_pendingActions.clear();
 
+    if (!m_sceneStack.empty()) {
+        auto& activeScene = m_sceneStack.back();
+        entt::dispatcher* dispatcher = activeScene->GetRegistry().ctx().find<entt::dispatcher>();
+        if (!dispatcher) {
+            dispatcher = &activeScene->GetRegistry().ctx().emplace<entt::dispatcher>();
+        }
+        BRITE::InputManager::PollVariable(*dispatcher);
+    }
+
+    if (m_inputBackend) {
+        m_inputBackend->PollEvents();
+    }
+
+    double currentTime = m_appBackend ? m_appBackend->GetTime() : 0.0;
+    double frameTime = currentTime - m_previousTime;
+    m_previousTime = currentTime;
+
+    if (frameTime > 0.25)
+        frameTime = 0.25; // Spiral of death prevention
+    m_accumulator += (frameTime * m_timeScale);
+
+    // Fixed timestep loop
+    while (m_accumulator >= m_fixedDt) {
         if (!m_sceneStack.empty()) {
             auto& activeScene = m_sceneStack.back();
             entt::dispatcher* dispatcher = activeScene->GetRegistry().ctx().find<entt::dispatcher>();
-            if (!dispatcher) {
-                dispatcher = &activeScene->GetRegistry().ctx().emplace<entt::dispatcher>();
+            if (dispatcher) {
+                BRITE::InputManager::FlushFixed(*dispatcher);
             }
-            BRITE::InputManager::PollVariable(*dispatcher);
         }
 
-        if (m_inputBackend) {
-            m_inputBackend->PollEvents();
-        }
+        // The application's own tick: the input above is this tick's, and
+        // no scene has read it yet.
+        OnFixedTick(m_fixedDt);
 
-        double currentTime = m_appBackend ? m_appBackend->GetTime() : 0.0;
-        double frameTime = currentTime - previousTime;
-        previousTime = currentTime;
-
-        if (frameTime > 0.25)
-            frameTime = 0.25; // Spiral of death prevention
-        m_accumulator += (frameTime * m_timeScale);
-
-        // Fixed timestep loop
-        while (m_accumulator >= m_fixedDt) {
-            if (!m_sceneStack.empty()) {
-                auto& activeScene = m_sceneStack.back();
-                entt::dispatcher* dispatcher = activeScene->GetRegistry().ctx().find<entt::dispatcher>();
-                if (dispatcher) {
-                    BRITE::InputManager::FlushFixed(*dispatcher);
-                }
-            }
-
-            // The application's own tick: the input above is this tick's, and
-            // no scene has read it yet.
-            OnFixedTick(m_fixedDt);
-
-            for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
-                auto& scene = *it;
-
-                // Phase 1: Instantiation (Entities are spawned/destroyed)
-                scene->OnInstantiation();
-
-                // Phase 2: Physics Initialization (Box2D bodies created)
-                scene->GetPhysicsSystem().PreStep(scene->GetRegistry());
-
-                // Phase 3: Game Logic & Input
-                scene->OnLogicStep(m_fixedDt);
-
-                // Phase 4: Physics Step (b2World_Step + PostStep sync)
-                scene->GetPhysicsSystem().Step(scene->GetRegistry(), m_fixedDt);
-
-                // Phase 5: Render Prep
-                scene->OnRenderPrepStep(m_fixedDt);
-
-                if (scene->BlocksUpdate()) {
-                    break;
-                }
-            }
-            m_accumulator -= m_fixedDt;
-        }
-
-        // The residual, stored once per frame and only here. The loop above
-        // has just guaranteed m_accumulator < m_fixedDt, so the fraction is in
-        // [0, 1) by construction; anything else is a broken invariant, not an
-        // input to clamp. Read it during rendering -- see TickFraction() for
-        // what it means in the other phases.
-        m_tickFraction = m_accumulator / m_fixedDt;
-        assert(m_tickFraction >= 0.0 && m_tickFraction < 1.0 &&
-               "the tick loop left more than a tick in the accumulator");
-
-        // Determine scenes to render (top to bottom to find blocking, then render
-        // bottom to top)
-        std::vector<std::shared_ptr<Scene>> scenesToRender;
         for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
-            scenesToRender.push_back(*it);
-            if ((*it)->BlocksRender()) {
+            auto& scene = *it;
+
+            // Phase 1: Instantiation (Entities are spawned/destroyed)
+            scene->OnInstantiation();
+
+            // Phase 2: Physics Initialization (Box2D bodies created)
+            scene->GetPhysicsSystem().PreStep(scene->GetRegistry());
+
+            // Phase 3: Game Logic & Input
+            scene->OnLogicStep(m_fixedDt);
+
+            // Phase 4: Physics Step (b2World_Step + PostStep sync)
+            scene->GetPhysicsSystem().Step(scene->GetRegistry(), m_fixedDt);
+
+            // Phase 5: Render Prep
+            scene->OnRenderPrepStep(m_fixedDt);
+
+            if (scene->BlocksUpdate()) {
                 break;
             }
         }
-        std::reverse(scenesToRender.begin(), scenesToRender.end());
+        m_accumulator -= m_fixedDt;
+    }
 
-        // Render loop
-        if (m_useInternalResolution && m_renderBackend) {
-            BRITE::RenderPass internalPass;
-            internalPass.TargetFramebuffer = m_framebuffer;
-            internalPass.ClearColor = BRITE::Black; // BLACK
-            internalPass.ShouldClear = true;
+    // The residual, stored once per frame and only here. The loop above
+    // has just guaranteed m_accumulator < m_fixedDt, so the fraction is in
+    // [0, 1) by construction; anything else is a broken invariant, not an
+    // input to clamp. Read it during rendering -- see TickFraction() for
+    // what it means in the other phases.
+    m_tickFraction = m_accumulator / m_fixedDt;
+    assert(m_tickFraction >= 0.0 && m_tickFraction < 1.0 && "the tick loop left more than a tick in the accumulator");
 
-            for (auto& scene : scenesToRender) {
-                scene->OnRender(internalPass);
-            }
-            m_renderBackend->SubmitRenderPass(internalPass);
-
-            // Post-Processing Ping-Pong
-            BRITE::TextureHandle finalFramebuffer = m_framebuffer;
-
-            if (!m_postProcessShaders.empty()) {
-                BRITE::TextureHandle sourceFBO = m_framebuffer;
-                BRITE::TextureHandle destFBO = m_framebufferAlt;
-
-                for (size_t i = 0; i < m_postProcessShaders.size(); ++i) {
-                    BRITE::RenderPass ppPass;
-                    ppPass.TargetFramebuffer = destFBO;
-                    ppPass.ClearColor = BRITE::Black;
-                    ppPass.ShouldClear = true;
-                    ppPass.Shader = m_postProcessShaders[i];
-
-                    BRITE::SpriteDrawCommand ppSprite;
-                    ppSprite.Material.AlbedoMap = sourceFBO;
-                    ppSprite.SourceRect = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y}; // Flip Y
-                    ppSprite.DestRect = {0.0f, 0.0f, m_internalResolution.x, m_internalResolution.y};
-                    ppSprite.Origin = {0.0f, 0.0f};
-                    ppSprite.RotationDeg = 0.0f;
-                    ppSprite.Material.AlbedoTint = BRITE::White;
-
-                    ppPass.SpriteCommands.push_back(ppSprite);
-
-                    m_renderBackend->SubmitRenderPass(ppPass);
-
-                    // Swap for next iteration
-                    finalFramebuffer = destFBO;
-                    std::swap(sourceFBO, destFBO);
-                }
-            }
-
-            BRITE::RenderPass screenPass;
-            screenPass.TargetFramebuffer = BRITE::NullTextureHandle;
-            screenPass.ClearColor = BRITE::Black; // BLACK
-            screenPass.ShouldClear = true;
-
-            const int screenWidth = m_windowSize.Width;
-            const int screenHeight = m_windowSize.Height;
-
-            float scale =
-                std::min((float)screenWidth / m_internalResolution.x, (float)screenHeight / m_internalResolution.y);
-
-            BRITE::Rectangle sourceRec = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y};
-            BRITE::Rectangle destRec = {(screenWidth - m_internalResolution.x * scale) * 0.5f,
-                                        (screenHeight - m_internalResolution.y * scale) * 0.5f,
-                                        m_internalResolution.x * scale, m_internalResolution.y * scale};
-
-            BRITE::SpriteDrawCommand screenSprite;
-            screenSprite.Material.AlbedoMap = finalFramebuffer;
-            screenSprite.SourceRect = sourceRec;
-            screenSprite.DestRect = destRec;
-            screenSprite.Origin = {0.0f, 0.0f};
-            screenSprite.RotationDeg = 0.0f;
-            screenSprite.Material.AlbedoTint = BRITE::White; // WHITE
-
-            screenPass.SpriteCommands.push_back(screenSprite);
-
-            m_renderBackend->SubmitRenderPass(screenPass);
-        } else if (m_appBackend && m_renderBackend) {
-            BRITE::RenderPass screenPass;
-            screenPass.TargetFramebuffer = BRITE::NullTextureHandle;
-            screenPass.ClearColor = BRITE::Black; // BLACK
-            screenPass.ShouldClear = true;
-
-            for (auto& scene : scenesToRender) {
-                scene->OnRender(screenPass);
-            }
-
-            m_renderBackend->SubmitRenderPass(screenPass);
+    // Determine scenes to render (top to bottom to find blocking, then render
+    // bottom to top)
+    std::vector<std::shared_ptr<Scene>> scenesToRender;
+    for (auto it = m_sceneStack.rbegin(); it != m_sceneStack.rend(); ++it) {
+        scenesToRender.push_back(*it);
+        if ((*it)->BlocksRender()) {
+            break;
         }
+    }
+    std::reverse(scenesToRender.begin(), scenesToRender.end());
+
+    // Render loop
+    if (m_useInternalResolution && m_renderBackend) {
+        BRITE::RenderPass internalPass;
+        internalPass.TargetFramebuffer = m_framebuffer;
+        internalPass.ClearColor = BRITE::Black; // BLACK
+        internalPass.ShouldClear = true;
+
+        for (auto& scene : scenesToRender) {
+            scene->OnRender(internalPass);
+        }
+        m_renderBackend->SubmitRenderPass(internalPass);
+
+        // Post-Processing Ping-Pong
+        BRITE::TextureHandle finalFramebuffer = m_framebuffer;
+
+        if (!m_postProcessShaders.empty()) {
+            BRITE::TextureHandle sourceFBO = m_framebuffer;
+            BRITE::TextureHandle destFBO = m_framebufferAlt;
+
+            for (size_t i = 0; i < m_postProcessShaders.size(); ++i) {
+                BRITE::RenderPass ppPass;
+                ppPass.TargetFramebuffer = destFBO;
+                ppPass.ClearColor = BRITE::Black;
+                ppPass.ShouldClear = true;
+                ppPass.Shader = m_postProcessShaders[i];
+
+                BRITE::SpriteDrawCommand ppSprite;
+                ppSprite.Material.AlbedoMap = sourceFBO;
+                ppSprite.SourceRect = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y}; // Flip Y
+                ppSprite.DestRect = {0.0f, 0.0f, m_internalResolution.x, m_internalResolution.y};
+                ppSprite.Origin = {0.0f, 0.0f};
+                ppSprite.RotationDeg = 0.0f;
+                ppSprite.Material.AlbedoTint = BRITE::White;
+
+                ppPass.SpriteCommands.push_back(ppSprite);
+
+                m_renderBackend->SubmitRenderPass(ppPass);
+
+                // Swap for next iteration
+                finalFramebuffer = destFBO;
+                std::swap(sourceFBO, destFBO);
+            }
+        }
+
+        BRITE::RenderPass screenPass;
+        screenPass.TargetFramebuffer = BRITE::NullTextureHandle;
+        screenPass.ClearColor = BRITE::Black; // BLACK
+        screenPass.ShouldClear = true;
+
+        const int screenWidth = m_windowSize.Width;
+        const int screenHeight = m_windowSize.Height;
+
+        float scale =
+            std::min((float)screenWidth / m_internalResolution.x, (float)screenHeight / m_internalResolution.y);
+
+        BRITE::Rectangle sourceRec = {0.0f, 0.0f, m_internalResolution.x, -m_internalResolution.y};
+        BRITE::Rectangle destRec = {(screenWidth - m_internalResolution.x * scale) * 0.5f,
+                                    (screenHeight - m_internalResolution.y * scale) * 0.5f,
+                                    m_internalResolution.x * scale, m_internalResolution.y * scale};
+
+        BRITE::SpriteDrawCommand screenSprite;
+        screenSprite.Material.AlbedoMap = finalFramebuffer;
+        screenSprite.SourceRect = sourceRec;
+        screenSprite.DestRect = destRec;
+        screenSprite.Origin = {0.0f, 0.0f};
+        screenSprite.RotationDeg = 0.0f;
+        screenSprite.Material.AlbedoTint = BRITE::White; // WHITE
+
+        screenPass.SpriteCommands.push_back(screenSprite);
+
+        m_renderBackend->SubmitRenderPass(screenPass);
+    } else if (m_appBackend && m_renderBackend) {
+        BRITE::RenderPass screenPass;
+        screenPass.TargetFramebuffer = BRITE::NullTextureHandle;
+        screenPass.ClearColor = BRITE::Black; // BLACK
+        screenPass.ShouldClear = true;
+
+        for (auto& scene : scenesToRender) {
+            scene->OnRender(screenPass);
+        }
+
+        m_renderBackend->SubmitRenderPass(screenPass);
     }
 }
 
