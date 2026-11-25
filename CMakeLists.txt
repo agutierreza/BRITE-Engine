@@ -288,11 +288,44 @@ if(BRITE_BUILD_RAYLIB)
     # The HDR pass's own shaders (the bloom chain, the tone map, primitives through the tone curve) are embedded the
     # same way. A shader holding the line `#include "tone_curve.glsl"` has assets/shaders/tone_curve.glsl put in its
     # place here -- GLSL has no include of its own -- so the curve is written once for every shader that needs it.
+    #
+    # Each shader is written once, for desktop OpenGL: its first line is `#version 330`, and the desktop build embeds the
+    # file as it is. A platform whose GL is OpenGL ES 3 -- the web's WebGL 2 -- reads GLSL ES 3.00 instead, which wants
+    # its own version line and a default precision for floats and for every kind of sampler the shaders use. There the
+    # first line is replaced by BRITE_SHADER_ES_PREAMBLE and nothing else changes, so the shaders themselves are written
+    # in the GLSL both accept (no implicit int-to-float conversion, no name of a built-in reused). The backend inserts a
+    # variant's defines after the first line, which stays the version line on both.
     set(BRITE_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders")
+    if(EMSCRIPTEN)
+        set(BRITE_SHADERS_GLSL_ES ON)
+    else()
+        set(BRITE_SHADERS_GLSL_ES OFF)
+    endif()
+    set(BRITE_SHADER_DESKTOP_VERSION "#version 330")
+    set(BRITE_SHADER_ES_PREAMBLE "#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+precision highp samplerCube;
+precision highp sampler2DShadow;")
     file(READ "${BRITE_SHADER_DIR}/tone_curve.glsl" BRITE_TONE_CURVE_GLSL)
     file(READ "${BRITE_SHADER_DIR}/motion_depth.glsl" BRITE_MOTION_DEPTH_GLSL)
     function(brite_read_shader variable file)
         file(READ "${BRITE_SHADER_DIR}/${file}" source)
+        # The whole first line, without its line ending: `#version 330 core` would pass a test of its start and then
+        # lose ` core` to nothing on ES.
+        string(FIND "${source}" "\n" lineEnd)
+        string(SUBSTRING "${source}" 0 ${lineEnd} firstLine)
+        string(REGEX REPLACE "\r$" "" firstLine "${firstLine}")
+        if(NOT firstLine STREQUAL BRITE_SHADER_DESKTOP_VERSION)
+            message(FATAL_ERROR "assets/shaders/${file}'s first line is not `${BRITE_SHADER_DESKTOP_VERSION}`: every "
+                                "embedded shader's is, so that each platform can be given its own version line")
+        endif()
+        if(BRITE_SHADERS_GLSL_ES)
+            string(LENGTH "${firstLine}" versionLength)
+            string(SUBSTRING "${source}" ${versionLength} -1 rest)
+            set(source "${BRITE_SHADER_ES_PREAMBLE}${rest}")
+        endif()
         string(REPLACE "#include \"tone_curve.glsl\"" "${BRITE_TONE_CURVE_GLSL}" source "${source}")
         string(REPLACE "#include \"motion_depth.glsl\"" "${BRITE_MOTION_DEPTH_GLSL}" source "${source}")
         set(${variable} "${source}" PARENT_SCOPE)

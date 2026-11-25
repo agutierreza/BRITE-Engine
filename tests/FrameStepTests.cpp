@@ -107,10 +107,13 @@ TEST(FrameStep, SteppedFramesSeeTheSameTicksAndFractionsAsRun) {
 
 TEST(FrameStep, ASteppedApplicationStartsOnceAndStaysStopped) {
     // The first call starts it (OnStart once); a call after it stopped runs
-    // nothing and starts nothing.
+    // nothing and starts nothing -- even once the window that asked to close
+    // stops asking, as a host's window may.
     //
-    // Mutation: on stopping, go back to not started rather than stopped -> the
-    // call after the stop runs OnStart a second time -> red.
+    // Mutations: on stopping, go back to not started rather than stopped -> the
+    // call after the stop runs OnStart a second time -> red. Drop RunFrame's
+    // early return for a stopped run -> once the window stops asking to close
+    // the run goes on, and a sixth frame is drawn -> red.
     RecordingApp app(MixedFrames());
     app.SetFixedTimeStep(TICK);
     EXPECT_EQ(app.starts, 0);
@@ -118,6 +121,14 @@ TEST(FrameStep, ASteppedApplicationStartsOnceAndStaysStopped) {
     EXPECT_EQ(app.starts, 1);
     while (app.RunFrame()) {
     }
+    EXPECT_FALSE(app.RunFrame());
+    EXPECT_FALSE(app.RunFrame());
+    EXPECT_EQ(app.starts, 1);
+    EXPECT_EQ(app.scene->frames.size(), EXPECTED.size());
+
+    // The window stops asking to close, with time to run on: still stopped.
+    app.clock->Extend({2.0, 2.0 + FRAME});
+    ASSERT_FALSE(app.clock->WindowShouldClose());
     EXPECT_FALSE(app.RunFrame());
     EXPECT_FALSE(app.RunFrame());
     EXPECT_EQ(app.starts, 1);

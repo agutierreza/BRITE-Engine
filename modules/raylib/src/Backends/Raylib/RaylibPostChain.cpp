@@ -813,7 +813,7 @@ void PostChain::EndMotion(const MotionBlurSettings& settings, const float reproj
         const TargetObjects& to = *steps[step][1];
         glBindFramebuffer(GL_FRAMEBUFFER, to.framebuffer);
         glViewport(0, 0, to.width, to.height);
-        glUniform1i(Uniform(m_tiles, "step"), step);
+        glUniform1i(Uniform(m_tiles, "pass"), step);
         glUniform2i(Uniform(m_tiles, "sourceSize"), from.width, from.height);
         glBindTexture(GL_TEXTURE_2D, from.colour);
         glDrawArrays(GL_TRIANGLES, 0, 3);

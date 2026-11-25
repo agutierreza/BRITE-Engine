@@ -44,6 +44,12 @@ class ScriptedClock : public BRITE::Backends::IApplicationBackend {
         return 1;
     }
 
+    /// More instants after the script was spent: the window that "closed" stops asking to close, as a host's window
+    /// may.
+    void Extend(const std::vector<double>& more) {
+        m_times.insert(m_times.end(), more.begin(), more.end());
+    }
+
   private:
     std::vector<double> m_times;
     std::size_t m_next = 0;
@@ -120,12 +126,11 @@ class RecordingScene : public brite::framework::Scene {
 
 class RecordingApp : public brite::framework::Application {
   public:
-    explicit RecordingApp(std::vector<double> times)
-        : Application(std::make_unique<ScriptedClock>(std::move(times)), nullptr, std::make_unique<NullRenderBackend>(),
-                      "ScriptedFrames", "BRITE", "Engine", 1, 1) {}
+    explicit RecordingApp(std::vector<double> times) : RecordingApp(new ScriptedClock(std::move(times))) {}
 
     std::shared_ptr<RecordingScene> scene;
-    int starts = 0; // how many times OnStart ran
+    ScriptedClock* clock; // owned by the Application
+    int starts = 0;       // how many times OnStart ran
 
   protected:
     void OnStart() override {
@@ -133,6 +138,12 @@ class RecordingApp : public brite::framework::Application {
         scene = std::make_shared<RecordingScene>(this);
         ChangeScene(scene);
     }
+
+  private:
+    explicit RecordingApp(ScriptedClock* owned)
+        : Application(std::unique_ptr<ScriptedClock>(owned), nullptr, std::make_unique<NullRenderBackend>(),
+                      "ScriptedFrames", "BRITE", "Engine", 1, 1),
+          clock(owned) {}
 };
 
 constexpr double TICK = 1.0 / 64.0;   // 0.015625 s, exact in binary
