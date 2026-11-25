@@ -280,8 +280,19 @@ int TextureMinFilter(unsigned int texture) {
 }
 
 bool ReadTargetFloats(const TargetObjects& target, std::vector<float>& rgba) {
-    if (target.colour == 0 || !Gl::CanReadTexturesBack)
+    if (target.colour == 0)
         return false;
+    if constexpr (!Gl::CanReadTexturesBack) {
+        // Refused for the platform, not for the target: said once, so that a caller's false is not taken for "no such
+        // target".
+        static bool warned = false;
+        if (!warned) {
+            spdlog::warn("BRITE: this platform's GL cannot read a texture back whole, so a render target's readback is "
+                         "refused");
+            warned = true;
+        }
+        return false;
+    }
     rgba.assign(static_cast<std::size_t>(target.width) * static_cast<std::size_t>(target.height) * 4, 0.0f);
     glBindTexture(GL_TEXTURE_2D, target.colour);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
