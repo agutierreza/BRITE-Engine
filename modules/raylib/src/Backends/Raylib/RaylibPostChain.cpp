@@ -1,9 +1,9 @@
 // Render targets with a format and a readable depth, and the HDR pass's chain (RaylibPostChain.hpp). Raw OpenGL 3.3
-// through raylib's glad loader, whose function pointers raylib compiles in and leaves visible to the program it is
-// linked into, loaded once the window exists. Every function here leaves the GL state rlgl relies on as it found it:
+// (OpenGL ES 3 on the web platform) through RaylibGl.hpp: raylib's glad loader on the desktop, loaded once the window
+// exists. Every function here leaves the GL state rlgl relies on as it found it:
 // the framebuffer, the viewport, blending as SRC_ALPHA / ONE_MINUS_SRC_ALPHA, depth testing off, culling on, the
 // program and texture unit 0.
-#include "external/glad.h"
+#include "RaylibGl.hpp"
 
 #include "Backends/MotionBlur.hpp"
 #include "Backends/Raylib/PostShaderSource.hpp"
@@ -207,8 +207,8 @@ bool CreateTarget(const RenderTargetDescription& description, TargetObjects& out
     glBindFramebuffer(GL_FRAMEBUFFER, out.framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, out.colour, 0);
     if (description.ReadableDepth) {
-        out.depthTexture =
-            MakeTexture(out.width, out.height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_FLOAT, GL_NEAREST);
+        out.depthTexture = MakeTexture(out.width, out.height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT,
+                                       Gl::DepthUploadType, GL_NEAREST);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, out.depthTexture, 0);
     } else {
         glGenRenderbuffers(1, &out.depthRenderbuffer);
@@ -280,12 +280,14 @@ int TextureMinFilter(unsigned int texture) {
 }
 
 bool ReadTargetFloats(const TargetObjects& target, std::vector<float>& rgba) {
-    if (target.colour == 0)
+    if (target.colour == 0 || !Gl::CanReadTexturesBack)
         return false;
     rgba.assign(static_cast<std::size_t>(target.width) * static_cast<std::size_t>(target.height) * 4, 0.0f);
     glBindTexture(GL_TEXTURE_2D, target.colour);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
+#if !defined(__EMSCRIPTEN__)
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, rgba.data());
+#endif
     glBindTexture(GL_TEXTURE_2D, 0);
     return true;
 }
@@ -645,11 +647,11 @@ bool PostChain::PrepareMotion(int width, int height, int tile, std::uint64_t pas
         FreeMotion();
         ++m_motionSetsMade;
         m_motion.depthTexture =
-            MakeTexture(width, height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_FLOAT, GL_NEAREST);
+            MakeTexture(width, height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, Gl::DepthUploadType, GL_NEAREST);
         glGenFramebuffers(1, &m_motion.depthFramebuffer);
         glBindFramebuffer(GL_FRAMEBUFFER, m_motion.depthFramebuffer);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_motion.depthTexture, 0);
-        glDrawBuffer(GL_NONE);
+        Gl::DrawNoColour();
         glReadBuffer(GL_NONE);
         complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
         complete = MakeColourTarget(width, height, GL_NEAREST, m_motion.velocity) && complete;
@@ -893,7 +895,7 @@ bool ShadowAtlas::Prepare(int width, int height) {
         return true;
     Free();
     const SavedBinding saved;
-    m_texture = MakeTexture(width, height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_FLOAT, GL_LINEAR);
+    m_texture = MakeTexture(width, height, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, Gl::DepthUploadType, GL_LINEAR);
     glBindTexture(GL_TEXTURE_2D, m_texture);
     // Read through a sampler2DShadow: each lookup compares, and LINEAR gives the hardware's 2x2 filter of the results.
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
@@ -902,7 +904,7 @@ bool ShadowAtlas::Prepare(int width, int height) {
     glGenFramebuffers(1, &m_framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, m_framebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_texture, 0);
-    glDrawBuffer(GL_NONE);
+    Gl::DrawNoColour();
     glReadBuffer(GL_NONE);
     const bool complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     if (!complete) {

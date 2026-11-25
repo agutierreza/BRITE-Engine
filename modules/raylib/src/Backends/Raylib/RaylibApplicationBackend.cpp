@@ -35,12 +35,25 @@ void RaylibApplicationBackend::Shutdown() {
     m_mode = WindowMode::Windowed;
 }
 
+// The web platform: the browser owns the loop and calls the application once a display frame (Application::Run).
+// A page has no close request a program can see -- the tab just goes -- and raylib's WindowShouldClose there would
+// hand control back to the browser by sleeping, which only an ASYNCIFY build can do; so the answer is no, at once.
+// Nor is there a frame rate to hold: the browser paces the calls, and a target would make every frame wait out the
+// rest of its time inside the callback.
 bool RaylibApplicationBackend::WindowShouldClose() {
+#if defined(__EMSCRIPTEN__)
+    return false;
+#else
     return ::WindowShouldClose();
+#endif
 }
 
 void RaylibApplicationBackend::SetTargetFPS(int fps) {
+#if defined(__EMSCRIPTEN__)
+    (void)fps;
+#else
     ::SetTargetFPS(fps);
+#endif
 }
 
 double RaylibApplicationBackend::GetTime() {

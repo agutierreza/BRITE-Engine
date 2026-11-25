@@ -81,6 +81,12 @@ class Application {
     //
     // Run always starts afresh, as it did before stepping existed: a second Run
     // starts the application again, OnStart included.
+    //
+    // On the web platform (EMSCRIPTEN) the browser owns the loop, so Run hands
+    // RunFrame to the browser's frame callback, once a display frame, and does
+    // NOT return: the stack is unwound to the browser, which keeps main's frame
+    // -- and the Application in it -- alive while the page runs. The callback
+    // is cancelled once RunFrame returns false.
     void Run();
     bool RunFrame();
     void Quit();

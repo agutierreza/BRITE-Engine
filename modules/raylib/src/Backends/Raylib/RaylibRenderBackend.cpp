@@ -22,6 +22,17 @@
 // function pointers raylib compiles in and leaves visible to the program it is
 // linked into, already loaded once the window exists. Were raylib to rename or
 // hide them, this would fail to link -- loudly -- rather than at run time.
+//
+// On the web platform the GL is OpenGL ES 3 (WebGL 2), whose functions the
+// platform provides by name with no loader: the same five, under those names.
+#if defined(__EMSCRIPTEN__)
+#include <GLES3/gl3.h>
+#define glad_glGenRenderbuffers glGenRenderbuffers
+#define glad_glBindRenderbuffer glBindRenderbuffer
+#define glad_glRenderbufferStorageMultisample glRenderbufferStorageMultisample
+#define glad_glDeleteRenderbuffers glDeleteRenderbuffers
+#define glad_glGetIntegerv glGetIntegerv
+#else
 extern "C" {
 #if defined(_WIN32) && !defined(_WIN64)
 #define BRITE_GL_CALL __stdcall
@@ -35,6 +46,7 @@ extern void(BRITE_GL_CALL* glad_glRenderbufferStorageMultisample)(unsigned int t
 extern void(BRITE_GL_CALL* glad_glDeleteRenderbuffers)(int count, const unsigned int* renderbuffers);
 extern void(BRITE_GL_CALL* glad_glGetIntegerv)(unsigned int name, int* values);
 }
+#endif
 
 namespace BRITE {
 namespace Backends {

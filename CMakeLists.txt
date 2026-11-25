@@ -14,6 +14,17 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ---------------------------------------------------------
+# The web platform
+# ---------------------------------------------------------
+# Built with Emscripten's toolchain (EMSCRIPTEN), the engine is WebAssembly in a browser page: its GL is WebGL 2,
+# OpenGL ES 3; it has no threads; and the page, not the program, owns the loop -- Application::Run hands RunFrame to
+# the browser's frame callback (Framework/Application.cpp). What changes for it, each where it applies:
+#   raylib       its web platform, on OpenGL ES 3 rather than its web default, ES 2 (WebGL 1);
+#   Box2D        no AVX2 (WebAssembly has no AVX);
+#   the shaders  GLSL ES 3.00 (the shader block below);
+#   the tests    not built by default: BRITETests is a native program, and proves the same C++ natively.
+
 
 
 # Configure release asset packing
@@ -76,6 +87,10 @@ if(BRITE_BUILD_RAYLIB)
     # raylib log line to say why. PNG is raylib's default and stays on. HDR stays
     # off: nothing here needs it yet.
     set(SUPPORT_FILEFORMAT_JPG ON CACHE BOOL "Load JPEG images and textures" FORCE)
+    if(EMSCRIPTEN)
+        # The web platform (above): WebGL 2, so raylib links -sMIN_WEBGL_VERSION=2 and -sMAX_WEBGL_VERSION=2 itself.
+        set(GRAPHICS "GRAPHICS_API_OPENGL_ES3" CACHE STRING "raylib's graphics API" FORCE)
+    endif()
 
     FetchContent_MakeAvailable(raylib)
 endif()
@@ -95,6 +110,9 @@ if(BRITE_BUILD_BOX2D)
     )
     set(BOX2D_SAMPLES OFF CACHE BOOL "" FORCE)
     set(BOX2D_VALIDATION OFF CACHE BOOL "" FORCE)
+    if(EMSCRIPTEN)
+        set(BOX2D_AVX2 OFF CACHE BOOL "" FORCE)
+    endif()
     FetchContent_MakeAvailable(box2d)
 endif()
 
@@ -310,6 +328,19 @@ precision highp samplerCube;
 precision highp sampler2DShadow;")
     file(READ "${BRITE_SHADER_DIR}/tone_curve.glsl" BRITE_TONE_CURVE_GLSL)
     file(READ "${BRITE_SHADER_DIR}/motion_depth.glsl" BRITE_MOTION_DEPTH_GLSL)
+    # On a GLSL ES platform nothing native compiles the ES text, so it is checked here, as it is embedded, by
+    # glslangValidator when one is found: a shader the platform's compiler would refuse stops the configure, rather than
+    # passing every native case and drawing nothing in the browser.
+    if(BRITE_SHADERS_GLSL_ES)
+        find_program(BRITE_GLSLANG_VALIDATOR glslangValidator
+                     DOC "glslangValidator, which checks the embedded shaders' GLSL ES text as it is made")
+        if(NOT BRITE_GLSLANG_VALIDATOR)
+            message(WARNING "BRITE: no glslangValidator found, so the embedded shaders' GLSL ES text is NOT checked: "
+                            "set BRITE_GLSLANG_VALIDATOR to one")
+        endif()
+    endif()
+    # Reads assets/shaders/<file> into <variable> as the platform embeds it. Each further argument is a variant the
+    # backend compiles the shader as -- the defines it inserts after the first line -- and is checked too.
     function(brite_read_shader variable file)
         file(READ "${BRITE_SHADER_DIR}/${file}" source)
         # The whole first line, without its line ending: `#version 330 core` would pass a test of its start and then
@@ -328,13 +359,57 @@ precision highp sampler2DShadow;")
         endif()
         string(REPLACE "#include \"tone_curve.glsl\"" "${BRITE_TONE_CURVE_GLSL}" source "${source}")
         string(REPLACE "#include \"motion_depth.glsl\"" "${BRITE_MOTION_DEPTH_GLSL}" source "${source}")
+        if(BRITE_SHADERS_GLSL_ES AND BRITE_GLSLANG_VALIDATOR)
+            if(file MATCHES "\\.vs$")
+                set(stage vert)
+            else()
+                set(stage frag)
+            endif()
+            string(FIND "${source}" "\n" lineEnd)
+            math(EXPR lineEnd "${lineEnd} + 1")
+            string(SUBSTRING "${source}" 0 ${lineEnd} versionLine)
+            string(SUBSTRING "${source}" ${lineEnd} -1 body)
+            set(index 0)
+            foreach(defines IN ITEMS "as it stands" ${ARGN})
+                if(defines STREQUAL "as it stands")
+                    set(text "${source}")
+                else()
+                    set(text "${versionLine}${defines}${body}")
+                endif()
+                set(checked "${CMAKE_CURRENT_BINARY_DIR}/shader_check/${file}.${index}.${stage}")
+                file(WRITE "${checked}" "${text}")
+                execute_process(COMMAND "${BRITE_GLSLANG_VALIDATOR}" -S ${stage} "${checked}"
+                                RESULT_VARIABLE result OUTPUT_VARIABLE log ERROR_VARIABLE log)
+                if(NOT result EQUAL 0)
+                    message(FATAL_ERROR "assets/shaders/${file} is refused as GLSL ES 3.00 (${defines}); the text "
+                                        "checked is ${checked}:\n${log}")
+                endif()
+                math(EXPR index "${index} + 1")
+            endforeach()
+        endif()
         set(${variable} "${source}" PARENT_SCOPE)
         set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BRITE_SHADER_DIR}/${file}")
     endfunction()
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BRITE_SHADER_DIR}/tone_curve.glsl")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${BRITE_SHADER_DIR}/motion_depth.glsl")
-    brite_read_shader(BRITE_PBR_VS pbr.vs)
-    brite_read_shader(BRITE_PBR_FS pbr.fs)
+    # The variants the backend compiles (RaylibRenderBackend.cpp, EnsurePbrShader and the shadow pass;
+    # RaylibPostChain.cpp, the motion velocity draw): an instanced vertex stage, and the lit fragment stage with every
+    # combination of its features -- up to BRITE::MaxCascades shadow cascades (ShadowCascades.hpp).
+    set(BRITE_INSTANCED_VARIANT "#define BRITE_INSTANCED 1\n")
+    set(BRITE_PBR_FS_VARIANTS "")
+    foreach(hdr 0 1)
+        foreach(cascades 0 1 2 3 4)
+            foreach(filter 0 1 2)
+                foreach(reflections 0 1)
+                    set(variant "#define BRITE_HDR ${hdr}\n#define BRITE_SHADOW_CASCADES ${cascades}\n")
+                    string(APPEND variant "#define BRITE_SHADOW_FILTER ${filter}\n#define BRITE_REFLECTIONS ${reflections}\n")
+                    list(APPEND BRITE_PBR_FS_VARIANTS "${variant}")
+                endforeach()
+            endforeach()
+        endforeach()
+    endforeach()
+    brite_read_shader(BRITE_PBR_VS pbr.vs "${BRITE_INSTANCED_VARIANT}")
+    brite_read_shader(BRITE_PBR_FS pbr.fs ${BRITE_PBR_FS_VARIANTS})
     configure_file(modules/raylib/src/Backends/Raylib/PbrShaderSource.hpp.in
                    "${CMAKE_CURRENT_BINARY_DIR}/generated/Backends/Raylib/PbrShaderSource.hpp" @ONLY)
     brite_read_shader(BRITE_POST_FULLSCREEN_VS post_fullscreen.vs)
@@ -343,9 +418,9 @@ precision highp sampler2DShadow;")
     brite_read_shader(BRITE_POST_TONEMAP_FS post_tonemap.fs)
     brite_read_shader(BRITE_AUTHORED_COLOUR_VS authored_colour.vs)
     brite_read_shader(BRITE_AUTHORED_COLOUR_FS authored_colour.fs)
-    brite_read_shader(BRITE_SHADOW_DEPTH_VS shadow_depth.vs)
+    brite_read_shader(BRITE_SHADOW_DEPTH_VS shadow_depth.vs "${BRITE_INSTANCED_VARIANT}")
     brite_read_shader(BRITE_SHADOW_DEPTH_FS shadow_depth.fs)
-    brite_read_shader(BRITE_MOTION_VELOCITY_VS motion_velocity.vs)
+    brite_read_shader(BRITE_MOTION_VELOCITY_VS motion_velocity.vs "${BRITE_INSTANCED_VARIANT}")
     brite_read_shader(BRITE_MOTION_VELOCITY_FS motion_velocity.fs)
     brite_read_shader(BRITE_MOTION_RESOLVE_FS motion_resolve.fs)
     brite_read_shader(BRITE_MOTION_TILES_FS motion_tiles.fs)
@@ -480,12 +555,13 @@ enable_testing()
 # run inside it -- and be linked by its every build -- whatever the project was testing. BRITE_BUILD_TESTS turns the
 # suite on there too. Top level is read as CMAKE_SOURCE_DIR being this directory, which every CMake this file accepts
 # can say; PROJECT_IS_TOP_LEVEL says the same from 3.21 on.
-if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR AND NOT EMSCRIPTEN)
     set(BRITE_BUILD_TESTS_DEFAULT ON)
 else()
     set(BRITE_BUILD_TESTS_DEFAULT OFF)
 endif()
-option(BRITE_BUILD_TESTS "Build BRITETests and register it with ctest (default: only when BRITE is the top-level project)"
+option(BRITE_BUILD_TESTS
+       "Build BRITETests and register it with ctest (default: only when BRITE is the top-level project, not on the web)"
        ${BRITE_BUILD_TESTS_DEFAULT})
 
 if(BRITE_BUILD_TESTS)
@@ -608,13 +684,18 @@ endif()
 # project that adds BRITE with add_subdirectory (a client) never gets the example's target. BRITE_BUILD_EXAMPLES turns
 # it on there too. It is not run by ctest: it opens a visible window, and the profiler (on by default) makes a new
 # program ask Windows for network access.
+#
+# examples/lit_cube draws a cube through the lit (PBR) path, and builds for the web platform as a page: the smallest
+# proof that the engine draws, lit, in a browser.
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     set(BRITE_BUILD_EXAMPLES_DEFAULT ON)
 else()
     set(BRITE_BUILD_EXAMPLES_DEFAULT OFF)
 endif()
-option(BRITE_BUILD_EXAMPLES "Build examples/hello (default: only when BRITE is the top-level project; needs the raylib module)"
+option(BRITE_BUILD_EXAMPLES
+       "Build examples/hello and examples/lit_cube (default: only when BRITE is the top-level project; needs raylib)"
        ${BRITE_BUILD_EXAMPLES_DEFAULT})
 if(BRITE_BUILD_EXAMPLES AND BRITE_BUILD_RAYLIB)
     add_subdirectory(examples/hello)
+    add_subdirectory(examples/lit_cube)
 endif()

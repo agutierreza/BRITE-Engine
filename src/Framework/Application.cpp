@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <cassert>
 #include <spdlog/spdlog.h>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif
 
 namespace brite {
 namespace framework {
@@ -228,8 +231,21 @@ void Application::Quit() {
 void Application::Run() {
     // A fresh start every time, as Run has always been.
     m_runState = RunState::NotStarted;
+#if defined(__EMSCRIPTEN__)
+    // The web platform: the browser owns the loop. RunFrame is handed to its frame callback, called once a display
+    // frame (requestAnimationFrame), and the callback is cancelled once the application stops. With
+    // simulate_infinite_loop set, this call never returns -- the stack is unwound to the browser -- so main's frame,
+    // and the Application in it, stay alive for as long as the page runs frames. No thread and no ASYNCIFY.
+    emscripten_set_main_loop_arg(
+        [](void* app) {
+            if (!static_cast<Application*>(app)->RunFrame())
+                emscripten_cancel_main_loop();
+        },
+        this, 0, true);
+#else
     while (RunFrame()) {
     }
+#endif
 }
 
 bool Application::RunFrame() {
