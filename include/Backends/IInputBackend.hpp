@@ -17,6 +17,18 @@ class IInputBackend {
     virtual bool IsKeyDown(KeyCode key) = 0;
     virtual bool IsKeyPressed(KeyCode key) = 0;
     virtual bool IsKeyReleased(KeyCode key) = 0;
+    // Whether the platform repeated `key` since the backend last polled it: the
+    // operating system's key repeat, sent while a key is held, after its own
+    // delay and at its own rate (both the user's settings, not the
+    // application's). Never for the press that began the hold -- IsKeyPressed
+    // reports that one. At least once: a poll in which the platform repeated a
+    // key several times reports true once, as IsKeyPressed reports an edge.
+    // Not pure, so a backend whose platform does not repeat keys need not
+    // answer; one that does not override it reports no repeats, which is what
+    // it has.
+    virtual bool IsKeyRepeated(KeyCode /*key*/) {
+        return false;
+    }
 
     // Mouse
     virtual bool IsMouseButtonDown(MouseButtonCode button) = 0;

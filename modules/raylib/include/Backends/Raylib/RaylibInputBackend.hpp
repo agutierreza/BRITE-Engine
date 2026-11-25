@@ -13,6 +13,7 @@ class RaylibInputBackend : public IInputBackend {
     bool IsKeyDown(KeyCode key) override;
     bool IsKeyPressed(KeyCode key) override;
     bool IsKeyReleased(KeyCode key) override;
+    bool IsKeyRepeated(KeyCode key) override;
 
     bool IsMouseButtonDown(MouseButtonCode button) override;
     bool IsMouseButtonPressed(MouseButtonCode button) override;

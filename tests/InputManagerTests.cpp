@@ -37,6 +37,7 @@ enum class Action : uint32_t {
     MouseOnly,
     Stray,
     Claimable,
+    Repeating,
 };
 
 /// Reports each input as pressed on exactly one poll and released on exactly
@@ -44,18 +45,25 @@ enum class Action : uint32_t {
 class FakeInputBackend : public BRITE::Backends::IInputBackend {
   public:
     std::set<KeyCode> keysPressed, keysReleased;
+    // The keys the platform repeated this frame -- an edge, cleared each frame.
+    std::set<KeyCode> keysRepeated;
+    // The keys held down: a level, kept across frames until a case changes it.
+    std::set<KeyCode> keysHeld;
     std::set<GamepadButtonCode> padPressed, padReleased;
     std::set<MouseButtonCode> mousePressed, mouseReleased;
 
     void PollEvents() override {}
-    bool IsKeyDown(KeyCode) override {
-        return false;
+    bool IsKeyDown(KeyCode key) override {
+        return keysHeld.count(key) > 0;
     }
     bool IsKeyPressed(KeyCode key) override {
         return keysPressed.count(key) > 0;
     }
     bool IsKeyReleased(KeyCode key) override {
         return keysReleased.count(key) > 0;
+    }
+    bool IsKeyRepeated(KeyCode key) override {
+        return keysRepeated.count(key) > 0;
     }
     bool IsMouseButtonDown(MouseButtonCode) override {
         return false;
@@ -110,6 +118,7 @@ class FakeInputBackend : public BRITE::Backends::IInputBackend {
     void Clear() {
         keysPressed.clear();
         keysReleased.clear();
+        keysRepeated.clear();
         padPressed.clear();
         padReleased.clear();
         mousePressed.clear();
@@ -178,7 +187,9 @@ class InputManagerDevices : public ::testing::Test {
     // cases touch is released, then the backend is detached.
     void TearDown() override {
         m_backend.Clear();
-        m_backend.keysReleased = {KeyCode::G, KeyCode::H, KeyCode::J, KeyCode::K, KeyCode::L};
+        m_backend.keysHeld.clear();
+        m_backend.keysReleased = {KeyCode::G, KeyCode::H, KeyCode::J, KeyCode::K,
+                                  KeyCode::L, KeyCode::M, KeyCode::N, KeyCode::P};
         m_backend.padReleased = {GamepadButtonCode::RightFaceDown, GamepadButtonCode::RightFaceUp,
                                  GamepadButtonCode::LeftFaceDown};
         m_backend.mouseReleased = {MouseButtonCode::Right};
@@ -642,4 +653,151 @@ TEST(MouseWheelDefault, ABackendWithoutAWheelReportsNone) {
     InputManager::Initialize(nullptr);
     EXPECT_FLOAT_EQ(x, 0.0f);
     EXPECT_FLOAT_EQ(y, 0.0f);
+}
+
+// A held key repeating: each frame's repeat polled with the other inputs and
+// counted by the fixed tick, its press kept apart from its repeats, and the
+// action layer reading its keys' repeats under the same claim as their presses.
+// Inputs arrive as in a running application: the backend reports a frame's
+// repeat, PollVariable queues it, FlushFixed applies it.
+namespace {
+class KeyRepeat : public InputManagerDevices {
+  protected:
+    // The key goes down, as a backend reports it: pressed on one frame, held
+    // from then on. One frame and one tick.
+    void Press(KeyCode key) {
+        m_backend.keysHeld.insert(key);
+        m_backend.keysPressed = {key};
+        Tick();
+    }
+    // One render frame in which the platform repeated `repeated`, with no tick.
+    void Frame(std::set<KeyCode> repeated) {
+        m_backend.keysRepeated = std::move(repeated);
+        InputManager::PollVariable(m_dispatcher);
+        m_backend.Clear();
+    }
+};
+} // namespace
+
+TEST_F(KeyRepeat, TheRepeatsOfEveryFramePolledBeforeATickAreCounted) {
+    // M held, then three frames drawn before one tick, the platform repeating it
+    // on each: the tick counts 1 + 1 + 1 = 3 repeats -- none of them lost.
+    // MUTATION: the tick keeping only that a repeat happened (= 1 for ++) -- 1,
+    // red.
+    Press(KeyCode::M);
+    Frame({KeyCode::M});
+    Frame({KeyCode::M});
+    Frame({KeyCode::M});
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_EQ(InputManager::GetKeyRepeatCount(KeyCode::M), 3);
+    EXPECT_TRUE(InputManager::IsKeyRepeated(KeyCode::M));
+}
+
+TEST_F(KeyRepeat, ASecondTickInTheSameFrameReadsNoRepeat) {
+    // One frame repeated M, and that frame ran two ticks. The first counts 1;
+    // the second follows no new frame and counts 0 -- the repeat is not applied
+    // twice. Then a frame with no repeat: its tick counts 0 too, not the 1 of
+    // before.
+    // MUTATION: FlushFixed not clearing the count -- the second tick reads 1,
+    // red.
+    Press(KeyCode::M);
+    Frame({KeyCode::M});
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_EQ(InputManager::GetKeyRepeatCount(KeyCode::M), 1);
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_EQ(InputManager::GetKeyRepeatCount(KeyCode::M), 0);
+    EXPECT_FALSE(InputManager::IsKeyRepeated(KeyCode::M));
+    Frame({});
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_EQ(InputManager::GetKeyRepeatCount(KeyCode::M), 0);
+}
+
+TEST_F(KeyRepeat, ThePressIsNotARepeatAndPressedOrRepeatedIsEither) {
+    // The tick M goes down: pressed, not repeated -- the platform sends the
+    // press and the repeats apart. A tick it repeats: repeated, not pressed.
+    // A tick it is only held: neither. IsKeyPressedOrRepeated is true on the
+    // first two and false on the third, the one call a held Backspace needs.
+    // MUTATION: IsKeyPressedOrRepeated reading only the repeat -- the first
+    // tick reads false, red; reading only the press -- the second reads false,
+    // red.
+    Press(KeyCode::M);
+    EXPECT_TRUE(InputManager::IsKeyPressed(KeyCode::M));
+    EXPECT_FALSE(InputManager::IsKeyRepeated(KeyCode::M));
+    EXPECT_EQ(InputManager::GetKeyRepeatCount(KeyCode::M), 0);
+    EXPECT_TRUE(InputManager::IsKeyPressedOrRepeated(KeyCode::M));
+
+    Frame({KeyCode::M});
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FALSE(InputManager::IsKeyPressed(KeyCode::M));
+    EXPECT_TRUE(InputManager::IsKeyRepeated(KeyCode::M));
+    EXPECT_TRUE(InputManager::IsKeyPressedOrRepeated(KeyCode::M));
+
+    Frame({});
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_TRUE(InputManager::IsKeyDown(KeyCode::M));
+    EXPECT_FALSE(InputManager::IsKeyPressedOrRepeated(KeyCode::M));
+}
+
+TEST_F(KeyRepeat, AKeyRepeatingWhileAnotherIsOnlyDownIsTheOnlyOneRepeated) {
+    // N and P both held; the platform repeats N alone. N reads one repeat; P,
+    // down all along, reads none -- down is not repeating.
+    // MUTATION: PollVariable asking the backend whether a key is DOWN instead
+    // of repeated -- P reads a repeat, red.
+    Press(KeyCode::N);
+    Press(KeyCode::P);
+    Frame({KeyCode::N});
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_TRUE(InputManager::IsKeyDown(KeyCode::N));
+    EXPECT_TRUE(InputManager::IsKeyDown(KeyCode::P));
+    EXPECT_EQ(InputManager::GetKeyRepeatCount(KeyCode::N), 1);
+    EXPECT_EQ(InputManager::GetKeyRepeatCount(KeyCode::P), 0);
+    EXPECT_FALSE(InputManager::IsKeyRepeated(KeyCode::P));
+}
+
+TEST_F(KeyRepeat, AnActionRepeatsWithItsKeyAndAClaimHidesTheRepeatFromTheActionAlone) {
+    // An action bound to M. A tick M repeats: the action reads repeated, and
+    // pressed-or-repeated. The next frame repeats it again, and this time a layer
+    // above claims M before the action is read: the action reads neither, while
+    // the raw read still counts the repeat -- which is how the layer that claimed
+    // it reads it. Then a tick with no repeat: not repeated.
+    // MUTATION: IsActionRepeated not reading its keys (return false) -- the
+    // first tick reads false, red; IsActionRepeated ignoring the claim -- the
+    // claimed tick reads true, red; IsActionPressedOrRepeated reading only the
+    // press -- the first tick reads false, red.
+    InputManager::BindAction(Action::Repeating, KeyCode::M);
+    Press(KeyCode::M);
+    EXPECT_FALSE(InputManager::IsActionRepeated(Action::Repeating)) << "the press is not a repeat";
+    EXPECT_TRUE(InputManager::IsActionPressedOrRepeated(Action::Repeating));
+
+    Frame({KeyCode::M});
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_TRUE(InputManager::IsActionRepeated(Action::Repeating));
+    EXPECT_TRUE(InputManager::IsActionPressedOrRepeated(Action::Repeating));
+
+    Frame({KeyCode::M});
+    InputManager::FlushFixed(m_dispatcher);
+    InputManager::ClaimKey(KeyCode::M);
+    EXPECT_FALSE(InputManager::IsActionRepeated(Action::Repeating));
+    EXPECT_FALSE(InputManager::IsActionPressedOrRepeated(Action::Repeating));
+    EXPECT_TRUE(InputManager::IsKeyRepeated(KeyCode::M)) << "the raw read still reports the repeat";
+
+    Frame({});
+    InputManager::FlushFixed(m_dispatcher);
+    EXPECT_FALSE(InputManager::IsActionRepeated(Action::Repeating));
+}
+
+TEST(KeyRepeatDefault, ABackendWhosePlatformDoesNotRepeatReportsNone) {
+    // IsKeyRepeated is not pure, so a backend written before it -- or one for a
+    // platform with no key repeat -- still builds, and reports what it has: no
+    // repeats, to the manager too.
+    // MUTATION: a default of true -- red.
+    SilentInputBackend silent;
+    EXPECT_FALSE(silent.IsKeyRepeated(KeyCode::A));
+    entt::dispatcher dispatcher;
+    InputManager::Initialize(&silent);
+    InputManager::PollVariable(dispatcher);
+    InputManager::FlushFixed(dispatcher);
+    const int repeats = InputManager::GetKeyRepeatCount(KeyCode::A);
+    InputManager::Initialize(nullptr);
+    EXPECT_EQ(repeats, 0);
 }

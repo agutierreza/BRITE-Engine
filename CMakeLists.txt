@@ -236,6 +236,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/BriteContent.cmake)
 
 add_library(BRITECore STATIC
     src/Core/InputManager.cpp
+    src/Core/HeldRepeat.cpp
     src/Core/Profiler.cpp
     src/Systems/RenderSystem.cpp
     src/Systems/PhysicsSystem.cpp
@@ -468,6 +469,7 @@ if(BRITE_BUILD_TESTS)
     # The core's cases always, and each module's only when the module is built.
     set(BRITE_TEST_SOURCES
         tests/InputManagerTests.cpp
+        tests/HeldRepeatTests.cpp
         tests/TickFractionTests.cpp
         tests/ApplicationLifetimeTests.cpp
         tests/SceneStackTests.cpp
@@ -505,7 +507,7 @@ if(BRITE_BUILD_TESTS)
             tests/InstancingTests.cpp
             tests/RaylibSceneAssetsTests.cpp
         )
-        # The wheel case calls GLFW itself, which links only from a static raylib on its Desktop (GLFW) platform.
+        # The wheel and key-repeat cases call GLFW, which links only from a static raylib on its Desktop (GLFW) platform.
         get_target_property(BRITE_RAYLIB_TYPE raylib TYPE)
         if(BRITE_RAYLIB_TYPE STREQUAL "STATIC_LIBRARY" AND (NOT PLATFORM OR PLATFORM STREQUAL "Desktop"))
             list(APPEND BRITE_TEST_SOURCES tests/RaylibInputBackendTests.cpp)

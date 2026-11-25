@@ -54,6 +54,35 @@ class InputManager {
     static bool IsKeyDown(KeyCode key);
     static bool IsKeyReleased(KeyCode key);
 
+    // A held key repeating as the operating system repeats it -- see
+    // IInputBackend::IsKeyRepeated: after the platform's delay, at its rate, and
+    // never for the press that began the hold, which IsKeyPressed reports.
+    //
+    // GetKeyRepeatCount is the number of frames polled since the previous fixed
+    // tick in which the backend reported `key` repeated. It is a COUNT over those
+    // frames, so a tick that follows several frames loses none of their repeats;
+    // and it is zero for a tick that follows no new frame, so when one frame runs
+    // several ticks only the first of them reads that frame's repeat. Why: a
+    // fixed tick reads input as what happened since the last tick, so a value
+    // nudged once a repeat moves as far for one second held whatever the frame
+    // rate and the tick rate are, and no repeat is applied twice -- the mouse
+    // wheel is counted the same way (GetMouseWheelMoveY). A backend reports a
+    // repeat at most once a frame, so the count is exact while frames come
+    // faster than the platform repeats.
+    //
+    // IsKeyRepeated is whether the count is above zero. IsKeyPressedOrRepeated
+    // is the one call for a reader that acts on the press and on every repeat
+    // after it, as a held Backspace erases: true on the tick the key went down
+    // and on every tick it repeated. A reader that acts once per press and once
+    // per repeat acts (IsKeyPressed(key) ? 1 : 0) + GetKeyRepeatCount(key) times.
+    //
+    // Only keys repeat: the operating system repeats nothing else. A gamepad
+    // button, a mouse button or an axis held past a threshold is timed with
+    // HeldRepeat (Core/HeldRepeat.hpp).
+    static int GetKeyRepeatCount(KeyCode key);
+    static bool IsKeyRepeated(KeyCode key);
+    static bool IsKeyPressedOrRepeated(KeyCode key);
+
     static bool IsMouseButtonPressed(MouseButtonCode button);
     static bool IsMouseButtonDown(MouseButtonCode button);
     static bool IsMouseButtonReleased(MouseButtonCode button);
@@ -102,9 +131,12 @@ class InputManager {
     // console -- reads keys, gamepad buttons and mouse buttons that the
     // application also has actions bound to, and one press must not do both.
     // ClaimKey takes `key` away from every ACTION for the rest of this fixed
-    // tick: IsActionPressed, IsActionDown and ActionDownDevices behave as if it
-    // were up. The raw queries -- IsKeyPressed, IsKeyDown, IsKeyReleased -- still
-    // see it, which is how the layer that claimed it reads it.
+    // tick: IsActionPressed, IsActionDown, ActionDownDevices, IsActionRepeated
+    // and IsActionPressedOrRepeated behave as if it were up. The raw queries --
+    // IsKeyPressed, IsKeyDown, IsKeyReleased, and the repeat's GetKeyRepeatCount,
+    // IsKeyRepeated and IsKeyPressedOrRepeated -- still see it, which is how the
+    // layer that claimed it reads it. A layer that takes a key while it is held
+    // claims it on every tick, its repeats with it.
     // ClaimGamepadButton and ClaimMouseButton do the same for a gamepad button
     // and a mouse button, with IsGamepadButton* and IsMouseButton* as their raw
     // queries.
@@ -196,9 +228,29 @@ class InputManager {
         return false;
     }
 
+    // Whether one of the action's KEYS repeated this tick (IsKeyRepeated) and is
+    // not claimed. Only its keys: the operating system repeats keys and nothing
+    // else, so an action held on a gamepad or mouse button never reads repeated
+    // -- time those holds with HeldRepeat.
+    template <typename TEnum> static bool IsActionRepeated(TEnum action) {
+        uint32_t actionId = static_cast<uint32_t>(action);
+        for (KeyCode k : s_actionKeyBindings[actionId]) {
+            if (IsKeyRepeated(k) && !IsKeyClaimed(k))
+                return true;
+        }
+        return false;
+    }
+
+    // The one call for a reader that acts on the action's press and on every
+    // repeat of one of its keys -- see IsKeyPressedOrRepeated.
+    template <typename TEnum> static bool IsActionPressedOrRepeated(TEnum action) {
+        return IsActionPressed(action) || IsActionRepeated(action);
+    }
+
   private:
     static void OnKeyDown(const KeyDownEvent& event);
     static void OnKeyUp(const KeyUpEvent& event);
+    static void OnKeyRepeat(const KeyRepeatEvent& event);
     static void OnMouseDown(const MouseButtonDownEvent& event);
     static void OnMouseUp(const MouseButtonUpEvent& event);
     static void OnMouseMove(const MouseMoveEvent& event);
@@ -214,6 +266,7 @@ class InputManager {
     static std::array<bool, KeyCount> s_keysPressedThisTick;
     static std::array<bool, KeyCount> s_keysReleasedThisTick;
     static std::array<bool, KeyCount> s_keysClaimedThisTick; // see ClaimKey
+    static std::array<int, KeyCount> s_keyRepeatsThisTick; // counted since the last FlushFixed -- see GetKeyRepeatCount
 
     static std::unordered_map<MouseButtonCode, bool> s_buttonsDown;
     static std::unordered_map<MouseButtonCode, bool> s_buttonsPressedThisTick;

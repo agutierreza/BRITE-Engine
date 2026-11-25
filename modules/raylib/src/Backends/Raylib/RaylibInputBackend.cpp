@@ -330,6 +330,13 @@ bool RaylibInputBackend::IsKeyReleased(KeyCode key) {
     return ::IsKeyReleased(MapKey(key));
 }
 
+// raylib keeps one flag a key for its platform's repeats, set by every repeat in
+// a frame and cleared at its next poll, and never set by the press itself -- the
+// interface's meaning, at least once a poll.
+bool RaylibInputBackend::IsKeyRepeated(KeyCode key) {
+    return ::IsKeyPressedRepeat(MapKey(key));
+}
+
 bool RaylibInputBackend::IsMouseButtonDown(MouseButtonCode button) {
     return ::IsMouseButtonDown(MapMouseButton(button));
 }

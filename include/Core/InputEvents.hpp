@@ -179,6 +179,13 @@ struct KeyUpEvent {
     KeyCode key;
 };
 
+// The operating system repeated a held key in one frame, queued only for a frame
+// in which the backend says it did; the fixed tick counts every one queued since
+// the last tick.
+struct KeyRepeatEvent {
+    KeyCode key;
+};
+
 struct MouseButtonDownEvent {
     MouseButtonCode button;
 };

@@ -7,6 +7,7 @@ std::array<bool, InputManager::KeyCount> InputManager::s_keysDown{};
 std::array<bool, InputManager::KeyCount> InputManager::s_keysPressedThisTick{};
 std::array<bool, InputManager::KeyCount> InputManager::s_keysReleasedThisTick{};
 std::array<bool, InputManager::KeyCount> InputManager::s_keysClaimedThisTick{};
+std::array<int, InputManager::KeyCount> InputManager::s_keyRepeatsThisTick{};
 
 std::unordered_map<MouseButtonCode, bool> InputManager::s_buttonsDown;
 std::unordered_map<MouseButtonCode, bool> InputManager::s_buttonsPressedThisTick;
@@ -67,6 +68,10 @@ void InputManager::PollVariable(entt::dispatcher& dispatcher) {
             dispatcher.enqueue<KeyDownEvent>(KeyDownEvent{key});
         if (s_backend->IsKeyReleased(key))
             dispatcher.enqueue<KeyUpEvent>(KeyUpEvent{key});
+        // Read once a frame, as the backend reports it once a frame; the tick
+        // counts the frames -- see GetKeyRepeatCount.
+        if (s_backend->IsKeyRepeated(key))
+            dispatcher.enqueue<KeyRepeatEvent>(KeyRepeatEvent{key});
     }
 
     for (MouseButtonCode btn : AllMouseButtons) {
@@ -110,6 +115,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
     s_keysPressedThisTick.fill(false);
     s_keysReleasedThisTick.fill(false);
     s_keysClaimedThisTick.fill(false); // a claim lasts one fixed tick -- see ClaimKey
+    s_keyRepeatsThisTick.fill(0);      // the repeats since the last tick, and this is the tick -- see GetKeyRepeatCount
     s_buttonsPressedThisTick.clear();
     s_buttonsReleasedThisTick.clear();
     s_gamepadButtonsPressedThisTick.clear();
@@ -124,6 +130,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
 
     dispatcher.sink<KeyDownEvent>().connect<&InputManager::OnKeyDown>();
     dispatcher.sink<KeyUpEvent>().connect<&InputManager::OnKeyUp>();
+    dispatcher.sink<KeyRepeatEvent>().connect<&InputManager::OnKeyRepeat>();
     dispatcher.sink<MouseButtonDownEvent>().connect<&InputManager::OnMouseDown>();
     dispatcher.sink<MouseButtonUpEvent>().connect<&InputManager::OnMouseUp>();
     dispatcher.sink<MouseMoveEvent>().connect<&InputManager::OnMouseMove>();
@@ -135,6 +142,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
 
     dispatcher.update<KeyDownEvent>();
     dispatcher.update<KeyUpEvent>();
+    dispatcher.update<KeyRepeatEvent>();
     dispatcher.update<MouseButtonDownEvent>();
     dispatcher.update<MouseButtonUpEvent>();
     dispatcher.update<MouseMoveEvent>();
@@ -146,6 +154,7 @@ void InputManager::FlushFixed(entt::dispatcher& dispatcher) {
 
     dispatcher.sink<KeyDownEvent>().disconnect<&InputManager::OnKeyDown>();
     dispatcher.sink<KeyUpEvent>().disconnect<&InputManager::OnKeyUp>();
+    dispatcher.sink<KeyRepeatEvent>().disconnect<&InputManager::OnKeyRepeat>();
     dispatcher.sink<MouseButtonDownEvent>().disconnect<&InputManager::OnMouseDown>();
     dispatcher.sink<MouseButtonUpEvent>().disconnect<&InputManager::OnMouseUp>();
     dispatcher.sink<MouseMoveEvent>().disconnect<&InputManager::OnMouseMove>();
@@ -172,6 +181,12 @@ void InputManager::OnKeyUp(const KeyUpEvent& event) {
         s_keysReleasedThisTick[idx] = true;
         s_keysDown[idx] = false;
     }
+}
+
+void InputManager::OnKeyRepeat(const KeyRepeatEvent& event) {
+    size_t idx = static_cast<size_t>(event.key);
+    if (idx < KeyCount)
+        ++s_keyRepeatsThisTick[idx];
 }
 
 void InputManager::OnMouseDown(const MouseButtonDownEvent& event) {
@@ -230,6 +245,17 @@ bool InputManager::IsKeyDown(KeyCode key) {
 bool InputManager::IsKeyReleased(KeyCode key) {
     size_t idx = static_cast<size_t>(key);
     return idx < KeyCount ? s_keysReleasedThisTick[idx] : false;
+}
+
+int InputManager::GetKeyRepeatCount(KeyCode key) {
+    size_t idx = static_cast<size_t>(key);
+    return idx < KeyCount ? s_keyRepeatsThisTick[idx] : 0;
+}
+bool InputManager::IsKeyRepeated(KeyCode key) {
+    return GetKeyRepeatCount(key) > 0;
+}
+bool InputManager::IsKeyPressedOrRepeated(KeyCode key) {
+    return IsKeyPressed(key) || IsKeyRepeated(key);
 }
 
 void InputManager::ClaimKey(KeyCode key) {
